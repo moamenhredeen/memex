@@ -4,6 +4,7 @@ mod fs;
 mod markdown;
 mod state;
 mod theme;
+mod vault;
 
 use freya::prelude::*;
 

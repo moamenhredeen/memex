@@ -4,4 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+dirs = "6.0.0"
 freya = "0.4.0-rc"
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.149"
