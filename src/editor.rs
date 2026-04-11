@@ -17,6 +17,7 @@ Use Ctrl+P to search and create notes.
 #[derive(PartialEq)]
 pub struct Editor {
     pub app_state: State<AppState>,
+    pub command_bar_visible: State<bool>,
 }
 
 impl Component for Editor {
@@ -37,7 +38,14 @@ impl Component for Editor {
             editable.process_event(EditableEvent::Release);
         };
 
+        let command_bar_visible = self.command_bar_visible;
+
         let on_global_key_down = move |e: Event<KeyboardEventData>| {
+            // Skip all key processing when command bar is open
+            if *command_bar_visible.read() {
+                return;
+            }
+
             // Ctrl+S → sync content from editable to app_state, then save
             if e.modifiers.contains(Modifiers::CONTROL) && e.key == Key::Character("s".to_string())
             {
@@ -63,6 +71,9 @@ impl Component for Editor {
         };
 
         let on_global_key_up = move |e: Event<KeyboardEventData>| {
+            if *command_bar_visible.read() {
+                return;
+            }
             editable.process_event(EditableEvent::KeyUp { key: &e.key });
         };
 

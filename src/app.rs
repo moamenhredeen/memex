@@ -30,7 +30,7 @@ pub fn app() -> impl IntoElement {
         .direction(Direction::Vertical)
         .content(Content::Flex)
         .on_global_key_down(on_global_key)
-        .child(Editor { app_state })
+        .child(Editor { app_state, command_bar_visible })
         .child(StatusBar { app_state })
         .child(CommandBar {
             app_state,
