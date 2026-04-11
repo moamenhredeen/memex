@@ -40,7 +40,7 @@ impl Default for MemexConfig {
             auto_save: false,
             auto_save_delay_secs: 3.0,
             tab_size: 4,
-            line_height: 1.5,
+            line_height: 1.2,
         }
     }
 }

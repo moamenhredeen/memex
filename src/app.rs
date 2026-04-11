@@ -1,7 +1,7 @@
-use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
+use fuzzy_matcher::skim::SkimMatcherV2;
 use gpui::*;
-use gpui_component::input::{Input, InputEvent, InputState};
+use gpui_component::input::{Input, InputState};
 use gpui_component::{h_flex, v_flex};
 
 use crate::editor::{EditorEvent, EditorState, EditorView};
@@ -50,29 +50,29 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
 | Name | Role | Status |
 |------|------|--------|
 | Alice | Dev | Active |
-| Bob | Design | Away |".to_string()
+| Bob | Design | Away |"
+                .to_string()
         } else {
             state.content.clone()
         };
 
-        let editor_state = cx.new(|cx| {
-            EditorState::new(initial_content, window, cx)
-        });
+        let editor_state = cx.new(|cx| EditorState::new(initial_content, window, cx));
 
-        let editor_view = cx.new(|cx| {
-            EditorView::new(editor_state.clone(), cx)
-        });
+        let editor_view = cx.new(|cx| EditorView::new(editor_state.clone(), cx));
 
-        let command_bar_input = cx.new(|cx| {
-            InputState::new(window, cx).placeholder("Search notes...")
-        });
+        let command_bar_input =
+            cx.new(|cx| InputState::new(window, cx).placeholder("Search notes..."));
 
-        let editor_sub = cx.subscribe_in(&editor_state, window, |this, _entity, ev: &EditorEvent, _window, cx| {
-            if matches!(ev, EditorEvent::Changed) {
-                this.state.dirty = true;
-                cx.notify();
-            }
-        });
+        let editor_sub = cx.subscribe_in(
+            &editor_state,
+            window,
+            |this, _entity, ev: &EditorEvent, _window, cx| {
+                if matches!(ev, EditorEvent::Changed) {
+                    this.state.dirty = true;
+                    cx.notify();
+                }
+            },
+        );
 
         Self {
             state,
@@ -108,7 +108,12 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         cx.notify();
     }
 
-    fn open_note_by_path(&mut self, path: std::path::PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+    fn open_note_by_path(
+        &mut self,
+        path: std::path::PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if let Err(e) = self.state.open_note(path) {
             eprintln!("failed to open note: {}", e);
             return;
@@ -133,7 +138,12 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         cx.notify();
     }
 
-    fn open_vault_by_path(&mut self, path: std::path::PathBuf, window: &mut Window, cx: &mut Context<Self>) {
+    fn open_vault_by_path(
+        &mut self,
+        path: std::path::PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         if let Err(e) = self.state.open_vault(path) {
             eprintln!("failed to open vault: {}", e);
             return;
@@ -198,10 +208,13 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     .bg(rgb(0xF5F5FA))
                     .rounded(px(4.))
                     .cursor_pointer()
-                    .on_mouse_down(MouseButton::Left, cx.listener(|this, _e: &MouseDownEvent, _window, cx| {
-                        this.vault_dropdown_visible = !this.vault_dropdown_visible;
-                        cx.notify();
-                    }))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _e: &MouseDownEvent, _window, cx| {
+                            this.vault_dropdown_visible = !this.vault_dropdown_visible;
+                            cx.notify();
+                        }),
+                    )
                     .child(
                         div()
                             .text_size(px(13.))
@@ -249,9 +262,12 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     .rounded(px(4.))
                     .cursor_pointer()
                     .hover(|s| s.bg(rgb(0xE1E6F5)))
-                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, _e: &MouseDownEvent, window, cx| {
-                        this.open_vault_by_path(path.clone(), window, cx);
-                    }))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _e: &MouseDownEvent, window, cx| {
+                            this.open_vault_by_path(path.clone(), window, cx);
+                        }),
+                    )
                     .child(
                         div()
                             .text_size(px(13.))
@@ -285,11 +301,14 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     .rounded(px(4.))
                     .cursor_pointer()
                     .hover(|s| s.bg(rgb(0xE1E6F5)))
-                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, _e: &MouseDownEvent, window, cx| {
-                        this.open_note_by_path(p.clone(), window, cx);
-                        this.command_bar_visible = false;
-                        cx.notify();
-                    }))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _e: &MouseDownEvent, window, cx| {
+                            this.open_note_by_path(p.clone(), window, cx);
+                            this.command_bar_visible = false;
+                            cx.notify();
+                        }),
+                    )
                     .child(
                         div()
                             .text_size(px(14.))
@@ -310,11 +329,14 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     .rounded(px(4.))
                     .cursor_pointer()
                     .hover(|s| s.bg(rgb(0xE1E6F5)))
-                    .on_mouse_down(MouseButton::Left, cx.listener(move |this, _e: &MouseDownEvent, window, cx| {
-                        this.create_note_by_title(&title_for_create, window, cx);
-                        this.command_bar_visible = false;
-                        cx.notify();
-                    }))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _e: &MouseDownEvent, window, cx| {
+                            this.create_note_by_title(&title_for_create, window, cx);
+                            this.command_bar_visible = false;
+                            cx.notify();
+                        }),
+                    )
                     .child(
                         div()
                             .text_size(px(14.))
@@ -332,10 +354,13 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             .left(px(0.))
             .size_full()
             .bg(rgba(0x00000040))
-            .on_mouse_down(MouseButton::Left, cx.listener(|this, _e: &MouseDownEvent, _window, cx| {
-                this.command_bar_visible = false;
-                cx.notify();
-            }))
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _e: &MouseDownEvent, _window, cx| {
+                    this.command_bar_visible = false;
+                    cx.notify();
+                }),
+            )
             .child(
                 div()
                     .id("command-bar-panel")
@@ -378,12 +403,7 @@ impl Render for Memex {
                 }
             }))
             // WYSIWYG Editor — takes full space
-            .child(
-                div()
-                    .flex_1()
-                    .w_full()
-                    .child(self.editor_view.clone()),
-            )
+            .child(div().flex_1().w_full().child(self.editor_view.clone()))
             // Status bar
             .child(self.render_status_bar(cx));
 
