@@ -36,8 +36,9 @@ impl Component for Editor {
         // Sync editor content back to AppState on every change
         let editor_text = editable.editor().read().to_string();
         if editor_text != app_state.read().content {
-            app_state.write().content = editor_text;
-            app_state.write().dirty = true;
+            let mut state = app_state.write();
+            state.content = editor_text;
+            state.dirty = true;
         }
 
         let on_global_pointer_press = move |_: Event<PointerEventData>| {
@@ -107,21 +108,40 @@ impl Component for EditableLine {
         let mut editable = self.editable;
         let holder = use_state(ParagraphHolder::default);
         let editor = editable.editor().read();
-        let line = editor.line(line_index).unwrap();
+
+        // Guard against stale line index
+        let line = match editor.line(line_index) {
+            Some(l) => l,
+            None => return paragraph().span(Span::new(" ").font_size(self.config.body_size)),
+        };
         let line_text = line.text.to_string();
 
-        let is_active = editor.cursor_row() == line_index;
+        // Guard against cursor/selection exceeding rope length (freya/ropey edge case)
+        let rope_len = editor.len_utf16_cu();
+        let selection = editor.selection();
+        let cursor_valid = match selection {
+            TextSelection::Cursor(pos) => *pos <= rope_len,
+            TextSelection::Range { from, to } => *from <= rope_len && *to <= rope_len,
+        };
+
+        let is_active = cursor_valid && editor.cursor_row() == line_index;
 
         let cursor_index = if is_active {
-            Some(editor.cursor_col())
+            let col = editor.cursor_col();
+            let line_len = line.utf16_len();
+            Some(col.min(line_len))
         } else {
             None
         };
 
-        let highlights = editable
-            .editor()
-            .read()
-            .get_visible_selection(EditorLine::Paragraph(line_index));
+        let highlights = if cursor_valid {
+            editable
+                .editor()
+                .read()
+                .get_visible_selection(EditorLine::Paragraph(line_index))
+        } else {
+            None
+        };
 
         let on_mouse_down = move |e: Event<MouseEventData>| {
             editable.process_event(EditableEvent::Down {
