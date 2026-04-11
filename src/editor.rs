@@ -924,7 +924,7 @@ impl Element for EditorElement {
                 display_text,
                 font_size,
                 &runs,
-                Some(available_width),
+                None,
             );
 
             let origin = point(bounds.origin.x + padding, y);
