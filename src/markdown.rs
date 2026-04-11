@@ -21,6 +21,7 @@ pub enum StyleKind {
     ListBullet,
     TableSyntax,
     BlockQuoteSyntax,
+    Wikilink,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -485,6 +486,19 @@ pub fn parse_inline_styles(text: &str) -> Vec<StyleSpan> {
                 continue;
             }
         }
+        // [[wikilink]] detection
+        if bytes[i] == b'[' && i + 1 < len && bytes[i + 1] == b'[' {
+            if let Some(end) = find_closing(text, i + 2, "]]") {
+                push_normal(&mut spans, normal_start, i);
+                spans.push(StyleSpan {
+                    range: i..end + 2,
+                    kind: StyleKind::Wikilink,
+                });
+                i = end + 2;
+                normal_start = i;
+                continue;
+            }
+        }
         i += 1;
     }
 
@@ -922,5 +936,34 @@ mod tests {
         assert_eq!(infos[0].1, 0);
         assert_eq!(infos[1].1, 9);
         assert_eq!(infos[2].1, 18);
+    }
+
+    #[test]
+    fn test_wikilink_inline() {
+        let spans = parse_inline_styles("see [[my note]] here");
+        let wl = spans.iter().find(|s| s.kind == StyleKind::Wikilink);
+        assert!(wl.is_some());
+        let wl = wl.unwrap();
+        assert_eq!(&"see [[my note]] here"[wl.range.clone()], "[[my note]]");
+    }
+
+    #[test]
+    fn test_wikilink_in_document() {
+        let doc = "# Notes\n\nSee [[other page]] for details";
+        let infos = parse_document(doc);
+        let normal_line = &infos[2].0;
+        assert_eq!(normal_line.kind, LineKind::Normal);
+        let wl = normal_line
+            .spans
+            .iter()
+            .find(|s| s.kind == StyleKind::Wikilink);
+        assert!(wl.is_some());
+    }
+
+    #[test]
+    fn test_wikilink_unclosed() {
+        let spans = parse_inline_styles("see [[incomplete");
+        // No wikilink span — unclosed bracket
+        assert!(spans.iter().all(|s| s.kind != StyleKind::Wikilink));
     }
 }

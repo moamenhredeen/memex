@@ -169,7 +169,7 @@ impl Element for EditorElement {
                         continue;
                     }
 
-                    let (weight, fstyle, color, bg, strike, use_mono) = match &span.kind {
+                    let (weight, fstyle, color, bg, underline, strike, use_mono) = match &span.kind {
                         StyleKind::Normal => (
                             info.kind.font_weight(),
                             FontStyle::Normal,
@@ -180,12 +180,14 @@ impl Element for EditorElement {
                             },
                             None,
                             None,
+                            None,
                             false,
                         ),
                         StyleKind::Bold => (
                             FontWeight::BOLD,
                             FontStyle::Normal,
                             base_color,
+                            None,
                             None,
                             None,
                             false,
@@ -196,12 +198,14 @@ impl Element for EditorElement {
                             base_color,
                             None,
                             None,
+                            None,
                             false,
                         ),
                         StyleKind::BoldItalic => (
                             FontWeight::BOLD,
                             FontStyle::Italic,
                             base_color,
+                            None,
                             None,
                             None,
                             false,
@@ -212,12 +216,14 @@ impl Element for EditorElement {
                             code_color,
                             Some(hsla(0.0, 0.0, 0.93, 1.0)),
                             None,
+                            None,
                             true,
                         ),
                         StyleKind::Strikethrough => (
                             info.kind.font_weight(),
                             FontStyle::Normal,
                             dim_color,
+                            None,
                             None,
                             Some(StrikethroughStyle {
                                 thickness: px(1.),
@@ -231,12 +237,14 @@ impl Element for EditorElement {
                             dim_color,
                             None,
                             None,
+                            None,
                             false,
                         ),
                         StyleKind::CodeFence => (
                             FontWeight::NORMAL,
                             FontStyle::Normal,
                             dim_color,
+                            None,
                             None,
                             None,
                             true,
@@ -247,12 +255,14 @@ impl Element for EditorElement {
                             hr_color,
                             None,
                             None,
+                            None,
                             false,
                         ),
                         StyleKind::ListBullet => (
                             FontWeight::BOLD,
                             FontStyle::Normal,
                             dim_color,
+                            None,
                             None,
                             None,
                             false,
@@ -263,6 +273,7 @@ impl Element for EditorElement {
                             dim_color,
                             None,
                             None,
+                            None,
                             true,
                         ),
                         StyleKind::BlockQuoteSyntax => (
@@ -270,6 +281,20 @@ impl Element for EditorElement {
                             FontStyle::Normal,
                             dim_color,
                             None,
+                            None,
+                            None,
+                            false,
+                        ),
+                        StyleKind::Wikilink => (
+                            FontWeight::NORMAL,
+                            FontStyle::Normal,
+                            hsla(0.58, 0.7, 0.45, 1.0),
+                            None,
+                            Some(UnderlineStyle {
+                                thickness: px(1.),
+                                color: Some(hsla(0.58, 0.7, 0.45, 1.0)),
+                                wavy: false,
+                            }),
                             None,
                             false,
                         ),
@@ -292,7 +317,7 @@ impl Element for EditorElement {
                         },
                         color,
                         background_color: bg,
-                        underline: None,
+                        underline,
                         strikethrough: strike,
                     });
                 }
