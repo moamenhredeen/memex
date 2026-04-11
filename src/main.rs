@@ -1,5 +1,6 @@
 mod app;
 mod config;
+mod editor;
 mod fs;
 mod state;
 mod vault;

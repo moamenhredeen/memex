@@ -2,16 +2,17 @@ use fuzzy_matcher::skim::SkimMatcherV2;
 use fuzzy_matcher::FuzzyMatcher;
 use gpui::*;
 use gpui_component::input::{Input, InputEvent, InputState};
-use gpui_component::text::TextView;
 use gpui_component::{h_flex, v_flex};
 
+use crate::editor::{EditorEvent, EditorState, EditorView};
 use crate::state::AppState;
 
 const MAX_RESULTS: usize = 15;
 
 pub struct Memex {
     state: AppState,
-    editor_input: Entity<InputState>,
+    editor_state: Entity<EditorState>,
+    editor_view: Entity<EditorView>,
     command_bar_input: Entity<InputState>,
     command_bar_visible: bool,
     vault_dropdown_visible: bool,
@@ -23,25 +24,32 @@ impl Memex {
         let state = AppState::new();
 
         let initial_content = if state.content.is_empty() {
-            "# Welcome to Memex\n\nOpen or create a vault to get started.\nUse **Ctrl+P** to search and create notes.\n\n---\n\nSupports *italic*, **bold**, ~~strikethrough~~, `code`, and more.".to_string()
+            "# Welcome to Memex
+
+Open or create a vault to get started.
+Use **Ctrl+P** to search and create notes.
+
+---
+
+Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.".to_string()
         } else {
             state.content.clone()
         };
 
-        let editor_input = cx.new(|cx| {
-            InputState::new(window, cx)
-                .multi_line(true)
-                .placeholder("Start typing...")
-                .default_value(initial_content)
+        let editor_state = cx.new(|cx| {
+            EditorState::new(initial_content, window, cx)
+        });
+
+        let editor_view = cx.new(|cx| {
+            EditorView::new(editor_state.clone(), cx)
         });
 
         let command_bar_input = cx.new(|cx| {
             InputState::new(window, cx).placeholder("Search notes...")
         });
 
-        // Track editor changes to mark dirty
-        let editor_sub = cx.subscribe_in(&editor_input, window, |this, _entity, ev: &InputEvent, _window, cx| {
-            if matches!(ev, InputEvent::Change) {
+        let editor_sub = cx.subscribe_in(&editor_state, window, |this, _entity, ev: &EditorEvent, _window, cx| {
+            if matches!(ev, EditorEvent::Changed) {
                 this.state.dirty = true;
                 cx.notify();
             }
@@ -49,7 +57,8 @@ impl Memex {
 
         Self {
             state,
-            editor_input,
+            editor_state,
+            editor_view,
             command_bar_input,
             command_bar_visible: false,
             vault_dropdown_visible: false,
@@ -58,7 +67,6 @@ impl Memex {
     }
 
     fn toggle_command_bar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.command_bar_visible = !self.command_bar_visible;
         if self.command_bar_visible {
             self.command_bar_input.update(cx, |input, cx| {
                 input.set_value("", window, cx);
@@ -66,12 +74,14 @@ impl Memex {
             self.command_bar_input.update(cx, |input, cx| {
                 input.focus(window, cx);
             });
+        } else {
+            self.editor_state.read(cx).focus(window);
         }
         cx.notify();
     }
 
     fn save(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        let text = self.editor_input.read(cx).value().to_string();
+        let text = self.editor_state.read(cx).content.clone();
         self.state.content = text;
         if let Err(e) = self.state.save() {
             eprintln!("save error: {}", e);
@@ -85,8 +95,8 @@ impl Memex {
             return;
         }
         let content = self.state.content.clone();
-        self.editor_input.update(cx, |input, cx| {
-            input.set_value(content, window, cx);
+        self.editor_state.update(cx, |state, cx| {
+            state.set_content(content, window, cx);
         });
         cx.notify();
     }
@@ -95,8 +105,8 @@ impl Memex {
         match self.state.create_note(title) {
             Ok(_) => {
                 let content = self.state.content.clone();
-                self.editor_input.update(cx, |input, cx| {
-                    input.set_value(content, window, cx);
+                self.editor_state.update(cx, |state, cx| {
+                    state.set_content(content, window, cx);
                 });
             }
             Err(e) => eprintln!("failed to create note: {}", e),
@@ -110,13 +120,12 @@ impl Memex {
             return;
         }
         let content = self.state.content.clone();
-        self.editor_input.update(cx, |input, cx| {
-            input.set_value(content, window, cx);
+        self.editor_state.update(cx, |state, cx| {
+            state.set_content(content, window, cx);
         });
         self.vault_dropdown_visible = false;
         cx.notify();
     }
-
     fn search_notes(&self, query: &str) -> Vec<(String, std::path::PathBuf)> {
         let vault = match &self.state.vault {
             Some(v) => v,
@@ -336,9 +345,7 @@ impl Memex {
 }
 
 impl Render for Memex {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let content = self.editor_input.read(cx).value().to_string();
-
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let mut root = v_flex()
             .id("memex-root")
             .size_full()
@@ -350,27 +357,12 @@ impl Render for Memex {
                     this.save(window, cx);
                 }
             }))
-            // Editor area — markdown preview
-            .child(
-                div()
-                    .id("markdown-preview")
-                    .flex_1()
-                    .w_full()
-                    .overflow_y_scroll()
-                    .p(px(24.))
-                    .child(
-                        TextView::markdown("md-view", content.clone(), window, cx)
-                    ),
-            )
-            // Raw editor input
+            // WYSIWYG Editor — takes full space
             .child(
                 div()
                     .flex_1()
                     .w_full()
-                    .p(px(8.))
-                    .border_t_1()
-                    .border_color(rgb(0xD0D0D8))
-                    .child(Input::new(&self.editor_input).w_full()),
+                    .child(self.editor_view.clone()),
             )
             // Status bar
             .child(self.render_status_bar(cx));
