@@ -1,8 +1,9 @@
 use gpui::*;
+use gpui_component::{h_flex, v_flex};
 
 use super::commands::EditorCommand;
 use super::element::EditorElement;
-use super::keymap::KeyCombo;
+use super::keymap::{EditorMode, KeyCombo};
 use super::{EditorState, TabAction, ShiftTabAction};
 
 pub struct EditorView {
@@ -33,7 +34,14 @@ impl Focusable for EditorView {
 
 impl Render for EditorView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
+        let state = self.state.read(cx);
+        let vim_enabled = state.vim.enabled;
+        let mode = state.mode;
+        let command_line = state.command_line.clone();
+        let status_msg = state.status_message.clone();
+        drop(state);
+
+        let mut root = v_flex()
             .id("editor-view")
             .size_full()
             .track_focus(&self.focus_handle)
@@ -61,23 +69,25 @@ impl Render for EditorView {
                     // In vim Normal/Visual modes, route to vim handler
                     if state.vim.enabled {
                         match mode {
-                            super::keymap::EditorMode::Normal
-                            | super::keymap::EditorMode::Visual
-                            | super::keymap::EditorMode::VisualLine => {
-                                // Escape in Insert mode → Normal mode
+                            EditorMode::Command => {
+                                state.handle_command_key(key, ctrl, window, cx);
+                                return;
+                            }
+                            EditorMode::Normal
+                            | EditorMode::Visual
+                            | EditorMode::VisualLine => {
                                 state.handle_vim_key(key, window, cx);
                                 return;
                             }
-                            super::keymap::EditorMode::Insert => {
+                            EditorMode::Insert => {
                                 if key == "escape" {
-                                    state.mode = super::keymap::EditorMode::Normal;
+                                    state.mode = EditorMode::Normal;
                                     state.history.break_coalescing();
                                     cx.notify();
                                     return;
                                 }
                                 // Fall through to normal keymap handling
                             }
-                            _ => {}
                         }
                     }
 
@@ -134,6 +144,76 @@ impl Render for EditorView {
                     cx.notify();
                 });
             }))
-            .child(EditorElement::new(&self.state))
+            // Editor canvas takes all available space
+            .child(
+                div().flex_1().w_full().child(EditorElement::new(&self.state)),
+            );
+
+        // Vim mode indicator + command bar at the bottom
+        if vim_enabled {
+            if mode == EditorMode::Command {
+                // Command bar: shows `:` prefix + typed input
+                root = root.child(
+                    h_flex()
+                        .w_full()
+                        .h(px(26.))
+                        .bg(rgb(0x1E1E2E))
+                        .items_center()
+                        .px(px(8.))
+                        .child(
+                            div()
+                                .text_size(px(14.))
+                                .font_family("FiraCode Nerd Font")
+                                .text_color(rgb(0xCDD6F4))
+                                .child(format!(":{}█", command_line)),
+                        ),
+                );
+            } else {
+                // Mode indicator bar with optional status message
+                let (mode_label, mode_bg) = match mode {
+                    EditorMode::Normal => ("NORMAL", rgb(0x89B4FA)),
+                    EditorMode::Insert => ("INSERT", rgb(0xA6E3A1)),
+                    EditorMode::Visual => ("VISUAL", rgb(0xCBA6F7)),
+                    EditorMode::VisualLine => ("V-LINE", rgb(0xCBA6F7)),
+                    EditorMode::Command => unreachable!(),
+                };
+
+                let right_text = status_msg.unwrap_or_default();
+
+                root = root.child(
+                    h_flex()
+                        .w_full()
+                        .h(px(26.))
+                        .bg(rgb(0x1E1E2E))
+                        .items_center()
+                        .child(
+                            div()
+                                .px(px(8.))
+                                .py(px(2.))
+                                .bg(mode_bg)
+                                .child(
+                                    div()
+                                        .text_size(px(12.))
+                                        .font_weight(FontWeight::BOLD)
+                                        .text_color(rgb(0x1E1E2E))
+                                        .child(mode_label),
+                                ),
+                        )
+                        .child(
+                            div()
+                                .flex_1()
+                                .px(px(8.))
+                                .child(
+                                    div()
+                                        .text_size(px(12.))
+                                        .text_color(rgb(0x6C7086))
+                                        .child(right_text),
+                                ),
+                        ),
+                );
+            }
+        }
+
+        root
     }
 }

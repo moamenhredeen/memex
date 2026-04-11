@@ -37,6 +37,10 @@ pub struct EditorState {
     pub vim: vim::VimState,
     pub display_map: display_map::DisplayMap,
     pub plugins: crate::plugin::PluginEngine,
+    /// Vim command-line input (the text after `:`)
+    pub command_line: String,
+    /// Status message shown briefly after command execution
+    pub status_message: Option<String>,
     _blink_sub: Subscription,
 }
 
@@ -77,6 +81,8 @@ impl EditorState {
             vim: vim::VimState::new(),
             display_map: display,
             plugins,
+            command_line: String::new(),
+            status_message: None,
             _blink_sub,
         }
     }
@@ -480,10 +486,148 @@ impl EditorState {
             }
         }
     }
+
+    /// Handle key input while in Command mode (`:` bar).
+    pub fn handle_command_key(
+        &mut self,
+        key: &str,
+        ctrl: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match key {
+            "escape" => {
+                self.command_line.clear();
+                self.mode = keymap::EditorMode::Normal;
+                cx.notify();
+            }
+            "enter" => {
+                let cmd = self.command_line.clone();
+                self.command_line.clear();
+                self.mode = keymap::EditorMode::Normal;
+                self.execute_ex_command(&cmd, window, cx);
+                cx.notify();
+            }
+            "backspace" => {
+                if self.command_line.is_empty() {
+                    self.mode = keymap::EditorMode::Normal;
+                } else {
+                    self.command_line.pop();
+                }
+                cx.notify();
+            }
+            _ if ctrl => {
+                // Ctrl+U clears the command line (like bash/vim)
+                if key == "u" {
+                    self.command_line.clear();
+                    cx.notify();
+                }
+            }
+            _ => {
+                // Append printable characters
+                if key.len() == 1 {
+                    self.command_line.push_str(key);
+                    cx.notify();
+                }
+            }
+        }
+    }
+
+    /// Execute an ex-style command (`:w`, `:q`, `:set`, etc.).
+    /// Returns a status message string.
+    fn execute_ex_command(
+        &mut self,
+        input: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let input = input.trim();
+        let (cmd, args) = match input.split_once(' ') {
+            Some((c, a)) => (c, a.trim()),
+            None => (input, ""),
+        };
+
+        match cmd {
+            "w" | "write" => {
+                cx.emit(EditorEvent::RequestSave);
+                self.status_message = Some("Saving...".into());
+            }
+            "q" | "quit" => {
+                cx.emit(EditorEvent::RequestQuit);
+            }
+            "wq" | "x" => {
+                cx.emit(EditorEvent::RequestSave);
+                cx.emit(EditorEvent::RequestQuit);
+            }
+            "set" => {
+                self.status_message = Some(self.handle_set_command(args));
+            }
+            "noh" | "nohlsearch" => {
+                self.status_message = Some("Search highlighting cleared".into());
+            }
+            "e" | "edit" => {
+                if args.is_empty() {
+                    // Reload current file
+                    self.status_message = Some("Specify a file path".into());
+                } else {
+                    cx.emit(EditorEvent::RequestOpen(args.to_string()));
+                }
+            }
+            _ => {
+                // Try plugin commands
+                let content = self.content();
+                let cursor = self.cursor;
+                let sel = (self.selected_range.start, self.selected_range.end);
+                let result = self.plugins.run_command(cmd, &content, cursor, sel);
+                match result {
+                    Some(cmds) => {
+                        for c in cmds {
+                            self.dispatch(c, window, cx);
+                        }
+                    }
+                    None => {
+                        self.status_message =
+                            Some(format!("E492: Not an editor command: {}", cmd));
+                    }
+                }
+            }
+        }
+    }
+
+    fn handle_set_command(&mut self, args: &str) -> String {
+        if args.is_empty() {
+            return format!(
+                "vim={} mode={}",
+                self.vim.enabled,
+                self.mode.label()
+            );
+        }
+
+        match args {
+            "vim" => {
+                self.vim.enabled = true;
+                self.mode = keymap::EditorMode::Normal;
+                "Vim mode enabled".into()
+            }
+            "novim" => {
+                self.vim.enabled = false;
+                self.mode = keymap::EditorMode::Insert;
+                "Vim mode disabled".into()
+            }
+            "number" | "nu" => "Line numbers not yet implemented".into(),
+            "nonumber" | "nonu" => "Line numbers not yet implemented".into(),
+            "wrap" => "Soft wrap not yet implemented".into(),
+            "nowrap" => "Soft wrap not yet implemented".into(),
+            _ => format!("Unknown option: {}", args),
+        }
+    }
 }
 
 pub enum EditorEvent {
     Changed,
+    RequestSave,
+    RequestQuit,
+    RequestOpen(String),
 }
 
 impl EventEmitter<EditorEvent> for EditorState {}

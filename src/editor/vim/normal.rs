@@ -174,6 +174,12 @@ pub(super) fn handle_normal_key(
             VimAction::None
         }
 
+        // Command mode
+        ":" => {
+            state.clear_pending();
+            VimAction::ChangeMode(EditorMode::Command)
+        }
+
         _ => {
             state.clear_pending();
             VimAction::None

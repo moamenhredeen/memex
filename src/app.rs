@@ -66,10 +66,25 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         let editor_sub = cx.subscribe_in(
             &editor_state,
             window,
-            |this, _entity, ev: &EditorEvent, _window, cx| {
-                if matches!(ev, EditorEvent::Changed) {
-                    this.state.dirty = true;
-                    cx.notify();
+            |this, _entity, ev: &EditorEvent, window, cx| {
+                match ev {
+                    EditorEvent::Changed => {
+                        this.state.dirty = true;
+                        cx.notify();
+                    }
+                    EditorEvent::RequestSave => {
+                        this.save(window, cx);
+                        this.editor_state.update(cx, |state, _cx| {
+                            state.status_message = Some("Written".into());
+                        });
+                    }
+                    EditorEvent::RequestQuit => {
+                        cx.quit();
+                    }
+                    EditorEvent::RequestOpen(path) => {
+                        let path = std::path::PathBuf::from(path.clone());
+                        this.open_note_by_path(path, window, cx);
+                    }
                 }
             },
         );

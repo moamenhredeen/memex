@@ -52,12 +52,13 @@ impl EntityInputHandler for EditorState {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // In vim Normal/Visual modes, suppress OS text input — keys are handled by vim
+        // In vim Normal/Visual/Command modes, suppress OS text input
         if self.vim.enabled {
             match self.mode {
                 super::keymap::EditorMode::Normal
                 | super::keymap::EditorMode::Visual
-                | super::keymap::EditorMode::VisualLine => return,
+                | super::keymap::EditorMode::VisualLine
+                | super::keymap::EditorMode::Command => return,
                 _ => {}
             }
         }
@@ -109,12 +110,13 @@ impl EntityInputHandler for EditorState {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // In vim Normal/Visual modes, suppress OS text input
+        // In vim Normal/Visual/Command modes, suppress OS text input
         if self.vim.enabled {
             match self.mode {
                 super::keymap::EditorMode::Normal
                 | super::keymap::EditorMode::Visual
-                | super::keymap::EditorMode::VisualLine => return,
+                | super::keymap::EditorMode::VisualLine
+                | super::keymap::EditorMode::Command => return,
                 _ => {}
             }
         }
