@@ -2,6 +2,7 @@ mod blink;
 pub mod commands;
 mod element;
 mod input;
+pub mod keymap;
 mod movement;
 mod table;
 pub mod undo;
@@ -29,6 +30,8 @@ pub struct EditorState {
     pub last_line_layouts: Vec<LinePaintInfo>,
     pub last_bounds: Option<Bounds<Pixels>>,
     pub history: undo::UndoHistory,
+    pub mode: keymap::EditorMode,
+    pub keymap: keymap::Keymap,
     _blink_sub: Subscription,
 }
 
@@ -58,6 +61,8 @@ impl EditorState {
             last_line_layouts: Vec::new(),
             last_bounds: None,
             history: undo::UndoHistory::new(),
+            mode: keymap::EditorMode::Insert,
+            keymap: keymap::Keymap::new(),
             _blink_sub,
         }
     }

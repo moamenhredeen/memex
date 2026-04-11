@@ -2,6 +2,7 @@ use gpui::*;
 
 use super::commands::EditorCommand;
 use super::element::EditorElement;
+use super::keymap::KeyCombo;
 use super::{EditorState, TabAction, ShiftTabAction};
 
 pub struct EditorView {
@@ -50,31 +51,18 @@ impl Render for EditorView {
             }))
             .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
                 let key = e.keystroke.key.as_str();
-                let shift = e.keystroke.modifiers.shift;
                 let ctrl = e.keystroke.modifiers.control;
+                let shift = e.keystroke.modifiers.shift;
+                let alt = e.keystroke.modifiers.alt;
 
-                let cmd = match (key, ctrl, shift) {
-                    ("z", true, false) => Some(EditorCommand::Undo),
-                    ("z", true, true) => Some(EditorCommand::Redo),
-                    ("backspace", false, _) => Some(EditorCommand::DeleteBackward),
-                    ("delete", false, _) => Some(EditorCommand::DeleteForward),
-                    ("left", false, true) => Some(EditorCommand::SelectLeft),
-                    ("right", false, true) => Some(EditorCommand::SelectRight),
-                    ("left", false, false) => Some(EditorCommand::MoveLeft),
-                    ("right", false, false) => Some(EditorCommand::MoveRight),
-                    ("up", false, _) => Some(EditorCommand::MoveUp),
-                    ("down", false, _) => Some(EditorCommand::MoveDown),
-                    ("home", false, _) => Some(EditorCommand::MoveLineStart),
-                    ("end", false, _) => Some(EditorCommand::MoveLineEnd),
-                    ("enter", false, _) => Some(EditorCommand::InsertNewline),
-                    _ => None,
-                };
+                let combo = KeyCombo::from_keystroke(key, ctrl, shift, alt);
 
-                if let Some(cmd) = cmd {
-                    this.state.update(cx, |state, cx| {
+                this.state.update(cx, |state, cx| {
+                    let mode = state.mode;
+                    if let Some(cmd) = state.keymap.resolve(mode, &combo) {
                         state.dispatch(cmd, window, cx);
-                    });
-                }
+                    }
+                });
             }))
             .on_mouse_down(
                 MouseButton::Left,
