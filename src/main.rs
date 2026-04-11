@@ -1,7 +1,10 @@
+#![recursion_limit = "1024"]
+
 mod app;
 mod config;
 mod editor;
 mod fs;
+mod markdown;
 mod state;
 mod vault;
 

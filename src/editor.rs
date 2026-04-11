@@ -2,6 +2,40 @@ use std::ops::Range;
 
 use gpui::*;
 
+use crate::markdown::{
+    analyze_line, is_separator_row, parse_table_cells, LineInfo, LineKind, StyleKind,
+};
+
+// gpui-specific helpers for LineKind
+impl LineKind {
+    fn font_size(&self) -> Pixels {
+        match self {
+            LineKind::Heading(1) => px(28.),
+            LineKind::Heading(2) => px(24.),
+            LineKind::Heading(3) => px(20.),
+            LineKind::Heading(4) => px(18.),
+            LineKind::Heading(_) => px(16.),
+            LineKind::CodeBlock => px(14.),
+            _ => px(15.),
+        }
+    }
+
+    fn line_height(&self) -> Pixels {
+        let fs = self.font_size();
+        match self {
+            LineKind::Heading(_) => fs * 1.5,
+            _ => fs * 1.6,
+        }
+    }
+
+    fn font_weight(&self) -> FontWeight {
+        match self {
+            LineKind::Heading(_) => FontWeight::BOLD,
+            _ => FontWeight::NORMAL,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Blink cursor helper
 // ---------------------------------------------------------------------------
@@ -75,356 +109,6 @@ impl BlinkCursor {
 // ---------------------------------------------------------------------------
 // Markdown style spans — computed per line for TextRun generation
 // ---------------------------------------------------------------------------
-
-#[derive(Clone, Debug)]
-struct StyleSpan {
-    range: Range<usize>,
-    kind: StyleKind,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-enum StyleKind {
-    Normal,
-    Bold,
-    Italic,
-    BoldItalic,
-    Code,
-    Strikethrough,
-    HeadingSyntax,
-    CodeFence,
-    HrSyntax,
-    ListBullet,
-    TableSyntax,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-enum LineKind {
-    Normal,
-    Heading(u8),
-    CodeBlock,
-    ThematicBreak,
-    ListItem,
-    TableRow,
-}
-
-impl LineKind {
-    fn font_size(&self) -> Pixels {
-        match self {
-            LineKind::Heading(1) => px(28.),
-            LineKind::Heading(2) => px(24.),
-            LineKind::Heading(3) => px(20.),
-            LineKind::Heading(4) => px(18.),
-            LineKind::Heading(_) => px(16.),
-            LineKind::CodeBlock => px(14.),
-            _ => px(15.),
-        }
-    }
-
-    fn line_height(&self) -> Pixels {
-        let fs = self.font_size();
-        match self {
-            LineKind::Heading(_) => fs * 1.5,
-            _ => fs * 1.6,
-        }
-    }
-
-    fn font_weight(&self) -> FontWeight {
-        match self {
-            LineKind::Heading(_) => FontWeight::BOLD,
-            _ => FontWeight::NORMAL,
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Line analysis — determines kind and inline style spans
-// ---------------------------------------------------------------------------
-
-struct LineInfo {
-    kind: LineKind,
-    spans: Vec<StyleSpan>,
-}
-
-fn analyze_line(line: &str, in_code_block: &mut bool) -> LineInfo {
-    let trimmed = line.trim();
-
-    // Code fence toggle
-    if trimmed.starts_with("```") {
-        *in_code_block = !*in_code_block;
-        return LineInfo {
-            kind: LineKind::CodeBlock,
-            spans: vec![StyleSpan {
-                range: 0..line.len().max(1),
-                kind: StyleKind::CodeFence,
-            }],
-        };
-    }
-
-    // Inside code block
-    if *in_code_block {
-        return LineInfo {
-            kind: LineKind::CodeBlock,
-            spans: vec![StyleSpan {
-                range: 0..line.len().max(1),
-                kind: StyleKind::Code,
-            }],
-        };
-    }
-
-    // Thematic break
-    if trimmed == "---" || trimmed == "***" || trimmed == "___" {
-        return LineInfo {
-            kind: LineKind::ThematicBreak,
-            spans: vec![StyleSpan {
-                range: 0..line.len().max(1),
-                kind: StyleKind::HrSyntax,
-            }],
-        };
-    }
-
-    // Headings — check longest prefix first
-    for level in (1u8..=6).rev() {
-        let prefix = "#".repeat(level as usize);
-        if let Some(rest) = trimmed.strip_prefix(&prefix) {
-            if rest.is_empty() || rest.starts_with(' ') {
-                return heading_line_info(line, level);
-            }
-        }
-    }
-
-    // List items: - item, * item, + item, 1. item, - [ ] task, - [x] task
-    if let Some(bullet_end) = detect_list_prefix(trimmed) {
-        let leading_ws = line.len() - line.trim_start().len();
-        let prefix_end = leading_ws + bullet_end;
-        return list_line_info(line, prefix_end);
-    }
-
-    // Table rows: | col1 | col2 |
-    if trimmed.starts_with('|') && trimmed.ends_with('|') && trimmed.len() > 1 {
-        return table_line_info(line);
-    }
-
-    // Normal line with inline styles
-    let spans = parse_inline_styles(line);
-    LineInfo {
-        kind: LineKind::Normal,
-        spans,
-    }
-}
-
-fn detect_list_prefix(trimmed: &str) -> Option<usize> {
-    // Unordered: - , * , +
-    if trimmed.starts_with("- [ ] ")
-        || trimmed.starts_with("- [x] ")
-        || trimmed.starts_with("- [X] ")
-    {
-        return Some(6);
-    }
-    if (trimmed.starts_with("- ") || trimmed.starts_with("* ") || trimmed.starts_with("+ "))
-        && trimmed.len() > 2
-    {
-        return Some(2);
-    }
-    // Ordered: 1. , 2. , etc.
-    let bytes = trimmed.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() && bytes[i].is_ascii_digit() {
-        i += 1;
-    }
-    if i > 0 && i < bytes.len() - 1 && bytes[i] == b'.' && bytes[i + 1] == b' ' {
-        return Some(i + 2);
-    }
-    None
-}
-
-fn list_line_info(line: &str, prefix_end: usize) -> LineInfo {
-    let mut spans = vec![StyleSpan {
-        range: 0..prefix_end,
-        kind: StyleKind::ListBullet,
-    }];
-    if prefix_end < line.len() {
-        let content_spans = parse_inline_styles(&line[prefix_end..]);
-        for mut s in content_spans {
-            s.range = (s.range.start + prefix_end)..(s.range.end + prefix_end);
-            spans.push(s);
-        }
-    }
-    LineInfo {
-        kind: LineKind::ListItem,
-        spans,
-    }
-}
-
-fn table_line_info(line: &str) -> LineInfo {
-    let mut spans = Vec::new();
-    let bytes = line.as_bytes();
-    let mut i = 0;
-    let mut normal_start = 0;
-
-    while i < bytes.len() {
-        if bytes[i] == b'|' {
-            if i > normal_start {
-                spans.push(StyleSpan {
-                    range: normal_start..i,
-                    kind: StyleKind::Normal,
-                });
-            }
-            spans.push(StyleSpan {
-                range: i..i + 1,
-                kind: StyleKind::TableSyntax,
-            });
-            normal_start = i + 1;
-        }
-        i += 1;
-    }
-    if normal_start < line.len() {
-        spans.push(StyleSpan {
-            range: normal_start..line.len(),
-            kind: StyleKind::Normal,
-        });
-    }
-    if spans.is_empty() {
-        spans.push(StyleSpan {
-            range: 0..line.len().max(1),
-            kind: StyleKind::Normal,
-        });
-    }
-    LineInfo {
-        kind: LineKind::TableRow,
-        spans,
-    }
-}
-
-fn heading_line_info(line: &str, level: u8) -> LineInfo {
-    let prefix_end = line.find(' ').map(|i| i + 1).unwrap_or(line.len());
-    let mut spans = vec![StyleSpan {
-        range: 0..prefix_end,
-        kind: StyleKind::HeadingSyntax,
-    }];
-    if prefix_end < line.len() {
-        let content_spans = parse_inline_styles(&line[prefix_end..]);
-        for mut s in content_spans {
-            s.range = (s.range.start + prefix_end)..(s.range.end + prefix_end);
-            spans.push(s);
-        }
-    }
-    LineInfo {
-        kind: LineKind::Heading(level),
-        spans,
-    }
-}
-
-fn parse_inline_styles(text: &str) -> Vec<StyleSpan> {
-    if text.is_empty() {
-        return vec![StyleSpan {
-            range: 0..0,
-            kind: StyleKind::Normal,
-        }];
-    }
-
-    let mut spans = Vec::new();
-    let bytes = text.as_bytes();
-    let len = bytes.len();
-    let mut i = 0;
-    let mut normal_start = 0;
-
-    while i < len {
-        // Skip if not at a char boundary (inside multi-byte UTF-8)
-        if !text.is_char_boundary(i) {
-            i += 1;
-            continue;
-        }
-        // Only check ASCII markdown delimiters
-        if bytes[i] == b'`' {
-            if let Some(end) = find_closing(text, i + 1, "`") {
-                push_normal(&mut spans, normal_start, i);
-                spans.push(StyleSpan {
-                    range: i..end + 1,
-                    kind: StyleKind::Code,
-                });
-                i = end + 1;
-                normal_start = i;
-                continue;
-            }
-        }
-        if bytes[i] == b'*' && i + 2 < len && bytes[i + 1] == b'*' && bytes[i + 2] == b'*' {
-            if let Some(end) = find_closing(text, i + 3, "***") {
-                push_normal(&mut spans, normal_start, i);
-                spans.push(StyleSpan {
-                    range: i..end + 3,
-                    kind: StyleKind::BoldItalic,
-                });
-                i = end + 3;
-                normal_start = i;
-                continue;
-            }
-        }
-        if bytes[i] == b'*' && i + 1 < len && bytes[i + 1] == b'*' {
-            if let Some(end) = find_closing(text, i + 2, "**") {
-                push_normal(&mut spans, normal_start, i);
-                spans.push(StyleSpan {
-                    range: i..end + 2,
-                    kind: StyleKind::Bold,
-                });
-                i = end + 2;
-                normal_start = i;
-                continue;
-            }
-        }
-        if bytes[i] == b'*' {
-            if let Some(end) = find_closing(text, i + 1, "*") {
-                push_normal(&mut spans, normal_start, i);
-                spans.push(StyleSpan {
-                    range: i..end + 1,
-                    kind: StyleKind::Italic,
-                });
-                i = end + 1;
-                normal_start = i;
-                continue;
-            }
-        }
-        if bytes[i] == b'~' && i + 1 < len && bytes[i + 1] == b'~' {
-            if let Some(end) = find_closing(text, i + 2, "~~") {
-                push_normal(&mut spans, normal_start, i);
-                spans.push(StyleSpan {
-                    range: i..end + 2,
-                    kind: StyleKind::Strikethrough,
-                });
-                i = end + 2;
-                normal_start = i;
-                continue;
-            }
-        }
-        i += 1;
-    }
-
-    push_normal(&mut spans, normal_start, len);
-
-    if spans.is_empty() {
-        spans.push(StyleSpan {
-            range: 0..text.len(),
-            kind: StyleKind::Normal,
-        });
-    }
-
-    spans
-}
-
-fn push_normal(spans: &mut Vec<StyleSpan>, start: usize, end: usize) {
-    if end > start {
-        spans.push(StyleSpan {
-            range: start..end,
-            kind: StyleKind::Normal,
-        });
-    }
-}
-
-fn find_closing(text: &str, start: usize, delimiter: &str) -> Option<usize> {
-    if start >= text.len() {
-        return None;
-    }
-    text[start..].find(delimiter).map(|pos| start + pos)
-}
 
 // ---------------------------------------------------------------------------
 // EditorState — content, cursor, selection
@@ -589,6 +273,269 @@ impl EditorState {
 
     fn range_from_utf16(&self, range: &Range<usize>) -> Range<usize> {
         self.offset_from_utf16(range.start)..self.offset_from_utf16(range.end)
+    }
+
+    /// Returns true if cursor is on a table line and handles the tab.
+    pub fn handle_table_tab(&mut self, cx: &mut Context<Self>) -> bool {
+        let pos = self.cursor.min(self.content.len());
+
+        // Find current line boundaries
+        let line_start = self.content[..pos].rfind('\n').map(|i| i + 1).unwrap_or(0);
+        let line_end = self.content[pos..]
+            .find('\n')
+            .map(|p| pos + p)
+            .unwrap_or(self.content.len());
+        let current_line = &self.content[line_start..line_end];
+
+        // Check if current line is a table row
+        let trimmed = current_line.trim();
+        if !trimmed.starts_with('|') || !trimmed.ends_with('|') || trimmed.len() <= 1 {
+            return false;
+        }
+
+        // Find the full table block: contiguous lines starting and ending with |
+        let table_start = self.find_table_start(line_start);
+        let table_end = self.find_table_end(line_end);
+
+        // Determine which cell the cursor is in (row_idx, col_idx)
+        let cursor_row_start = line_start;
+        let cursor_col_in_line = pos - line_start;
+        let cursor_col_idx = self.cell_index_at(current_line, cursor_col_in_line);
+
+        // Parse the full table into rows of cells
+        let table_text = &self.content[table_start..table_end];
+        let mut rows: Vec<Vec<String>> = Vec::new();
+        let mut is_separator = Vec::new();
+        for row_str in table_text.split('\n') {
+            let trimmed = row_str.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let cells = parse_table_cells(trimmed);
+            is_separator.push(is_separator_row(trimmed));
+            rows.push(cells);
+        }
+
+        if rows.is_empty() {
+            return false;
+        }
+
+        // Find max column count and max width per column
+        let max_cols = rows.iter().map(|r| r.len()).max().unwrap_or(0);
+        if max_cols == 0 {
+            return false;
+        }
+        let mut col_widths = vec![3usize; max_cols]; // minimum 3 chars
+        for (ri, row) in rows.iter().enumerate() {
+            if is_separator[ri] {
+                continue;
+            }
+            for (ci, cell) in row.iter().enumerate() {
+                col_widths[ci] = col_widths[ci].max(cell.trim().len());
+            }
+        }
+
+        // Determine cursor's row index within the table
+        let mut cursor_row_idx = 0;
+        {
+            let mut offset = table_start;
+            for row_str in table_text.split('\n') {
+                if offset == cursor_row_start {
+                    break;
+                }
+                offset += row_str.len() + 1;
+                cursor_row_idx += 1;
+            }
+        }
+
+        // Calculate next cell position (skip separator rows)
+        let (next_row, next_col, need_new_row) =
+            self.next_table_cell(cursor_row_idx, cursor_col_idx, &rows, &is_separator, max_cols);
+
+        // If we need a new row, add it
+        if need_new_row {
+            rows.push(vec![String::new(); max_cols]);
+            is_separator.push(false);
+        }
+
+        // Pad all rows to max_cols
+        for row in &mut rows {
+            while row.len() < max_cols {
+                row.push(String::new());
+            }
+        }
+
+        // Rebuild the aligned table
+        let mut new_table = String::new();
+        for (ri, row) in rows.iter().enumerate() {
+            new_table.push('|');
+            for (ci, cell) in row.iter().enumerate() {
+                let w = col_widths[ci];
+                if is_separator[ri] {
+                    new_table.push(' ');
+                    for _ in 0..w {
+                        new_table.push('-');
+                    }
+                    new_table.push(' ');
+                } else {
+                    let trimmed_cell = cell.trim();
+                    new_table.push(' ');
+                    new_table.push_str(trimmed_cell);
+                    for _ in trimmed_cell.len()..w {
+                        new_table.push(' ');
+                    }
+                    new_table.push(' ');
+                }
+                new_table.push('|');
+            }
+            if ri < rows.len() - 1 {
+                new_table.push('\n');
+            }
+        }
+
+        // Calculate new cursor position: after "| " in the target cell
+        let mut new_cursor = table_start;
+        for ri in 0..next_row {
+            // row length + 1 for newline
+            let row_len = self.formatted_row_len(&rows[ri], &col_widths, is_separator[ri]);
+            new_cursor += row_len + 1;
+        }
+        // Within the target row, find the target cell start
+        new_cursor += 1; // leading |
+        for ci in 0..next_col {
+            new_cursor += 1 + col_widths[ci] + 1 + 1; // space + content + space + |
+        }
+        new_cursor += 1; // space after |
+
+        // Place cursor at end of cell content
+        let cell_content = rows[next_row][next_col].trim();
+        new_cursor += cell_content.len();
+
+        // Replace table text in content
+        let mut new_content = String::with_capacity(self.content.len());
+        new_content.push_str(&self.content[..table_start]);
+        new_content.push_str(&new_table);
+        new_content.push_str(&self.content[table_end..]);
+        self.content = new_content;
+        let new_cursor = new_cursor.min(self.content.len());
+        self.selected_range = new_cursor..new_cursor;
+        self.cursor = new_cursor;
+        self.marked_range.take();
+        self.blink_cursor.update(cx, |bc, cx| bc.pause(cx));
+        cx.emit(EditorEvent::Changed);
+        cx.notify();
+        true
+    }
+
+    fn find_table_start(&self, line_start: usize) -> usize {
+        let mut start = line_start;
+        // Walk backwards to find contiguous table rows
+        while start > 0 {
+            let prev_end = start - 1; // the \n before this line
+            let prev_start = self.content[..prev_end]
+                .rfind('\n')
+                .map(|i| i + 1)
+                .unwrap_or(0);
+            let prev_line = self.content[prev_start..prev_end].trim();
+            if prev_line.starts_with('|') && prev_line.ends_with('|') && prev_line.len() > 1 {
+                start = prev_start;
+            } else {
+                break;
+            }
+        }
+        start
+    }
+
+    fn find_table_end(&self, line_end: usize) -> usize {
+        let mut end = line_end;
+        // Walk forward to find contiguous table rows
+        while end < self.content.len() {
+            if self.content.as_bytes()[end] != b'\n' {
+                break;
+            }
+            let next_start = end + 1;
+            let next_end = self.content[next_start..]
+                .find('\n')
+                .map(|p| next_start + p)
+                .unwrap_or(self.content.len());
+            let next_line = self.content[next_start..next_end].trim();
+            if next_line.starts_with('|') && next_line.ends_with('|') && next_line.len() > 1 {
+                end = next_end;
+            } else {
+                break;
+            }
+        }
+        end
+    }
+
+    fn cell_index_at(&self, line: &str, col_offset: usize) -> usize {
+        let mut cell_idx = 0;
+        let mut in_cell = false;
+        for (i, ch) in line.char_indices() {
+            if i >= col_offset {
+                break;
+            }
+            if ch == '|' {
+                if in_cell {
+                    cell_idx += 1;
+                }
+                in_cell = true;
+            }
+        }
+        // cell_idx is 0-based (first cell after first |)
+        if cell_idx > 0 {
+            cell_idx - 1
+        } else {
+            0
+        }
+    }
+
+    fn next_table_cell(
+        &self,
+        row: usize,
+        col: usize,
+        rows: &[Vec<String>],
+        is_separator: &[bool],
+        max_cols: usize,
+    ) -> (usize, usize, bool) {
+        let mut r = row;
+        let mut c = col + 1;
+
+        loop {
+            if c >= max_cols {
+                c = 0;
+                r += 1;
+            }
+            if r >= rows.len() {
+                // Need a new row
+                return (r, 0, true);
+            }
+            if !is_separator[r] {
+                return (r, c, false);
+            }
+            // Skip separator row — move to next row, first column
+            c = 0;
+            r += 1;
+        }
+    }
+
+    fn formatted_row_len(
+        &self,
+        row: &[String],
+        col_widths: &[usize],
+        is_sep: bool,
+    ) -> usize {
+        // | content |content |...| 
+        let mut len = 1; // leading |
+        for (ci, _) in row.iter().enumerate() {
+            let w = if ci < col_widths.len() {
+                col_widths[ci]
+            } else {
+                3
+            };
+            len += 1 + w + 1 + 1; // space + content_width + space + |
+        }
+        len
     }
 }
 
@@ -1312,7 +1259,9 @@ impl Render for EditorView {
                             state.replace_text_in_range(None, "\n", window, cx);
                         }
                         "tab" => {
-                            state.replace_text_in_range(None, "    ", window, cx);
+                            if !state.handle_table_tab(cx) {
+                                state.replace_text_in_range(None, "    ", window, cx);
+                            }
                         }
                         _ => {}
                     }
@@ -1367,3 +1316,5 @@ impl Render for EditorView {
             .child(EditorElement::new(&self.state))
     }
 }
+
+
