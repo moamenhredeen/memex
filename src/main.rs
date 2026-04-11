@@ -1,6 +1,8 @@
 mod app;
 mod editor;
+mod fs;
 mod markdown;
+mod state;
 mod theme;
 
 use freya::prelude::*;

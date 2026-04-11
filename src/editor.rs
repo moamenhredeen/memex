@@ -2,40 +2,57 @@ use freya::prelude::*;
 use freya::text_edit::*;
 
 use crate::markdown::{self, HeadingLevel};
+use crate::state::AppState;
 use crate::theme;
 
-const INITIAL_TEXT: &str = "\
+const WELCOME_TEXT: &str = "\
 # Welcome to Memex
 
-## A note-taking editor
-
-### Built with Rust + Freya
-
-Start typing here. Lines starting with # become headings.
-
-## Features
-- Mixed font sizes for headings
-- Live rendering as you type
-- Markdown-style heading detection
-
-### Try it
-Type a new line starting with # to see it become a heading.
+Open or create a vault to get started.
+Use Ctrl+P to search and create notes.
 ";
 
 /// WYSIWYG markdown editor — each line is rendered with its heading style
 /// while remaining fully editable.
 #[derive(PartialEq)]
-pub struct Editor;
+pub struct Editor {
+    pub app_state: State<AppState>,
+}
 
 impl Component for Editor {
     fn render(&self) -> impl IntoElement {
-        let mut editable = use_editable(|| INITIAL_TEXT.to_string(), EditableConfig::new);
+        let mut app_state = self.app_state;
+        let initial_content = app_state.read().content.clone();
+        let content_for_init = if initial_content.is_empty() {
+            WELCOME_TEXT.to_string()
+        } else {
+            initial_content
+        };
+
+        let mut editable = use_editable(move || content_for_init.clone(), EditableConfig::new);
+
+        // Sync editor content back to AppState on every change
+        let editor_text = editable.editor().read().to_string();
+        if editor_text != app_state.read().content {
+            app_state.write().content = editor_text;
+            app_state.write().dirty = true;
+        }
 
         let on_global_pointer_press = move |_: Event<PointerEventData>| {
             editable.process_event(EditableEvent::Release);
         };
 
         let on_global_key_down = move |e: Event<KeyboardEventData>| {
+            // Ctrl+S → save
+            if e.modifiers.contains(Modifiers::CONTROL) && e.key == Key::Character("s".to_string())
+            {
+                let mut state = app_state.write();
+                if let Err(err) = state.save() {
+                    eprintln!("save error: {}", err);
+                }
+                return;
+            }
+
             editable.process_event(EditableEvent::KeyDown {
                 key: &e.key,
                 modifiers: e.modifiers,
