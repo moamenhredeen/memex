@@ -33,23 +33,17 @@ impl Component for Editor {
 
         let mut editable = use_editable(move || content_for_init.clone(), EditableConfig::new);
 
-        // Sync editor content back to AppState on every change
-        let editor_text = editable.editor().read().to_string();
-        if editor_text != app_state.read().content {
-            let mut state = app_state.write();
-            state.content = editor_text;
-            state.dirty = true;
-        }
-
         let on_global_pointer_press = move |_: Event<PointerEventData>| {
             editable.process_event(EditableEvent::Release);
         };
 
         let on_global_key_down = move |e: Event<KeyboardEventData>| {
-            // Ctrl+S → save
+            // Ctrl+S → sync content from editable to app_state, then save
             if e.modifiers.contains(Modifiers::CONTROL) && e.key == Key::Character("s".to_string())
             {
+                let text = editable.editor().read().to_string();
                 let mut state = app_state.write();
+                state.content = text;
                 if let Err(err) = state.save() {
                     eprintln!("save error: {}", err);
                 }

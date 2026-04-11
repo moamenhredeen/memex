@@ -152,11 +152,11 @@ impl Component for CommandBar {
             );
         }
 
-        // Overlay
+        // Overlay — use global positioning to avoid torin cache invalidation issues
         rect()
             .width(Size::fill())
             .height(Size::fill())
-            .position(Position::new_absolute())
+            .position(Position::new_global())
             .background((0, 0, 0, 120))
             .on_global_key_down(on_key_down)
             .child(

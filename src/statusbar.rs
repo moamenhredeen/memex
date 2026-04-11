@@ -106,7 +106,7 @@ impl Component for VaultSwitcher {
                 rect()
                     .width(Size::px(0.))
                     .height(Size::px(0.))
-                    .position(Position::new_absolute().bottom(STATUSBAR_HEIGHT + 4.)),
+                    .position(Position::new_global()),
             );
         }
 
@@ -132,7 +132,7 @@ impl Component for VaultDropdown {
             .background(DROPDOWN_BG)
             .corner_radius(6.)
             .padding(4.)
-            .position(Position::new_absolute().bottom(STATUSBAR_HEIGHT + 4.));
+            .position(Position::new_global().bottom(STATUSBAR_HEIGHT + 4.).left(12.));
 
         for vault_path in &self.vault_paths {
             let name = vault_path
