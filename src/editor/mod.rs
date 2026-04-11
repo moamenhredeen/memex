@@ -1,5 +1,6 @@
 mod blink;
 pub mod commands;
+mod display_map;
 mod element;
 mod input;
 pub mod keymap;
@@ -34,6 +35,7 @@ pub struct EditorState {
     pub mode: keymap::EditorMode,
     pub keymap: keymap::Keymap,
     pub vim: vim::VimState,
+    pub display_map: display_map::DisplayMap,
     _blink_sub: Subscription,
 }
 
@@ -51,6 +53,9 @@ impl EditorState {
         let blink_cursor = cx.new(|_cx| BlinkCursor::new());
         let _blink_sub = cx.observe(&blink_cursor, |_, _, cx| cx.notify());
 
+        let mut display = display_map::DisplayMap::new(px(24.));
+        display.update(&content);
+
         Self {
             cursor: 0,
             selected_range: 0..0,
@@ -66,6 +71,7 @@ impl EditorState {
             mode: keymap::EditorMode::Insert,
             keymap: keymap::Keymap::new(),
             vim: vim::VimState::new(),
+            display_map: display,
             _blink_sub,
         }
     }
@@ -86,6 +92,7 @@ impl EditorState {
         self.selected_range = 0..0;
         self.marked_range = None;
         self.history.clear();
+        self.display_map.update(&content);
         cx.notify();
     }
 
@@ -103,6 +110,7 @@ impl EditorState {
         if !new_text.is_empty() {
             self.buffer.insert(char_start, new_text);
         }
+        self.display_map.invalidate();
     }
 
     pub fn cursor_offset(&self) -> usize {

@@ -1,40 +1,8 @@
 use gpui::*;
 
-use crate::markdown::{
-    LineKind, StyleKind, parse_document,
-};
+use crate::markdown::{LineKind, StyleKind};
 
 use super::{EditorState, LinePaintInfo};
-
-// gpui-specific helpers for LineKind
-impl LineKind {
-    fn font_size(&self) -> Pixels {
-        match self {
-            LineKind::Heading(1) => px(28.),
-            LineKind::Heading(2) => px(24.),
-            LineKind::Heading(3) => px(20.),
-            LineKind::Heading(4) => px(18.),
-            LineKind::Heading(_) => px(16.),
-            LineKind::CodeBlock => px(14.),
-            _ => px(15.),
-        }
-    }
-
-    fn line_height(&self) -> Pixels {
-        let fs = self.font_size();
-        match self {
-            LineKind::Heading(_) => fs * 1.5,
-            _ => fs * 1.6,
-        }
-    }
-
-    fn font_weight(&self) -> FontWeight {
-        match self {
-            LineKind::Heading(_) => FontWeight::BOLD,
-            _ => FontWeight::NORMAL,
-        }
-    }
-}
 
 pub struct EditorElement {
     state: Entity<EditorState>,
@@ -102,23 +70,32 @@ impl Element for EditorElement {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
+        // Update display map if content changed (needs mutable access)
+        self.state.update(cx, |state, _cx| {
+            let content = state.content();
+            state.display_map.update(&content);
+        });
+
         let state = self.state.read(cx);
         let padding = px(24.);
         let scroll = state.scroll_offset;
         let cursor_pos = state.cursor;
         let selected_range = state.selected_range.clone();
         let content = state.content();
+        let dm = &state.display_map;
 
         let text_system = window.text_system().clone();
         let text_style = window.text_style();
         let font_family: SharedString = text_style.font_family.clone();
 
-        let line_infos = parse_document(&content);
+        // Virtual scrolling: only shape lines in viewport + overscan
+        let overscan = 20;
+        let (vis_first, vis_last) =
+            dm.visible_range(scroll, bounds.size.height, overscan);
 
         let mut prepaint_lines = Vec::new();
         let mut cursor_quad: Option<PaintQuad> = None;
         let mut selection_quads = Vec::new();
-        let mut y = bounds.origin.y + padding - scroll;
 
         let base_color = hsla(0.0, 0.0, 0.16, 1.0);
         let dim_color = hsla(0.0, 0.0, 0.6, 1.0);
@@ -126,16 +103,18 @@ impl Element for EditorElement {
         let heading_color = hsla(0.0, 0.0, 0.08, 1.0);
         let hr_color = hsla(0.0, 0.0, 0.7, 1.0);
 
-        for (info, content_offset) in &line_infos {
-            let line_start = *content_offset;
+        for i in vis_first..vis_last {
+            let info = dm.line_info(i);
+            let line_start = dm.line_offset(i);
+            let line_height = dm.line_height(i);
+            let font_size = info.kind.display_font_size();
+            let y = bounds.origin.y + padding - scroll + dm.line_y(i);
+
             let line_text_end = content[line_start..]
                 .find('\n')
                 .map(|p| line_start + p)
                 .unwrap_or(content.len());
             let line_text = &content[line_start..line_text_end];
-
-            let font_size = info.kind.font_size();
-            let line_height = info.kind.line_height();
 
             let display_text: SharedString = if line_text.is_empty() {
                 " ".into()
@@ -169,136 +148,137 @@ impl Element for EditorElement {
                         continue;
                     }
 
-                    let (weight, fstyle, color, bg, underline, strike, use_mono) = match &span.kind {
-                        StyleKind::Normal => (
-                            info.kind.font_weight(),
-                            FontStyle::Normal,
-                            if matches!(info.kind, LineKind::Heading(_)) {
-                                heading_color
-                            } else {
-                                base_color
-                            },
-                            None,
-                            None,
-                            None,
-                            false,
-                        ),
-                        StyleKind::Bold => (
-                            FontWeight::BOLD,
-                            FontStyle::Normal,
-                            base_color,
-                            None,
-                            None,
-                            None,
-                            false,
-                        ),
-                        StyleKind::Italic => (
-                            info.kind.font_weight(),
-                            FontStyle::Italic,
-                            base_color,
-                            None,
-                            None,
-                            None,
-                            false,
-                        ),
-                        StyleKind::BoldItalic => (
-                            FontWeight::BOLD,
-                            FontStyle::Italic,
-                            base_color,
-                            None,
-                            None,
-                            None,
-                            false,
-                        ),
-                        StyleKind::Code => (
-                            FontWeight::NORMAL,
-                            FontStyle::Normal,
-                            code_color,
-                            Some(hsla(0.0, 0.0, 0.93, 1.0)),
-                            None,
-                            None,
-                            true,
-                        ),
-                        StyleKind::Strikethrough => (
-                            info.kind.font_weight(),
-                            FontStyle::Normal,
-                            dim_color,
-                            None,
-                            None,
-                            Some(StrikethroughStyle {
-                                thickness: px(1.),
-                                color: Some(dim_color),
-                            }),
-                            false,
-                        ),
-                        StyleKind::HeadingSyntax => (
-                            FontWeight::BOLD,
-                            FontStyle::Normal,
-                            dim_color,
-                            None,
-                            None,
-                            None,
-                            false,
-                        ),
-                        StyleKind::CodeFence => (
-                            FontWeight::NORMAL,
-                            FontStyle::Normal,
-                            dim_color,
-                            None,
-                            None,
-                            None,
-                            true,
-                        ),
-                        StyleKind::HrSyntax => (
-                            FontWeight::NORMAL,
-                            FontStyle::Normal,
-                            hr_color,
-                            None,
-                            None,
-                            None,
-                            false,
-                        ),
-                        StyleKind::ListBullet => (
-                            FontWeight::BOLD,
-                            FontStyle::Normal,
-                            dim_color,
-                            None,
-                            None,
-                            None,
-                            false,
-                        ),
-                        StyleKind::TableSyntax => (
-                            FontWeight::NORMAL,
-                            FontStyle::Normal,
-                            dim_color,
-                            None,
-                            None,
-                            None,
-                            true,
-                        ),
-                        StyleKind::BlockQuoteSyntax => (
-                            FontWeight::NORMAL,
-                            FontStyle::Normal,
-                            dim_color,
-                            None,
-                            None,
-                            None,
-                            false,
-                        ),
-                        StyleKind::Wikilink => (
-                            FontWeight::NORMAL,
-                            FontStyle::Normal,
-                            hsla(0.58, 0.7, 0.45, 1.0),
-                            None,
-                            Some(UnderlineStyle {
-                                thickness: px(1.),
-                                color: Some(hsla(0.58, 0.7, 0.45, 1.0)),
-                                wavy: false,
-                            }),
-                            None,
-                            false,
-                        ),
-                    };
+                    let (weight, fstyle, color, bg, underline, strike, use_mono) =
+                        match &span.kind {
+                            StyleKind::Normal => (
+                                info.kind.display_font_weight(),
+                                FontStyle::Normal,
+                                if matches!(info.kind, LineKind::Heading(_)) {
+                                    heading_color
+                                } else {
+                                    base_color
+                                },
+                                None,
+                                None,
+                                None,
+                                false,
+                            ),
+                            StyleKind::Bold => (
+                                FontWeight::BOLD,
+                                FontStyle::Normal,
+                                base_color,
+                                None,
+                                None,
+                                None,
+                                false,
+                            ),
+                            StyleKind::Italic => (
+                                info.kind.display_font_weight(),
+                                FontStyle::Italic,
+                                base_color,
+                                None,
+                                None,
+                                None,
+                                false,
+                            ),
+                            StyleKind::BoldItalic => (
+                                FontWeight::BOLD,
+                                FontStyle::Italic,
+                                base_color,
+                                None,
+                                None,
+                                None,
+                                false,
+                            ),
+                            StyleKind::Code => (
+                                FontWeight::NORMAL,
+                                FontStyle::Normal,
+                                code_color,
+                                Some(hsla(0.0, 0.0, 0.93, 1.0)),
+                                None,
+                                None,
+                                true,
+                            ),
+                            StyleKind::Strikethrough => (
+                                info.kind.display_font_weight(),
+                                FontStyle::Normal,
+                                dim_color,
+                                None,
+                                None,
+                                Some(StrikethroughStyle {
+                                    thickness: px(1.),
+                                    color: Some(dim_color),
+                                }),
+                                false,
+                            ),
+                            StyleKind::HeadingSyntax => (
+                                FontWeight::BOLD,
+                                FontStyle::Normal,
+                                dim_color,
+                                None,
+                                None,
+                                None,
+                                false,
+                            ),
+                            StyleKind::CodeFence => (
+                                FontWeight::NORMAL,
+                                FontStyle::Normal,
+                                dim_color,
+                                None,
+                                None,
+                                None,
+                                true,
+                            ),
+                            StyleKind::HrSyntax => (
+                                FontWeight::NORMAL,
+                                FontStyle::Normal,
+                                hr_color,
+                                None,
+                                None,
+                                None,
+                                false,
+                            ),
+                            StyleKind::ListBullet => (
+                                FontWeight::BOLD,
+                                FontStyle::Normal,
+                                dim_color,
+                                None,
+                                None,
+                                None,
+                                false,
+                            ),
+                            StyleKind::TableSyntax => (
+                                FontWeight::NORMAL,
+                                FontStyle::Normal,
+                                dim_color,
+                                None,
+                                None,
+                                None,
+                                true,
+                            ),
+                            StyleKind::BlockQuoteSyntax => (
+                                FontWeight::NORMAL,
+                                FontStyle::Normal,
+                                dim_color,
+                                None,
+                                None,
+                                None,
+                                false,
+                            ),
+                            StyleKind::Wikilink => (
+                                FontWeight::NORMAL,
+                                FontStyle::Normal,
+                                hsla(0.58, 0.7, 0.45, 1.0),
+                                None,
+                                Some(UnderlineStyle {
+                                    thickness: px(1.),
+                                    color: Some(hsla(0.58, 0.7, 0.45, 1.0)),
+                                    wavy: false,
+                                }),
+                                None,
+                                false,
+                            ),
+                        };
 
                     let family = if use_mono || matches!(info.kind, LineKind::TableRow) {
                         SharedString::from("FiraCode Nerd Font Mono")
@@ -330,7 +310,7 @@ impl Element for EditorElement {
                     len: display_text.len(),
                     font: Font {
                         family: font_family.clone(),
-                        weight: info.kind.font_weight(),
+                        weight: info.kind.display_font_weight(),
                         style: FontStyle::Normal,
                         features: FontFeatures::default(),
                         fallbacks: None,
@@ -397,8 +377,6 @@ impl Element for EditorElement {
                 line_height,
                 content_offset: line_start,
             });
-
-            y += line_height;
         }
 
         // Default cursor if none set
