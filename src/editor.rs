@@ -6,6 +6,9 @@ use crate::markdown::{
     analyze_line, is_separator_row, parse_table_cells, LineInfo, LineKind, StyleKind,
 };
 
+// Tab action for key binding
+actions!(editor, [TabAction, ShiftTabAction]);
+
 // gpui-specific helpers for LineKind
 impl LineKind {
     fn font_size(&self) -> Pixels {
@@ -293,11 +296,11 @@ impl EditorState {
             return false;
         }
 
-        // Find the full table block: contiguous lines starting and ending with |
+        // Find the full table block
         let table_start = self.find_table_start(line_start);
         let table_end = self.find_table_end(line_end);
 
-        // Determine which cell the cursor is in (row_idx, col_idx)
+        // Determine which cell the cursor is in
         let cursor_row_start = line_start;
         let cursor_col_in_line = pos - line_start;
         let cursor_col_idx = self.cell_index_at(current_line, cursor_col_in_line);
@@ -469,25 +472,12 @@ impl EditorState {
     }
 
     fn cell_index_at(&self, line: &str, col_offset: usize) -> usize {
-        let mut cell_idx = 0;
-        let mut in_cell = false;
-        for (i, ch) in line.char_indices() {
-            if i >= col_offset {
-                break;
-            }
-            if ch == '|' {
-                if in_cell {
-                    cell_idx += 1;
-                }
-                in_cell = true;
-            }
-        }
-        // cell_idx is 0-based (first cell after first |)
-        if cell_idx > 0 {
-            cell_idx - 1
-        } else {
-            0
-        }
+        // Count pipe characters before col_offset; cell index = pipes - 1
+        let pipes = line[..col_offset.min(line.len())]
+            .chars()
+            .filter(|&c| c == '|')
+            .count();
+        pipes.saturating_sub(1)
     }
 
     fn next_table_cell(
@@ -523,7 +513,7 @@ impl EditorState {
         &self,
         row: &[String],
         col_widths: &[usize],
-        is_sep: bool,
+        _is_sep: bool,
     ) -> usize {
         // | content |content |...| 
         let mut len = 1; // leading |
@@ -1171,6 +1161,14 @@ impl Render for EditorView {
             .size_full()
             .track_focus(&self.focus_handle)
             .cursor(CursorStyle::IBeam)
+            .key_context("Editor")
+            .on_action(cx.listener(|this, _: &TabAction, window, cx| {
+                this.state.update(cx, |state, cx| {
+                    if !state.handle_table_tab(cx) {
+                        state.replace_text_in_range(None, "    ", window, cx);
+                    }
+                });
+            }))
             .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
                 let key = e.keystroke.key.as_str();
                 let shift = e.keystroke.modifiers.shift;
@@ -1257,11 +1255,6 @@ impl Render for EditorView {
                         }
                         "enter" => {
                             state.replace_text_in_range(None, "\n", window, cx);
-                        }
-                        "tab" => {
-                            if !state.handle_table_tab(cx) {
-                                state.replace_text_in_range(None, "    ", window, cx);
-                            }
                         }
                         _ => {}
                     }

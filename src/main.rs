@@ -16,6 +16,10 @@ fn main() {
         .run(move |cx| {
             gpui_component::init(cx);
 
+            cx.bind_keys([
+                gpui::KeyBinding::new("tab", editor::TabAction, Some("Editor")),
+            ]);
+
             cx.open_window(
                 gpui::WindowOptions {
                     titlebar: Some(gpui::TitlebarOptions {
