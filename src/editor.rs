@@ -1,17 +1,13 @@
 use std::ops::Range;
-use std::sync::Arc;
-use std::time::Duration;
 
 use gpui::*;
-use pulldown_cmark::{Event, Options, Parser, Tag, TagEnd};
 
 // ---------------------------------------------------------------------------
-// Blink cursor helper (adapted from gpui-component)
+// Blink cursor helper
 // ---------------------------------------------------------------------------
 
 pub struct BlinkCursor {
     visible: bool,
-    paused: bool,
     epoch: usize,
     _task: Task<()>,
 }
@@ -19,554 +15,369 @@ pub struct BlinkCursor {
 impl BlinkCursor {
     pub fn new() -> Self {
         Self {
-            visible: false,
-            paused: false,
+            visible: true,
             epoch: 0,
             _task: Task::ready(()),
         }
     }
 
     pub fn start(&mut self, cx: &mut Context<Self>) {
+        self.visible = true;
+        self.epoch += 1;
         self.blink(self.epoch, cx);
     }
 
-    pub fn stop(&mut self, cx: &mut Context<Self>) {
-        self.epoch = 0;
-        self.visible = false;
-        cx.notify();
-    }
-
-    fn next_epoch(&mut self) -> usize {
-        self.epoch += 1;
-        self.epoch
-    }
-
     fn blink(&mut self, epoch: usize, cx: &mut Context<Self>) {
-        if self.paused || epoch != self.epoch {
-            self.visible = true;
-            return;
-        }
-        self.visible = !self.visible;
-        cx.notify();
-        let epoch = self.next_epoch();
         self._task = cx.spawn(async move |this, cx| {
-            Timer::after(Duration::from_millis(500)).await;
-            if let Some(this) = this.upgrade() {
-                this.update(cx, |this, cx| this.blink(epoch, cx)).ok();
+            loop {
+                Timer::after(std::time::Duration::from_millis(500)).await;
+                if let Some(this) = this.upgrade() {
+                    let should_continue = this.update(cx, |this, cx| {
+                        if this.epoch != epoch {
+                            return false;
+                        }
+                        this.visible = !this.visible;
+                        cx.notify();
+                        true
+                    }).unwrap_or(false);
+                    if !should_continue {
+                        break;
+                    }
+                } else {
+                    break;
+                }
             }
         });
-    }
-
-    pub fn visible(&self) -> bool {
-        self.paused || self.visible
     }
 
     pub fn pause(&mut self, cx: &mut Context<Self>) {
-        self.paused = true;
         self.visible = true;
-        cx.notify();
-        let epoch = self.next_epoch();
+        self.epoch += 1;
+        let epoch = self.epoch;
         self._task = cx.spawn(async move |this, cx| {
-            Timer::after(Duration::from_millis(300)).await;
+            Timer::after(std::time::Duration::from_millis(300)).await;
             if let Some(this) = this.upgrade() {
                 this.update(cx, |this, cx| {
-                    this.paused = false;
-                    this.blink(epoch, cx);
-                })
-                .ok();
+                    if this.epoch == epoch {
+                        this.blink(epoch, cx);
+                    }
+                }).ok();
             }
         });
+        cx.notify();
+    }
+
+    pub fn visible(&self) -> bool {
+        self.visible
     }
 }
 
 // ---------------------------------------------------------------------------
-// Document model — parsed from markdown
+// Markdown style spans — computed per line for TextRun generation
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Debug)]
-pub struct Block {
-    /// What kind of block
-    pub kind: BlockKind,
-    /// Range in raw content string
-    pub source_range: Range<usize>,
-    /// Display text (without markdown syntax characters)
-    pub display_text: String,
-    /// Inline formatting spans within display_text
-    pub spans: Vec<InlineSpan>,
+struct StyleSpan {
+    range: Range<usize>,
+    kind: StyleKind,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub enum BlockKind {
-    Heading(u8),      // level 1-6
-    Paragraph,
-    CodeBlock,
-    ListItem(bool),   // ordered?
-    TaskItem(bool),   // checked?
-    BlockQuote,
-    ThematicBreak,
-}
-
-#[derive(Clone, Debug)]
-pub struct InlineSpan {
-    /// Range within the block's display_text
-    pub range: Range<usize>,
-    pub style: SpanStyle,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub enum SpanStyle {
+enum StyleKind {
     Normal,
     Bold,
     Italic,
     BoldItalic,
     Code,
     Strikethrough,
+    HeadingSyntax,
+    CodeFence,
+    HrSyntax,
 }
 
-impl BlockKind {
-    pub fn font_size(&self) -> Pixels {
+#[derive(Clone, Debug, PartialEq)]
+enum LineKind {
+    Normal,
+    Heading(u8),
+    CodeBlock,
+    ThematicBreak,
+}
+
+impl LineKind {
+    fn font_size(&self) -> Pixels {
         match self {
-            BlockKind::Heading(1) => px(28.),
-            BlockKind::Heading(2) => px(24.),
-            BlockKind::Heading(3) => px(20.),
-            BlockKind::Heading(4) => px(18.),
-            BlockKind::Heading(_) => px(16.),
-            BlockKind::CodeBlock => px(14.),
+            LineKind::Heading(1) => px(28.),
+            LineKind::Heading(2) => px(24.),
+            LineKind::Heading(3) => px(20.),
+            LineKind::Heading(4) => px(18.),
+            LineKind::Heading(_) => px(16.),
+            LineKind::CodeBlock => px(14.),
             _ => px(15.),
         }
     }
 
-    pub fn line_height_multiplier(&self) -> f32 {
+    fn line_height(&self) -> Pixels {
+        let fs = self.font_size();
         match self {
-            BlockKind::Heading(_) => 1.4,
-            BlockKind::CodeBlock => 1.5,
-            _ => 1.6,
+            LineKind::Heading(_) => fs * 1.5,
+            _ => fs * 1.6,
         }
     }
 
-    pub fn font_weight(&self) -> FontWeight {
+    fn font_weight(&self) -> FontWeight {
         match self {
-            BlockKind::Heading(_) => FontWeight::BOLD,
+            LineKind::Heading(_) => FontWeight::BOLD,
             _ => FontWeight::NORMAL,
         }
     }
-
-    pub fn bottom_spacing(&self) -> Pixels {
-        match self {
-            BlockKind::Heading(1) => px(16.),
-            BlockKind::Heading(2) => px(14.),
-            BlockKind::Heading(3) => px(12.),
-            BlockKind::Heading(_) => px(10.),
-            BlockKind::ThematicBreak => px(16.),
-            _ => px(8.),
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
-// Markdown parser → Block AST
+// Line analysis — determines kind and inline style spans
 // ---------------------------------------------------------------------------
 
-pub fn parse_blocks(content: &str) -> Vec<Block> {
-    let mut blocks = Vec::new();
-    let opts = Options::ENABLE_STRIKETHROUGH | Options::ENABLE_TASKLISTS;
-    let parser = Parser::new_ext(content, opts);
+struct LineInfo {
+    kind: LineKind,
+    spans: Vec<StyleSpan>,
+}
 
-    let mut current_block_kind: Option<BlockKind> = None;
-    let mut display_text = String::new();
-    let mut spans: Vec<InlineSpan> = Vec::new();
-    let mut style_stack: Vec<SpanStyle> = vec![SpanStyle::Normal];
-    let mut block_source_start: usize = 0;
+fn analyze_line(line: &str, in_code_block: &mut bool) -> LineInfo {
+    let trimmed = line.trim();
 
-    // Track source position via offset_iter
-    let parser = Parser::new_ext(content, opts).into_offset_iter();
+    // Code fence toggle
+    if trimmed.starts_with("```") {
+        *in_code_block = !*in_code_block;
+        return LineInfo {
+            kind: LineKind::CodeBlock,
+            spans: vec![StyleSpan {
+                range: 0..line.len().max(1),
+                kind: StyleKind::CodeFence,
+            }],
+        };
+    }
 
-    for (event, range) in parser {
-        match event {
-            Event::Start(tag) => match tag {
-                Tag::Heading { level, .. } => {
-                    current_block_kind = Some(BlockKind::Heading(level as u8));
-                    display_text.clear();
-                    spans.clear();
-                    block_source_start = range.start;
-                }
-                Tag::Paragraph => {
-                    if current_block_kind.is_none() {
-                        current_block_kind = Some(BlockKind::Paragraph);
-                        display_text.clear();
-                        spans.clear();
-                        block_source_start = range.start;
-                    }
-                }
-                Tag::CodeBlock(_) => {
-                    current_block_kind = Some(BlockKind::CodeBlock);
-                    display_text.clear();
-                    spans.clear();
-                    block_source_start = range.start;
-                }
-                Tag::List(ordered) => {
-                    // List container — items handled individually
-                    let _ = ordered;
-                }
-                Tag::Item => {
-                    current_block_kind = Some(BlockKind::ListItem(false));
-                    display_text.clear();
-                    spans.clear();
-                    block_source_start = range.start;
-                }
-                Tag::BlockQuote(_) => {
-                    if current_block_kind.is_none() {
-                        current_block_kind = Some(BlockKind::BlockQuote);
-                        display_text.clear();
-                        spans.clear();
-                        block_source_start = range.start;
-                    }
-                }
-                Tag::Strong => {
-                    let current = style_stack.last().cloned().unwrap_or(SpanStyle::Normal);
-                    let new_style = match current {
-                        SpanStyle::Italic => SpanStyle::BoldItalic,
-                        _ => SpanStyle::Bold,
-                    };
-                    style_stack.push(new_style);
-                }
-                Tag::Emphasis => {
-                    let current = style_stack.last().cloned().unwrap_or(SpanStyle::Normal);
-                    let new_style = match current {
-                        SpanStyle::Bold => SpanStyle::BoldItalic,
-                        _ => SpanStyle::Italic,
-                    };
-                    style_stack.push(new_style);
-                }
-                Tag::Strikethrough => {
-                    style_stack.push(SpanStyle::Strikethrough);
-                }
-                _ => {}
-            },
-            Event::End(tag_end) => match tag_end {
-                TagEnd::Heading(_) | TagEnd::Paragraph | TagEnd::CodeBlock
-                | TagEnd::Item | TagEnd::BlockQuote(_) => {
-                    if let Some(kind) = current_block_kind.take() {
-                        blocks.push(Block {
-                            kind,
-                            source_range: block_source_start..range.end,
-                            display_text: display_text.clone(),
-                            spans: spans.clone(),
-                        });
-                    }
-                    display_text.clear();
-                    spans.clear();
-                    style_stack.clear();
-                    style_stack.push(SpanStyle::Normal);
-                }
-                TagEnd::Strong | TagEnd::Emphasis | TagEnd::Strikethrough => {
-                    style_stack.pop();
-                }
-                _ => {}
-            },
-            Event::Text(text) => {
-                if current_block_kind.is_some() {
-                    let clean = text.replace('\n', " ");
-                    let start = display_text.len();
-                    display_text.push_str(&clean);
-                    let end = display_text.len();
-                    let style = style_stack.last().cloned().unwrap_or(SpanStyle::Normal);
-                    spans.push(InlineSpan {
-                        range: start..end,
-                        style,
-                    });
-                }
+    // Inside code block
+    if *in_code_block {
+        return LineInfo {
+            kind: LineKind::CodeBlock,
+            spans: vec![StyleSpan {
+                range: 0..line.len().max(1),
+                kind: StyleKind::Code,
+            }],
+        };
+    }
+
+    // Thematic break
+    if trimmed == "---" || trimmed == "***" || trimmed == "___" {
+        return LineInfo {
+            kind: LineKind::ThematicBreak,
+            spans: vec![StyleSpan {
+                range: 0..line.len().max(1),
+                kind: StyleKind::HrSyntax,
+            }],
+        };
+    }
+
+    // Headings — check longest prefix first
+    for level in (1u8..=6).rev() {
+        let prefix = "#".repeat(level as usize);
+        if let Some(rest) = trimmed.strip_prefix(&prefix) {
+            if rest.is_empty() || rest.starts_with(' ') {
+                return heading_line_info(line, level);
             }
-            Event::Code(code) => {
-                if current_block_kind.is_some() {
-                    let clean = code.replace('\n', " ");
-                    let start = display_text.len();
-                    display_text.push_str(&clean);
-                    let end = display_text.len();
-                    spans.push(InlineSpan {
-                        range: start..end,
-                        style: SpanStyle::Code,
-                    });
-                }
-            }
-            Event::SoftBreak | Event::HardBreak => {
-                if current_block_kind.is_some() {
-                    // Use space instead of newline — shape_line forbids newlines
-                    let start = display_text.len();
-                    display_text.push(' ');
-                    let end = display_text.len();
-                    spans.push(InlineSpan {
-                        range: start..end,
-                        style: SpanStyle::Normal,
-                    });
-                }
-            }
-            Event::Rule => {
-                blocks.push(Block {
-                    kind: BlockKind::ThematicBreak,
-                    source_range: range.clone(),
-                    display_text: String::new(),
-                    spans: Vec::new(),
-                });
-            }
-            Event::TaskListMarker(checked) => {
-                if let Some(ref mut kind) = current_block_kind {
-                    *kind = BlockKind::TaskItem(checked);
-                }
-            }
-            _ => {}
         }
     }
 
-    // If content is empty or has no markdown, treat as single paragraph
-    if blocks.is_empty() && !content.is_empty() {
-        let clean = content.replace('\n', " ");
-        let len = clean.len();
-        blocks.push(Block {
-            kind: BlockKind::Paragraph,
-            source_range: 0..content.len(),
-            display_text: clean,
-            spans: vec![InlineSpan {
-                range: 0..len,
-                style: SpanStyle::Normal,
-            }],
+    // Normal line with inline styles
+    let spans = parse_inline_styles(line);
+    LineInfo {
+        kind: LineKind::Normal,
+        spans,
+    }
+}
+
+fn heading_line_info(line: &str, level: u8) -> LineInfo {
+    let prefix_end = line.find(' ').map(|i| i + 1).unwrap_or(line.len());
+    let mut spans = vec![StyleSpan {
+        range: 0..prefix_end,
+        kind: StyleKind::HeadingSyntax,
+    }];
+    if prefix_end < line.len() {
+        let content_spans = parse_inline_styles(&line[prefix_end..]);
+        for mut s in content_spans {
+            s.range = (s.range.start + prefix_end)..(s.range.end + prefix_end);
+            spans.push(s);
+        }
+    }
+    LineInfo {
+        kind: LineKind::Heading(level),
+        spans,
+    }
+}
+
+fn parse_inline_styles(text: &str) -> Vec<StyleSpan> {
+    if text.is_empty() {
+        return vec![StyleSpan {
+            range: 0..0,
+            kind: StyleKind::Normal,
+        }];
+    }
+
+    let mut spans = Vec::new();
+    let bytes = text.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
+    let mut normal_start = 0;
+
+    while i < len {
+        // Inline code: `...`
+        if bytes[i] == b'`' {
+            if let Some(end) = find_closing(text, i + 1, "`") {
+                push_normal(&mut spans, normal_start, i);
+                spans.push(StyleSpan {
+                    range: i..end + 1,
+                    kind: StyleKind::Code,
+                });
+                i = end + 1;
+                normal_start = i;
+                continue;
+            }
+        }
+        // Bold+italic: ***...***
+        if i + 2 < len && &text[i..i + 3] == "***" {
+            if let Some(end) = find_closing(text, i + 3, "***") {
+                push_normal(&mut spans, normal_start, i);
+                spans.push(StyleSpan {
+                    range: i..end + 3,
+                    kind: StyleKind::BoldItalic,
+                });
+                i = end + 3;
+                normal_start = i;
+                continue;
+            }
+        }
+        // Bold: **...**
+        if i + 1 < len && &text[i..i + 2] == "**" {
+            if let Some(end) = find_closing(text, i + 2, "**") {
+                push_normal(&mut spans, normal_start, i);
+                spans.push(StyleSpan {
+                    range: i..end + 2,
+                    kind: StyleKind::Bold,
+                });
+                i = end + 2;
+                normal_start = i;
+                continue;
+            }
+        }
+        // Italic: *...*
+        if bytes[i] == b'*' {
+            if let Some(end) = find_closing(text, i + 1, "*") {
+                push_normal(&mut spans, normal_start, i);
+                spans.push(StyleSpan {
+                    range: i..end + 1,
+                    kind: StyleKind::Italic,
+                });
+                i = end + 1;
+                normal_start = i;
+                continue;
+            }
+        }
+        // Strikethrough: ~~...~~
+        if i + 1 < len && &text[i..i + 2] == "~~" {
+            if let Some(end) = find_closing(text, i + 2, "~~") {
+                push_normal(&mut spans, normal_start, i);
+                spans.push(StyleSpan {
+                    range: i..end + 2,
+                    kind: StyleKind::Strikethrough,
+                });
+                i = end + 2;
+                normal_start = i;
+                continue;
+            }
+        }
+        i += 1;
+    }
+
+    push_normal(&mut spans, normal_start, len);
+
+    if spans.is_empty() {
+        spans.push(StyleSpan {
+            range: 0..text.len(),
+            kind: StyleKind::Normal,
         });
     }
 
-    blocks
+    spans
 }
 
-// ---------------------------------------------------------------------------
-// Cursor mapping: raw content offset ↔ block + display offset
-// ---------------------------------------------------------------------------
-
-/// Given a cursor byte offset in raw content, find which block it belongs to
-/// and where in the display text it maps to.
-pub fn cursor_to_block_position(cursor: usize, blocks: &[Block]) -> Option<(usize, usize)> {
-    for (i, block) in blocks.iter().enumerate() {
-        if cursor >= block.source_range.start && cursor <= block.source_range.end {
-            // Map raw offset to display text offset
-            // Simple approach: clamp within display text length
-            let offset_in_source = cursor - block.source_range.start;
-            let display_offset = offset_in_source.min(block.display_text.len());
-            return Some((i, display_offset));
-        }
-    }
-    // Cursor is beyond all blocks — put at end of last block
-    if let Some(last) = blocks.last() {
-        Some((blocks.len() - 1, last.display_text.len()))
-    } else {
-        None
+fn push_normal(spans: &mut Vec<StyleSpan>, start: usize, end: usize) {
+    if end > start {
+        spans.push(StyleSpan {
+            range: start..end,
+            kind: StyleKind::Normal,
+        });
     }
 }
 
-/// Given a block index and display text offset, map back to raw content offset.
-pub fn block_position_to_cursor(block_idx: usize, display_offset: usize, blocks: &[Block]) -> usize {
-    if let Some(block) = blocks.get(block_idx) {
-        let clamped = display_offset.min(block.display_text.len());
-        // Approximate: source_range.start + display offset
-        // This works well for plain paragraphs, headings (syntax is prefix-only)
-        (block.source_range.start + clamped).min(block.source_range.end)
-    } else if let Some(last) = blocks.last() {
-        last.source_range.end
-    } else {
-        0
+fn find_closing(text: &str, start: usize, delimiter: &str) -> Option<usize> {
+    if start >= text.len() {
+        return None;
     }
+    text[start..].find(delimiter).map(|pos| start + pos)
 }
 
 // ---------------------------------------------------------------------------
-// EditorState — the entity holding all editor state
+// EditorState — content, cursor, selection
 // ---------------------------------------------------------------------------
 
 pub struct EditorState {
     pub content: String,
     pub cursor: usize,
-    pub selection: Option<(usize, usize)>, // anchor, head
-    pub blocks: Vec<Block>,
+    pub selected_range: Range<usize>,
+    pub selection_reversed: bool,
+    pub marked_range: Option<Range<usize>>,
     pub focus_handle: FocusHandle,
     pub blink_cursor: Entity<BlinkCursor>,
     pub scroll_offset: Pixels,
+    pub last_line_layouts: Vec<LinePaintInfo>,
+    pub last_bounds: Option<Bounds<Pixels>>,
     _blink_sub: Subscription,
 }
 
+#[derive(Clone)]
+pub struct LinePaintInfo {
+    pub content_offset: usize,
+    pub shaped_line: ShapedLine,
+    pub y: Pixels,
+    pub line_height: Pixels,
+}
+
 impl EditorState {
-    pub fn new(content: String, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let blocks = parse_blocks(&content);
+    pub fn new(content: String, _window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
         let blink_cursor = cx.new(|_cx| BlinkCursor::new());
-
-        let _blink_sub = cx.observe(&blink_cursor, |_, _, cx| {
-            cx.notify();
-        });
+        let _blink_sub = cx.observe(&blink_cursor, |_, _, cx| cx.notify());
 
         Self {
-            cursor: content.len(), // Start cursor at end
+            cursor: 0,
+            selected_range: 0..0,
+            selection_reversed: false,
+            marked_range: None,
             content,
-            selection: None,
-            blocks,
             focus_handle,
             blink_cursor,
             scroll_offset: px(0.),
+            last_line_layouts: Vec::new(),
+            last_bounds: None,
             _blink_sub,
         }
     }
 
-    pub fn reparse(&mut self) {
-        self.blocks = parse_blocks(&self.content);
-    }
-
-    pub fn set_content(&mut self, content: String, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn set_content(&mut self, content: String, _window: &mut Window, cx: &mut Context<Self>) {
         self.content = content;
-        self.cursor = self.content.len();
-        self.selection = None;
-        self.reparse();
-        cx.notify();
-    }
-
-    /// Insert text at cursor position
-    pub fn insert(&mut self, text: &str, _window: &mut Window, cx: &mut Context<Self>) {
-        // Clamp cursor
-        let pos = self.cursor.min(self.content.len());
-
-        // Ensure we're at a char boundary
-        let pos = self.snap_to_char_boundary(pos);
-
-        self.content.insert_str(pos, text);
-        self.cursor = pos + text.len();
-        self.selection = None;
-        self.reparse();
-        self.blink_cursor.update(cx, |bc, cx| bc.pause(cx));
-        cx.emit(EditorEvent::Changed);
-        cx.notify();
-    }
-
-    /// Delete character before cursor (backspace)
-    pub fn backspace(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        if self.cursor == 0 {
-            return;
-        }
-        let pos = self.cursor.min(self.content.len());
-        // Find previous char boundary
-        let prev = self.prev_char_boundary(pos);
-        self.content.drain(prev..pos);
-        self.cursor = prev;
-        self.selection = None;
-        self.reparse();
-        self.blink_cursor.update(cx, |bc, cx| bc.pause(cx));
-        cx.emit(EditorEvent::Changed);
-        cx.notify();
-    }
-
-    /// Delete character after cursor
-    pub fn delete(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        let pos = self.cursor.min(self.content.len());
-        if pos >= self.content.len() {
-            return;
-        }
-        let next = self.next_char_boundary(pos);
-        self.content.drain(pos..next);
-        self.selection = None;
-        self.reparse();
-        self.blink_cursor.update(cx, |bc, cx| bc.pause(cx));
-        cx.emit(EditorEvent::Changed);
-        cx.notify();
-    }
-
-    /// Move cursor left
-    pub fn move_left(&mut self, cx: &mut Context<Self>) {
-        if self.cursor > 0 {
-            self.cursor = self.prev_char_boundary(self.cursor);
-            self.selection = None;
-            self.blink_cursor.update(cx, |bc, cx| bc.pause(cx));
-            cx.notify();
-        }
-    }
-
-    /// Move cursor right
-    pub fn move_right(&mut self, cx: &mut Context<Self>) {
-        if self.cursor < self.content.len() {
-            self.cursor = self.next_char_boundary(self.cursor);
-            self.selection = None;
-            self.blink_cursor.update(cx, |bc, cx| bc.pause(cx));
-            cx.notify();
-        }
-    }
-
-    /// Move cursor to start of line/block
-    pub fn move_home(&mut self, cx: &mut Context<Self>) {
-        // Find start of current line
-        let before = &self.content[..self.cursor.min(self.content.len())];
-        if let Some(nl) = before.rfind('\n') {
-            self.cursor = nl + 1;
-        } else {
-            self.cursor = 0;
-        }
-        self.selection = None;
-        self.blink_cursor.update(cx, |bc, cx| bc.pause(cx));
-        cx.notify();
-    }
-
-    /// Move cursor to end of line/block
-    pub fn move_end(&mut self, cx: &mut Context<Self>) {
-        let after = &self.content[self.cursor.min(self.content.len())..];
-        if let Some(nl) = after.find('\n') {
-            self.cursor = self.cursor + nl;
-        } else {
-            self.cursor = self.content.len();
-        }
-        self.selection = None;
-        self.blink_cursor.update(cx, |bc, cx| bc.pause(cx));
-        cx.notify();
-    }
-
-    /// Move cursor up one line
-    pub fn move_up(&mut self, cx: &mut Context<Self>) {
-        let pos = self.cursor.min(self.content.len());
-        let before = &self.content[..pos];
-
-        // Find current line start
-        let current_line_start = before.rfind('\n').map(|i| i + 1).unwrap_or(0);
-        let col = pos - current_line_start;
-
-        if current_line_start == 0 {
-            // Already on first line
-            self.cursor = 0;
-        } else {
-            // Find previous line
-            let prev_line_end = current_line_start - 1; // the '\n'
-            let prev_before = &self.content[..prev_line_end];
-            let prev_line_start = prev_before.rfind('\n').map(|i| i + 1).unwrap_or(0);
-            let prev_line_len = prev_line_end - prev_line_start;
-            self.cursor = prev_line_start + col.min(prev_line_len);
-        }
-
-        self.selection = None;
-        self.blink_cursor.update(cx, |bc, cx| bc.pause(cx));
-        cx.notify();
-    }
-
-    /// Move cursor down one line
-    pub fn move_down(&mut self, cx: &mut Context<Self>) {
-        let pos = self.cursor.min(self.content.len());
-        let before = &self.content[..pos];
-
-        let current_line_start = before.rfind('\n').map(|i| i + 1).unwrap_or(0);
-        let col = pos - current_line_start;
-
-        // Find next line
-        let after = &self.content[pos..];
-        if let Some(nl) = after.find('\n') {
-            let next_line_start = pos + nl + 1;
-            let rest = &self.content[next_line_start..];
-            let next_line_len = rest.find('\n').unwrap_or(rest.len());
-            self.cursor = next_line_start + col.min(next_line_len);
-        } else {
-            // Already on last line
-            self.cursor = self.content.len();
-        }
-
-        self.selection = None;
-        self.blink_cursor.update(cx, |bc, cx| bc.pause(cx));
+        self.cursor = 0;
+        self.selected_range = 0..0;
+        self.marked_range = None;
         cx.notify();
     }
 
@@ -574,28 +385,110 @@ impl EditorState {
         self.focus_handle.focus(window);
     }
 
-    fn snap_to_char_boundary(&self, pos: usize) -> usize {
-        let mut p = pos.min(self.content.len());
+    pub fn cursor_offset(&self) -> usize {
+        if self.selection_reversed {
+            self.selected_range.start
+        } else {
+            self.selected_range.end
+        }
+    }
+
+    pub fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+        let offset = offset.min(self.content.len());
+        self.selected_range = offset..offset;
+        self.cursor = offset;
+        self.blink_cursor.update(cx, |bc, cx| bc.pause(cx));
+        cx.notify();
+    }
+
+    pub fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
+        let offset = offset.min(self.content.len());
+        if self.selection_reversed {
+            self.selected_range.start = offset;
+        } else {
+            self.selected_range.end = offset;
+        }
+        if self.selected_range.end < self.selected_range.start {
+            self.selection_reversed = !self.selection_reversed;
+            self.selected_range = self.selected_range.end..self.selected_range.start;
+        }
+        self.cursor = self.cursor_offset();
+        cx.notify();
+    }
+
+    pub fn prev_grapheme(&self, offset: usize) -> usize {
+        if offset == 0 {
+            return 0;
+        }
+        let mut p = offset - 1;
         while p > 0 && !self.content.is_char_boundary(p) {
             p -= 1;
         }
         p
     }
 
-    fn prev_char_boundary(&self, pos: usize) -> usize {
-        let mut p = pos.saturating_sub(1);
-        while p > 0 && !self.content.is_char_boundary(p) {
-            p -= 1;
+    pub fn next_grapheme(&self, offset: usize) -> usize {
+        if offset >= self.content.len() {
+            return self.content.len();
         }
-        p
-    }
-
-    fn next_char_boundary(&self, pos: usize) -> usize {
-        let mut p = pos + 1;
+        let mut p = offset + 1;
         while p < self.content.len() && !self.content.is_char_boundary(p) {
             p += 1;
         }
-        p.min(self.content.len())
+        p
+    }
+
+    fn index_for_mouse_position(&self, position: Point<Pixels>) -> usize {
+        let bounds = match &self.last_bounds {
+            Some(b) => b,
+            None => return 0,
+        };
+
+        if self.last_line_layouts.is_empty() {
+            return 0;
+        }
+
+        if position.y < self.last_line_layouts[0].y {
+            return 0;
+        }
+
+        for ll in &self.last_line_layouts {
+            if position.y >= ll.y && position.y < ll.y + ll.line_height {
+                let local_x = (position.x - bounds.left() - px(24.)).max(px(0.));
+                let idx_in_line = ll.shaped_line.closest_index_for_x(local_x);
+                return ll.content_offset + idx_in_line;
+            }
+        }
+
+        // Below all lines
+        self.content.len()
+    }
+
+    fn offset_to_utf16(&self, offset: usize) -> usize {
+        self.content[..offset.min(self.content.len())]
+            .encode_utf16()
+            .count()
+    }
+
+    fn offset_from_utf16(&self, utf16_offset: usize) -> usize {
+        let mut utf8_offset = 0;
+        let mut utf16_count = 0;
+        for ch in self.content.chars() {
+            if utf16_count >= utf16_offset {
+                break;
+            }
+            utf16_count += ch.len_utf16();
+            utf8_offset += ch.len_utf8();
+        }
+        utf8_offset
+    }
+
+    fn range_to_utf16(&self, range: &Range<usize>) -> Range<usize> {
+        self.offset_to_utf16(range.start)..self.offset_to_utf16(range.end)
+    }
+
+    fn range_from_utf16(&self, range: &Range<usize>) -> Range<usize> {
+        self.offset_from_utf16(range.start)..self.offset_from_utf16(range.end)
     }
 }
 
@@ -606,20 +499,20 @@ pub enum EditorEvent {
 impl EventEmitter<EditorEvent> for EditorState {}
 
 // ---------------------------------------------------------------------------
-// EntityInputHandler — receive typed characters from the platform
+// EntityInputHandler — platform text input
 // ---------------------------------------------------------------------------
 
 impl EntityInputHandler for EditorState {
     fn text_for_range(
         &mut self,
-        range: Range<usize>,
-        _adjusted_range: &mut Option<Range<usize>>,
+        range_utf16: Range<usize>,
+        actual_range: &mut Option<Range<usize>>,
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<String> {
-        // Convert UTF-16 range to UTF-8
-        let utf8_range = self.utf16_to_utf8_range(&range);
-        Some(self.content[utf8_range].to_string())
+        let range = self.range_from_utf16(&range_utf16);
+        actual_range.replace(self.range_to_utf16(&range));
+        Some(self.content[range].to_string())
     }
 
     fn selected_text_range(
@@ -628,10 +521,9 @@ impl EntityInputHandler for EditorState {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<UTF16Selection> {
-        let cursor_utf16 = self.utf8_to_utf16_offset(self.cursor);
         Some(UTF16Selection {
-            range: cursor_utf16..cursor_utf16,
-            reversed: false,
+            range: self.range_to_utf16(&self.selected_range),
+            reversed: self.selection_reversed,
         })
     }
 
@@ -640,30 +532,35 @@ impl EntityInputHandler for EditorState {
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<Range<usize>> {
-        None
+        self.marked_range
+            .as_ref()
+            .map(|range| self.range_to_utf16(range))
     }
 
-    fn unmark_text(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {}
+    fn unmark_text(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
+        self.marked_range = None;
+    }
 
     fn replace_text_in_range(
         &mut self,
-        range: Option<Range<usize>>,
-        text: &str,
-        window: &mut Window,
+        range_utf16: Option<Range<usize>>,
+        new_text: &str,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(range_utf16) = range {
-            let utf8_range = self.utf16_to_utf8_range(&range_utf16);
-            self.content.replace_range(utf8_range.clone(), text);
-            self.cursor = utf8_range.start + text.len();
-        } else {
-            // Replace at cursor (or selection if any)
-            let pos = self.cursor.min(self.content.len());
-            self.content.insert_str(pos, text);
-            self.cursor = pos + text.len();
-        }
-        self.selection = None;
-        self.reparse();
+        let range = range_utf16
+            .as_ref()
+            .map(|r| self.range_from_utf16(r))
+            .or(self.marked_range.clone())
+            .unwrap_or(self.selected_range.clone());
+
+        self.content =
+            (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
+                .into();
+        let new_cursor = range.start + new_text.len();
+        self.selected_range = new_cursor..new_cursor;
+        self.cursor = new_cursor;
+        self.marked_range.take();
         self.blink_cursor.update(cx, |bc, cx| bc.pause(cx));
         cx.emit(EditorEvent::Changed);
         cx.notify();
@@ -671,89 +568,81 @@ impl EntityInputHandler for EditorState {
 
     fn replace_and_mark_text_in_range(
         &mut self,
-        range: Option<Range<usize>>,
+        range_utf16: Option<Range<usize>>,
         new_text: &str,
-        _new_selected_range: Option<Range<usize>>,
-        window: &mut Window,
+        new_selected_range_utf16: Option<Range<usize>>,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.replace_text_in_range(range, new_text, window, cx);
+        let range = range_utf16
+            .as_ref()
+            .map(|r| self.range_from_utf16(r))
+            .or(self.marked_range.clone())
+            .unwrap_or(self.selected_range.clone());
+
+        self.content =
+            (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
+                .into();
+
+        if !new_text.is_empty() {
+            self.marked_range = Some(range.start..range.start + new_text.len());
+        } else {
+            self.marked_range = None;
+        }
+        self.selected_range = new_selected_range_utf16
+            .as_ref()
+            .map(|r| self.range_from_utf16(r))
+            .map(|r| r.start + range.start..r.end + range.end)
+            .unwrap_or_else(|| {
+                let c = range.start + new_text.len();
+                c..c
+            });
+        self.cursor = self.cursor_offset();
+        self.blink_cursor.update(cx, |bc, cx| bc.pause(cx));
+        cx.emit(EditorEvent::Changed);
+        cx.notify();
     }
 
     fn bounds_for_range(
         &mut self,
-        _range_utf16: Range<usize>,
-        _element_bounds: Bounds<Pixels>,
+        range_utf16: Range<usize>,
+        _bounds: Bounds<Pixels>,
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<Bounds<Pixels>> {
+        let range = self.range_from_utf16(&range_utf16);
+        for ll in &self.last_line_layouts {
+            let line_end = ll.content_offset + ll.shaped_line.len();
+            if range.start >= ll.content_offset && range.start <= line_end {
+                let local_start = range.start - ll.content_offset;
+                let local_end = (range.end - ll.content_offset).min(ll.shaped_line.len());
+                let x1 = ll.shaped_line.x_for_index(local_start);
+                let x2 = ll.shaped_line.x_for_index(local_end);
+                let padding = px(24.);
+                let base_x = self.last_bounds.as_ref().map(|b| b.left()).unwrap_or(px(0.));
+                return Some(Bounds::from_corners(
+                    point(base_x + padding + x1, ll.y),
+                    point(base_x + padding + x2, ll.y + ll.line_height),
+                ));
+            }
+        }
         None
     }
 
     fn character_index_for_point(
         &mut self,
-        _point: Point<Pixels>,
+        point: Point<Pixels>,
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) -> Option<usize> {
-        None
-    }
-}
-
-impl EditorState {
-    fn utf8_to_utf16_offset(&self, utf8_offset: usize) -> usize {
-        self.content[..utf8_offset.min(self.content.len())]
-            .encode_utf16()
-            .count()
-    }
-
-    fn utf16_to_utf8_range(&self, utf16_range: &Range<usize>) -> Range<usize> {
-        let mut utf16_count = 0;
-        let mut start_utf8 = self.content.len();
-        let mut end_utf8 = self.content.len();
-
-        for (i, _ch) in self.content.char_indices() {
-            if utf16_count == utf16_range.start {
-                start_utf8 = i;
-            }
-            if utf16_count == utf16_range.end {
-                end_utf8 = i;
-                break;
-            }
-            utf16_count += _ch.len_utf16();
-        }
-        if utf16_count <= utf16_range.end {
-            end_utf8 = self.content.len();
-        }
-        start_utf8..end_utf8
+        let idx = self.index_for_mouse_position(point);
+        Some(self.offset_to_utf16(idx))
     }
 }
 
 // ---------------------------------------------------------------------------
-// EditorElement — custom gpui Element for WYSIWYG rendering
+// EditorElement — custom gpui Element
 // ---------------------------------------------------------------------------
-
-/// Layout info for one rendered block (computed during prepaint)
-struct BlockLayout {
-    /// Y position relative to editor origin
-    y: Pixels,
-    /// Height of this block
-    height: Pixels,
-    /// The shaped line for this block's display text
-    line: ShapedLine,
-    /// The line layout for cursor/position calculations
-    line_layout: Arc<LineLayout>,
-    /// Font size used for this block
-    font_size: Pixels,
-    /// Line height in pixels
-    line_height: Pixels,
-    /// Block index in the blocks array
-    block_idx: usize,
-    /// Optional prefix text (for list items)
-    prefix: Option<String>,
-    /// The block kind (cached to avoid re-reading blocks in paint)
-    kind: BlockKind,
-}
 
 pub struct EditorElement {
     state: Entity<EditorState>,
@@ -765,100 +654,6 @@ impl EditorElement {
             state: state.clone(),
         }
     }
-
-    fn build_text_runs(block: &Block, font_family: &SharedString, base_color: Hsla) -> Vec<TextRun> {
-        if block.display_text.is_empty() {
-            return vec![TextRun {
-                len: 0,
-                font: Font {
-                    family: font_family.clone(),
-                    weight: block.kind.font_weight(),
-                    style: FontStyle::Normal,
-                    features: FontFeatures::default(),
-                    fallbacks: None,
-                },
-                color: base_color,
-                background_color: None,
-                underline: None,
-                strikethrough: None,
-            }];
-        }
-
-        let mut runs = Vec::new();
-
-        for span in &block.spans {
-            let (weight, style, color, bg, strikethrough) = match span.style {
-                SpanStyle::Normal => (
-                    block.kind.font_weight(),
-                    FontStyle::Normal,
-                    base_color,
-                    None,
-                    None,
-                ),
-                SpanStyle::Bold => (
-                    FontWeight::BOLD,
-                    FontStyle::Normal,
-                    base_color,
-                    None,
-                    None,
-                ),
-                SpanStyle::Italic => (
-                    block.kind.font_weight(),
-                    FontStyle::Italic,
-                    base_color,
-                    None,
-                    None,
-                ),
-                SpanStyle::BoldItalic => (
-                    FontWeight::BOLD,
-                    FontStyle::Italic,
-                    base_color,
-                    None,
-                    None,
-                ),
-                SpanStyle::Code => (
-                    FontWeight::NORMAL,
-                    FontStyle::Normal,
-                    hsla(0.58, 0.6, 0.45, 1.0), // code color
-                    Some(hsla(0.0, 0.0, 0.93, 1.0)), // light bg
-                    None,
-                ),
-                SpanStyle::Strikethrough => (
-                    block.kind.font_weight(),
-                    FontStyle::Normal,
-                    hsla(0.0, 0.0, 0.6, 1.0),
-                    None,
-                    Some(StrikethroughStyle {
-                        thickness: px(1.),
-                        color: Some(hsla(0.0, 0.0, 0.6, 1.0)),
-                    }),
-                ),
-            };
-
-            let font_family_for_span = if span.style == SpanStyle::Code {
-                SharedString::from("monospace")
-            } else {
-                font_family.clone()
-            };
-
-            runs.push(TextRun {
-                len: span.range.end - span.range.start,
-                font: Font {
-                    family: font_family_for_span,
-                    weight,
-                    style,
-                    features: FontFeatures::default(),
-                    fallbacks: None,
-                },
-                color,
-                background_color: bg,
-                underline: None,
-                strikethrough,
-            });
-        }
-
-        runs
-    }
 }
 
 impl IntoElement for EditorElement {
@@ -868,19 +663,25 @@ impl IntoElement for EditorElement {
     }
 }
 
-pub struct EditorPrepaintState {
-    block_layouts: Vec<BlockLayout>,
-    cursor_position: Option<Point<Pixels>>,
-    cursor_height: Pixels,
-    total_height: Pixels,
+pub struct PrepaintState {
+    lines: Vec<PrepaintLine>,
+    cursor: Option<PaintQuad>,
+    selection_quads: Vec<PaintQuad>,
+}
+
+struct PrepaintLine {
+    shaped: ShapedLine,
+    origin: Point<Pixels>,
+    line_height: Pixels,
+    content_offset: usize,
 }
 
 impl Element for EditorElement {
     type RequestLayoutState = ();
-    type PrepaintState = EditorPrepaintState;
+    type PrepaintState = PrepaintState;
 
     fn id(&self) -> Option<ElementId> {
-        Some(ElementId::Name("memex-editor".into()))
+        None
     }
 
     fn source_location(&self) -> Option<&'static std::panic::Location<'static>> {
@@ -894,19 +695,10 @@ impl Element for EditorElement {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        let style = Style {
-            size: gpui::Size {
-                width: Length::Definite(DefiniteLength::Fraction(1.0)),
-                height: Length::Definite(DefiniteLength::Fraction(1.0)),
-            },
-            overflow: gpui::Point {
-                x: Overflow::Hidden,
-                y: Overflow::Scroll,
-            },
-            ..Style::default()
-        };
-        let layout_id = window.request_layout(style, [], cx);
-        (layout_id, ())
+        let mut style = Style::default();
+        style.size.width = relative(1.).into();
+        style.size.height = relative(1.).into();
+        (window.request_layout(style, [], cx), ())
     }
 
     fn prepaint(
@@ -920,84 +712,68 @@ impl Element for EditorElement {
     ) -> Self::PrepaintState {
         let state = self.state.read(cx);
         let padding = px(24.);
-        let available_width = bounds.size.width - padding * 2.0;
-
-        let font_family: SharedString = "sans-serif".into();
-        let base_color = hsla(0.0, 0.0, 0.16, 1.0); // dark text
-        let heading_color = hsla(0.0, 0.0, 0.08, 1.0); // darker for headings
-
-        let mut block_layouts = Vec::new();
-        let mut y_offset = padding;
-
+        let available_width = (bounds.size.width - padding * 2.0).max(px(100.));
+        let scroll = state.scroll_offset;
         let cursor_pos = state.cursor;
-
-        // Find which block the cursor is in
-        let cursor_block_info = cursor_to_block_position(cursor_pos, &state.blocks);
-
-        let mut cursor_position: Option<Point<Pixels>> = None;
-        let mut cursor_height = px(20.);
+        let selected_range = state.selected_range.clone();
+        let content = state.content.clone();
+        drop(state);
 
         let text_system = window.text_system().clone();
+        let font_family: SharedString = "sans-serif".into();
 
-        for (block_idx, block) in state.blocks.iter().enumerate() {
-            let font_size = block.kind.font_size();
-            let line_height = font_size * block.kind.line_height_multiplier();
+        let raw_lines: Vec<&str> = if content.is_empty() {
+            vec![""]
+        } else {
+            content.split('\n').collect()
+        };
 
-            let color = match block.kind {
-                BlockKind::Heading(_) => heading_color,
-                _ => base_color,
-            };
-
-            // Handle thematic break specially
-            if block.kind == BlockKind::ThematicBreak {
-                let empty_layout = text_system.layout_line("", font_size, &[], None);
-                block_layouts.push(BlockLayout {
-                    y: y_offset,
-                    height: px(2.),
-                    line: text_system.shape_line(
-                        SharedString::from(""),
-                        font_size,
-                        &[],
-                        None,
-                    ),
-                    line_layout: empty_layout,
-                    font_size,
-                    line_height,
-                    block_idx,
-                    prefix: None,
-                    kind: BlockKind::ThematicBreak,
-                });
-                y_offset += px(2.) + block.kind.bottom_spacing();
-                continue;
+        let mut in_code_block = false;
+        let mut line_infos: Vec<(LineInfo, usize)> = Vec::new();
+        let mut offset = 0;
+        for (i, raw_line) in raw_lines.iter().enumerate() {
+            let info = analyze_line(raw_line, &mut in_code_block);
+            line_infos.push((info, offset));
+            offset += raw_line.len();
+            if i < raw_lines.len() - 1 {
+                offset += 1; // '\n'
             }
+        }
 
-            // Build text to render, with optional prefix
-            let prefix = match &block.kind {
-                BlockKind::ListItem(false) => Some("• ".to_string()),
-                BlockKind::ListItem(true) => Some("1. ".to_string()),
-                BlockKind::TaskItem(checked) => {
-                    if *checked {
-                        Some("☑ ".to_string())
-                    } else {
-                        Some("☐ ".to_string())
-                    }
-                }
-                BlockKind::BlockQuote => Some("│ ".to_string()),
-                _ => None,
-            };
+        let mut prepaint_lines = Vec::new();
+        let mut cursor_quad: Option<PaintQuad> = None;
+        let mut selection_quads = Vec::new();
+        let mut y = bounds.origin.y + padding - scroll;
 
-            let display_with_prefix = if let Some(ref p) = prefix {
-                format!("{}{}", p, &block.display_text)
+        let base_color = hsla(0.0, 0.0, 0.16, 1.0);
+        let dim_color = hsla(0.0, 0.0, 0.6, 1.0);
+        let code_color = hsla(0.58, 0.6, 0.45, 1.0);
+        let heading_color = hsla(0.0, 0.0, 0.08, 1.0);
+        let hr_color = hsla(0.0, 0.0, 0.7, 1.0);
+
+        for (info, content_offset) in &line_infos {
+            let line_start = *content_offset;
+            let line_text_end = content[line_start..]
+                .find('\n')
+                .map(|p| line_start + p)
+                .unwrap_or(content.len());
+            let line_text = &content[line_start..line_text_end];
+
+            let font_size = info.kind.font_size();
+            let line_height = info.kind.line_height();
+
+            // Build display text (use space for empty lines so ShapedLine works)
+            let display_text: SharedString = if line_text.is_empty() {
+                " ".into()
             } else {
-                block.display_text.clone()
+                SharedString::from(line_text.to_string())
             };
 
-            // Build text runs
-            let mut runs = Vec::new();
-            if let Some(ref p) = prefix {
-                // Prefix run
+            let mut runs: Vec<TextRun> = Vec::new();
+
+            if line_text.is_empty() {
                 runs.push(TextRun {
-                    len: p.len(),
+                    len: 1,
                     font: Font {
                         family: font_family.clone(),
                         weight: FontWeight::NORMAL,
@@ -1005,104 +781,230 @@ impl Element for EditorElement {
                         features: FontFeatures::default(),
                         fallbacks: None,
                     },
-                    color: hsla(0.0, 0.0, 0.5, 1.0),
+                    color: base_color,
                     background_color: None,
                     underline: None,
                     strikethrough: None,
                 });
-            }
-            runs.extend(Self::build_text_runs(block, &font_family, color));
-
-            let text = if display_with_prefix.is_empty() {
-                // Empty block — render a space so we get line height
-                SharedString::from(" ")
             } else {
-                SharedString::from(display_with_prefix.clone())
-            };
+                for span in &info.spans {
+                    let span_start = span.range.start.min(line_text.len());
+                    let span_end = span.range.end.min(line_text.len());
+                    let span_len = span_end - span_start;
+                    if span_len == 0 {
+                        continue;
+                    }
 
-            // Adjust runs for empty block
-            let final_runs = if display_with_prefix.is_empty() {
-                vec![TextRun {
-                    len: 1,
+                    let (weight, fstyle, color, bg, strike, use_mono) = match &span.kind {
+                        StyleKind::Normal => (
+                            info.kind.font_weight(),
+                            FontStyle::Normal,
+                            if matches!(info.kind, LineKind::Heading(_)) {
+                                heading_color
+                            } else {
+                                base_color
+                            },
+                            None,
+                            None,
+                            false,
+                        ),
+                        StyleKind::Bold => (
+                            FontWeight::BOLD,
+                            FontStyle::Normal,
+                            base_color,
+                            None,
+                            None,
+                            false,
+                        ),
+                        StyleKind::Italic => (
+                            info.kind.font_weight(),
+                            FontStyle::Italic,
+                            base_color,
+                            None,
+                            None,
+                            false,
+                        ),
+                        StyleKind::BoldItalic => (
+                            FontWeight::BOLD,
+                            FontStyle::Italic,
+                            base_color,
+                            None,
+                            None,
+                            false,
+                        ),
+                        StyleKind::Code => (
+                            FontWeight::NORMAL,
+                            FontStyle::Normal,
+                            code_color,
+                            Some(hsla(0.0, 0.0, 0.93, 1.0)),
+                            None,
+                            true,
+                        ),
+                        StyleKind::Strikethrough => (
+                            info.kind.font_weight(),
+                            FontStyle::Normal,
+                            dim_color,
+                            None,
+                            Some(StrikethroughStyle {
+                                thickness: px(1.),
+                                color: Some(dim_color),
+                            }),
+                            false,
+                        ),
+                        StyleKind::HeadingSyntax => (
+                            FontWeight::BOLD,
+                            FontStyle::Normal,
+                            dim_color,
+                            None,
+                            None,
+                            false,
+                        ),
+                        StyleKind::CodeFence => (
+                            FontWeight::NORMAL,
+                            FontStyle::Normal,
+                            dim_color,
+                            None,
+                            None,
+                            true,
+                        ),
+                        StyleKind::HrSyntax => (
+                            FontWeight::NORMAL,
+                            FontStyle::Normal,
+                            hr_color,
+                            None,
+                            None,
+                            false,
+                        ),
+                    };
+
+                    let family = if use_mono {
+                        SharedString::from("monospace")
+                    } else {
+                        font_family.clone()
+                    };
+
+                    runs.push(TextRun {
+                        len: span_len,
+                        font: Font {
+                            family,
+                            weight,
+                            style: fstyle,
+                            features: FontFeatures::default(),
+                            fallbacks: None,
+                        },
+                        color,
+                        background_color: bg,
+                        underline: None,
+                        strikethrough: strike,
+                    });
+                }
+            }
+
+            // Validate total run length matches display text
+            let total_run_len: usize = runs.iter().map(|r| r.len).sum();
+            if total_run_len != display_text.len() {
+                runs = vec![TextRun {
+                    len: display_text.len(),
                     font: Font {
                         family: font_family.clone(),
-                        weight: block.kind.font_weight(),
+                        weight: info.kind.font_weight(),
                         style: FontStyle::Normal,
                         features: FontFeatures::default(),
                         fallbacks: None,
                     },
-                    color,
+                    color: base_color,
                     background_color: None,
                     underline: None,
                     strikethrough: None,
-                }]
-            } else {
-                runs
-            };
+                }];
+            }
 
-            let shaped_line = text_system.shape_line(
-                text.clone(),
+            let shaped = text_system.shape_line(
+                display_text,
                 font_size,
-                &final_runs,
+                &runs,
                 Some(available_width),
             );
 
-            // Also layout for cursor calculation
-            let line_layout = text_system.layout_line(
-                &text,
-                font_size,
-                &final_runs,
-                Some(available_width),
-            );
+            let origin = point(bounds.origin.x + padding, y);
 
-            let block_height = line_height;
+            // Cursor: check if cursor falls on this line
+            let line_byte_end = line_text_end;
+            if cursor_pos >= line_start && cursor_pos <= line_byte_end {
+                // Cursor is on this line (or at end of it, not at a \n that leads to next line)
+                let at_newline = cursor_pos == line_byte_end
+                    && cursor_pos < content.len()
+                    && content.as_bytes()[cursor_pos] == b'\n';
 
-            // Calculate cursor position if cursor is in this block
-            if let Some((cursor_block, cursor_display_offset)) = cursor_block_info {
-                if cursor_block == block_idx {
-                    let prefix_len = prefix.as_ref().map(|p| p.len()).unwrap_or(0);
-                    let visual_offset = prefix_len + cursor_display_offset;
-                    let x = line_layout.x_for_index(visual_offset);
-                    cursor_position = Some(Point::new(
-                        bounds.origin.x + padding + x,
-                        bounds.origin.y + y_offset - state.scroll_offset,
+                if !at_newline {
+                    let idx_in_line = cursor_pos - line_start;
+                    let cursor_x = shaped.x_for_index(idx_in_line);
+                    cursor_quad = Some(fill(
+                        Bounds::new(
+                            point(origin.x + cursor_x, y),
+                            size(px(2.), line_height),
+                        ),
+                        hsla(0.6, 0.8, 0.5, 1.0),
                     ));
-                    cursor_height = line_height;
+                }
+            }
+            // Cursor at start of this line (right after a \n on prev line)
+            if cursor_quad.is_none()
+                && cursor_pos == line_start
+                && line_start > 0
+                && content.as_bytes()[line_start - 1] == b'\n'
+            {
+                cursor_quad = Some(fill(
+                    Bounds::new(
+                        point(origin.x, y),
+                        size(px(2.), line_height),
+                    ),
+                    hsla(0.6, 0.8, 0.5, 1.0),
+                ));
+            }
+
+            // Selection highlighting
+            if !selected_range.is_empty() {
+                let sel_start = selected_range.start.max(line_start);
+                let sel_end = selected_range.end.min(line_byte_end);
+                if sel_start < sel_end {
+                    let x1 = shaped.x_for_index(sel_start - line_start);
+                    let x2 = shaped.x_for_index(sel_end - line_start);
+                    selection_quads.push(fill(
+                        Bounds::from_corners(
+                            point(origin.x + x1, y),
+                            point(origin.x + x2, y + line_height),
+                        ),
+                        rgba(0x3366ff30),
+                    ));
                 }
             }
 
-            let kind = block.kind.clone();
-            let bottom_spacing = kind.bottom_spacing();
-
-            block_layouts.push(BlockLayout {
-                y: y_offset,
-                height: block_height,
-                line: shaped_line,
-                line_layout,
-                font_size,
+            prepaint_lines.push(PrepaintLine {
+                shaped,
+                origin,
                 line_height,
-                block_idx,
-                prefix,
-                kind,
+                content_offset: line_start,
             });
 
-            y_offset += block_height + bottom_spacing;
+            y += line_height;
         }
 
-        // If no blocks at all, cursor at origin
-        if cursor_position.is_none() {
-            cursor_position = Some(Point::new(
-                bounds.origin.x + padding,
-                bounds.origin.y + padding - state.scroll_offset,
+        // Default cursor if none set
+        if cursor_quad.is_none() {
+            cursor_quad = Some(fill(
+                Bounds::new(
+                    point(bounds.origin.x + padding, bounds.origin.y + padding - scroll),
+                    size(px(2.), px(24.)),
+                ),
+                hsla(0.6, 0.8, 0.5, 1.0),
             ));
-            cursor_height = px(20.);
         }
 
-        EditorPrepaintState {
-            block_layouts,
-            cursor_position,
-            cursor_height,
-            total_height: y_offset,
+        PrepaintState {
+            lines: prepaint_lines,
+            cursor: cursor_quad,
+            selection_quads,
         }
     }
 
@@ -1116,147 +1018,221 @@ impl Element for EditorElement {
         window: &mut Window,
         cx: &mut App,
     ) {
-        let scroll = self.state.read(cx).scroll_offset;
-        let padding = px(24.);
+        // Register input handler FIRST (following gpui example pattern)
+        let focus_handle = self.state.read(cx).focus_handle.clone();
+        window.handle_input(
+            &focus_handle,
+            ElementInputHandler::new(bounds, self.state.clone()),
+            cx,
+        );
 
         // Paint background
         window.paint_quad(fill(bounds, hsla(0.0, 0.0, 0.98, 1.0)));
 
-        // Paint each block (using cached kind from BlockLayout, not state.blocks)
-        for bl in &prepaint.block_layouts {
-            let origin = Point::new(
-                bounds.origin.x + padding,
-                bounds.origin.y + bl.y - scroll,
-            );
+        // Paint selections
+        for sel in &prepaint.selection_quads {
+            window.paint_quad(sel.clone());
+        }
 
-            // Skip if out of view
-            if origin.y + bl.height < bounds.origin.y || origin.y > bounds.origin.y + bounds.size.height {
+        // Paint lines and collect layout info
+        let mut line_paint_infos = Vec::new();
+        for pl in &prepaint.lines {
+            if pl.origin.y + pl.line_height < bounds.origin.y
+                || pl.origin.y > bounds.origin.y + bounds.size.height
+            {
                 continue;
             }
+            let _ = pl.shaped.paint(pl.origin, pl.line_height, window, cx);
 
-            // Thematic break: draw a line
-            if bl.kind == BlockKind::ThematicBreak {
-                let line_bounds = Bounds::new(
-                    Point::new(bounds.origin.x + padding, origin.y),
-                    gpui::Size {
-                        width: bounds.size.width - padding * 2.0,
-                        height: px(1.),
-                    },
-                );
-                window.paint_quad(fill(line_bounds, hsla(0.0, 0.0, 0.8, 1.0)));
-                continue;
-            }
-
-            // Code block background
-            if bl.kind == BlockKind::CodeBlock {
-                let bg_bounds = Bounds::new(
-                    Point::new(bounds.origin.x + padding - px(8.), origin.y - px(4.)),
-                    gpui::Size {
-                        width: bounds.size.width - padding * 2.0 + px(16.),
-                        height: bl.height + px(8.),
-                    },
-                );
-                window.paint_quad(PaintQuad {
-                    bounds: bg_bounds,
-                    corner_radii: (px(4.)).into(),
-                    background: hsla(0.0, 0.0, 0.93, 1.0).into(),
-                    border_widths: (px(0.)).into(),
-                    border_color: transparent_black(),
-                    border_style: BorderStyle::default(),
-                });
-            }
-
-            // Paint the shaped text
-            let _ = bl.line.paint(origin, bl.line_height, window, cx);
+            line_paint_infos.push(LinePaintInfo {
+                content_offset: pl.content_offset,
+                shaped_line: pl.shaped.clone(),
+                y: pl.origin.y,
+                line_height: pl.line_height,
+            });
         }
 
         // Paint cursor
-        let state = self.state.read(cx);
-        let blink_visible = state.blink_cursor.read(cx).visible();
-        let is_focused = state.focus_handle.is_focused(window);
-        let focus_handle = state.focus_handle.clone();
-        drop(state);
+        let is_focused = focus_handle.is_focused(window);
+        let blink_visible = self.state.read(cx).blink_cursor.read(cx).visible();
 
         if is_focused && blink_visible {
-            if let Some(cursor_pos) = prepaint.cursor_position {
-                // Only draw if within bounds
-                if cursor_pos.y >= bounds.origin.y
-                    && cursor_pos.y < bounds.origin.y + bounds.size.height
-                {
-                    let cursor_bounds = Bounds::new(
-                        cursor_pos,
-                        gpui::Size {
-                            width: px(1.5),
-                            height: prepaint.cursor_height,
-                        },
-                    );
-                    window.paint_quad(fill(cursor_bounds, hsla(0.6, 0.8, 0.5, 1.0)));
-                }
+            if let Some(ref cursor) = prepaint.cursor {
+                window.paint_quad(cursor.clone());
             }
         }
 
-        // Register input handler for text input
-        if is_focused {
-            window.handle_input(
-                &focus_handle,
-                ElementInputHandler::new(bounds, self.state.clone()),
-                cx,
-            );
-        }
+        // Store layout info for mouse positioning
+        self.state.update(cx, |state, _cx| {
+            state.last_line_layouts = line_paint_infos;
+            state.last_bounds = Some(bounds);
+        });
     }
 }
 
 // ---------------------------------------------------------------------------
-// EditorView — the Render-implementing wrapper
+// EditorView — Render wrapper with keyboard/mouse handling
 // ---------------------------------------------------------------------------
 
 pub struct EditorView {
     pub state: Entity<EditorState>,
     focus_handle: FocusHandle,
+    is_selecting: bool,
 }
 
 impl EditorView {
     pub fn new(state: Entity<EditorState>, cx: &mut Context<Self>) -> Self {
         let focus_handle = state.read(cx).focus_handle.clone();
-        Self { state, focus_handle }
+        Self {
+            state,
+            focus_handle,
+            is_selecting: false,
+        }
+    }
+}
+
+impl Focusable for EditorView {
+    fn focus_handle(&self, _: &App) -> FocusHandle {
+        self.focus_handle.clone()
     }
 }
 
 impl Render for EditorView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let state_entity = self.state.clone();
-
         div()
-            .id("editor-container")
+            .id("editor-view")
             .size_full()
-            .focusable()
             .track_focus(&self.focus_handle)
-            .on_key_down(cx.listener(move |this, e: &KeyDownEvent, window, cx| {
+            .cursor(CursorStyle::IBeam)
+            .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
                 let key = e.keystroke.key.as_str();
-                let ctrl = e.keystroke.modifiers.control;
+                let shift = e.keystroke.modifiers.shift;
 
                 this.state.update(cx, |state, cx| {
                     match key {
-                        "backspace" => state.backspace(window, cx),
-                        "delete" => state.delete(window, cx),
-                        "left" => state.move_left(cx),
-                        "right" => state.move_right(cx),
-                        "up" => state.move_up(cx),
-                        "down" => state.move_down(cx),
-                        "home" => state.move_home(cx),
-                        "end" => state.move_end(cx),
-                        "enter" => state.insert("\n", window, cx),
-                        "tab" => state.insert("    ", window, cx),
+                        "backspace" => {
+                            if state.selected_range.is_empty() {
+                                state.select_to(state.prev_grapheme(state.cursor_offset()), cx);
+                            }
+                            state.replace_text_in_range(None, "", window, cx);
+                        }
+                        "delete" => {
+                            if state.selected_range.is_empty() {
+                                state.select_to(state.next_grapheme(state.cursor_offset()), cx);
+                            }
+                            state.replace_text_in_range(None, "", window, cx);
+                        }
+                        "left" => {
+                            if shift {
+                                state.select_to(state.prev_grapheme(state.cursor_offset()), cx);
+                            } else if state.selected_range.is_empty() {
+                                state.move_to(state.prev_grapheme(state.cursor_offset()), cx);
+                            } else {
+                                state.move_to(state.selected_range.start, cx);
+                            }
+                        }
+                        "right" => {
+                            if shift {
+                                state.select_to(state.next_grapheme(state.cursor_offset()), cx);
+                            } else if state.selected_range.is_empty() {
+                                state.move_to(state.next_grapheme(state.cursor_offset()), cx);
+                            } else {
+                                state.move_to(state.selected_range.end, cx);
+                            }
+                        }
+                        "up" => {
+                            let pos = state.cursor;
+                            let before = &state.content[..pos.min(state.content.len())];
+                            let line_start = before.rfind('\n').map(|i| i + 1).unwrap_or(0);
+                            let col = pos - line_start;
+                            if line_start == 0 {
+                                state.move_to(0, cx);
+                            } else {
+                                let prev_end = line_start - 1;
+                                let prev_start = state.content[..prev_end]
+                                    .rfind('\n')
+                                    .map(|i| i + 1)
+                                    .unwrap_or(0);
+                                let prev_len = prev_end - prev_start;
+                                state.move_to(prev_start + col.min(prev_len), cx);
+                            }
+                        }
+                        "down" => {
+                            let pos = state.cursor;
+                            let before = &state.content[..pos.min(state.content.len())];
+                            let line_start = before.rfind('\n').map(|i| i + 1).unwrap_or(0);
+                            let col = pos - line_start;
+                            let after = &state.content[pos..];
+                            if let Some(nl) = after.find('\n') {
+                                let next_start = pos + nl + 1;
+                                let rest = &state.content[next_start..];
+                                let next_len = rest.find('\n').unwrap_or(rest.len());
+                                state.move_to(next_start + col.min(next_len), cx);
+                            } else {
+                                state.move_to(state.content.len(), cx);
+                            }
+                        }
+                        "home" => {
+                            let pos = state.cursor.min(state.content.len());
+                            let line_start = state.content[..pos]
+                                .rfind('\n')
+                                .map(|i| i + 1)
+                                .unwrap_or(0);
+                            state.move_to(line_start, cx);
+                        }
+                        "end" => {
+                            let pos = state.cursor.min(state.content.len());
+                            let line_end = state.content[pos..]
+                                .find('\n')
+                                .map(|p| pos + p)
+                                .unwrap_or(state.content.len());
+                            state.move_to(line_end, cx);
+                        }
+                        "enter" => {
+                            state.replace_text_in_range(None, "\n", window, cx);
+                        }
+                        "tab" => {
+                            state.replace_text_in_range(None, "    ", window, cx);
+                        }
                         _ => {}
                     }
                 });
             }))
-            .on_mouse_down(MouseButton::Left, cx.listener(move |this, _e: &MouseDownEvent, window, cx| {
-                // Focus the editor on click
-                this.state.read(cx).focus(window);
-                this.state.update(cx, |state, cx| {
-                    state.blink_cursor.update(cx, |bc, cx| bc.start(cx));
-                });
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, e: &MouseDownEvent, window, cx| {
+                    this.is_selecting = true;
+                    let pos = this.state.read(cx).index_for_mouse_position(e.position);
+                    this.state.update(cx, |state, cx| {
+                        if e.modifiers.shift {
+                            state.select_to(pos, cx);
+                        } else {
+                            state.move_to(pos, cx);
+                        }
+                        state.focus_handle.focus(window);
+                        state.blink_cursor.update(cx, |bc, cx| bc.start(cx));
+                    });
+                }),
+            )
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _e: &MouseUpEvent, _window, _cx| {
+                    this.is_selecting = false;
+                }),
+            )
+            .on_mouse_up_out(
+                MouseButton::Left,
+                cx.listener(|this, _e: &MouseUpEvent, _window, _cx| {
+                    this.is_selecting = false;
+                }),
+            )
+            .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, _window, cx| {
+                if this.is_selecting {
+                    let pos = this.state.read(cx).index_for_mouse_position(e.position);
+                    this.state.update(cx, |state, cx| {
+                        state.select_to(pos, cx);
+                    });
+                }
             }))
             .on_scroll_wheel(cx.listener(|this, e: &ScrollWheelEvent, _window, cx| {
                 this.state.update(cx, |state, cx| {
