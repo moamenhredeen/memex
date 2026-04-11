@@ -32,11 +32,11 @@ impl Default for MemexConfig {
             h2_size: 24.0,
             h3_size: 20.0,
             body_size: 16.0,
-            text_color: (224, 224, 224),
-            heading_color: (255, 255, 255),
-            marker_color: (102, 102, 102),
-            bg_color: (30, 30, 46),
-            editor_bg: (40, 40, 64),
+            text_color: (40, 40, 40),
+            heading_color: (25, 25, 25),
+            marker_color: (160, 160, 170),
+            bg_color: (248, 248, 248),
+            editor_bg: (255, 255, 255),
             auto_save: false,
             auto_save_delay_secs: 3.0,
             tab_size: 4,
@@ -222,7 +222,7 @@ mod tests {
         let config = MemexConfig::default();
         assert_eq!(config.h1_size, 32.0);
         assert_eq!(config.body_size, 16.0);
-        assert_eq!(config.text_color, (224, 224, 224));
+        assert_eq!(config.text_color, (40, 40, 40));
         assert!(!config.auto_save);
     }
 

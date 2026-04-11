@@ -4,12 +4,12 @@ use fuzzy_matcher::FuzzyMatcher;
 
 use crate::state::AppState;
 
-const OVERLAY_BG: (u8, u8, u8) = (20, 20, 35);
-const INPUT_BG: (u8, u8, u8) = (40, 40, 65);
-const INPUT_TEXT: (u8, u8, u8) = (220, 220, 240);
-const ITEM_TEXT: (u8, u8, u8) = (180, 180, 200);
-const ITEM_HOVER: (u8, u8, u8) = (50, 50, 80);
-const CREATE_COLOR: (u8, u8, u8) = (137, 220, 137);
+const OVERLAY_BG: (u8, u8, u8) = (250, 250, 252);
+const INPUT_BG: (u8, u8, u8) = (240, 240, 245);
+const INPUT_TEXT: (u8, u8, u8) = (30, 30, 30);
+const ITEM_TEXT: (u8, u8, u8) = (60, 60, 70);
+const ITEM_HOVER: (u8, u8, u8) = (225, 230, 245);
+const CREATE_COLOR: (u8, u8, u8) = (30, 140, 50);
 const MAX_RESULTS: usize = 15;
 
 /// Command bar overlay (Ctrl+P).
@@ -184,7 +184,7 @@ impl Component for CommandBar {
                             })
                             .font_size(15.)
                             .color(if query_text.is_empty() {
-                                (100, 100, 120)
+                                (170, 170, 180)
                             } else {
                                 INPUT_TEXT
                             }),
@@ -202,7 +202,7 @@ impl Component for CommandBar {
                 .height(Size::window_percent(100.))
                 .position(Position::new_global().top(0.).left(0.))
                 .layer(Layer::Overlay)
-                .background((0, 0, 0, 120))
+                .background((0, 0, 0, 60))
                 .cross_align(Alignment::Center)
                 .on_global_key_down(on_key_down)
                 .child(inner_content)

@@ -3,10 +3,10 @@ use freya::prelude::*;
 use crate::state::AppState;
 
 const STATUSBAR_HEIGHT: f32 = 32.0;
-const STATUSBAR_BG: (u8, u8, u8) = (24, 24, 38);
-const STATUSBAR_TEXT: (u8, u8, u8) = (180, 180, 200);
-const STATUSBAR_ACCENT: (u8, u8, u8) = (137, 180, 250);
-const DROPDOWN_BG: (u8, u8, u8) = (35, 35, 55);
+const STATUSBAR_BG: (u8, u8, u8) = (235, 235, 240);
+const STATUSBAR_TEXT: (u8, u8, u8) = (80, 80, 90);
+const STATUSBAR_ACCENT: (u8, u8, u8) = (40, 100, 200);
+const DROPDOWN_BG: (u8, u8, u8) = (245, 245, 250);
 
 /// Status bar at the bottom of the window.
 #[derive(PartialEq)]

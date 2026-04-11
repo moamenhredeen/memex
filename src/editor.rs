@@ -218,9 +218,9 @@ impl Component for EditableLine {
                 };
 
                 let color = if s.code {
-                    (180, 220, 255)
+                    (180, 60, 30)
                 } else if s.link_url.is_some() {
-                    (137, 180, 250)
+                    (40, 100, 200)
                 } else {
                     base_color
                 };
