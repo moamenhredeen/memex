@@ -2,7 +2,8 @@ use freya::prelude::*;
 use freya::text_edit::*;
 
 use crate::config::MemexConfig;
-use crate::markdown::{self, HeadingLevel};
+use crate::markdown;
+use crate::markdown::HeadingLevel;
 use crate::state::AppState;
 
 const WELCOME_TEXT: &str = "\
@@ -171,17 +172,19 @@ impl Component for EditableLine {
         };
 
         let styled = markdown::parse_line(&line_text);
-        let (font_size, font_weight, color) = match styled.level {
-            HeadingLevel::H1 => (self.config.h1_size, FontWeight::BOLD, self.config.heading_color),
-            HeadingLevel::H2 => (self.config.h2_size, FontWeight::BOLD, self.config.heading_color),
-            HeadingLevel::H3 => (self.config.h3_size, FontWeight::BOLD, self.config.heading_color),
-            HeadingLevel::Body => (self.config.body_size, FontWeight::NORMAL, self.config.text_color),
+        let base_size = match styled.level {
+            HeadingLevel::H1 => self.config.h1_size,
+            HeadingLevel::H2 => self.config.h2_size,
+            HeadingLevel::H3 => self.config.h3_size,
+            _ => self.config.body_size,
         };
-
-        let display_text = if line_text.is_empty() {
-            " ".to_string()
-        } else {
-            line_text
+        let base_weight = match styled.level {
+            HeadingLevel::H1 | HeadingLevel::H2 | HeadingLevel::H3 => FontWeight::BOLD,
+            _ => FontWeight::NORMAL,
+        };
+        let base_color = match styled.level {
+            HeadingLevel::H1 | HeadingLevel::H2 | HeadingLevel::H3 => self.config.heading_color,
+            _ => self.config.text_color,
         };
 
         let mut p = paragraph()
@@ -193,27 +196,54 @@ impl Component for EditableLine {
             .highlights(highlights.map(|h| vec![h]))
             .width(Size::fill());
 
-        // Render marker in a dimmed color, content in the heading color
+        // Render heading marker in dimmed color
         if !styled.marker.is_empty() {
             p = p.span(
                 Span::new(styled.marker)
-                    .font_size(font_size)
-                    .font_weight(font_weight)
+                    .font_size(base_size)
+                    .font_weight(base_weight)
                     .color(self.config.marker_color),
             );
-            p = p.span(
-                Span::new(styled.content.clone())
-                    .font_size(font_size)
-                    .font_weight(font_weight)
-                    .color(color),
-            );
+        }
+
+        if styled.spans.is_empty() {
+            // Empty line — render a space to keep line height
+            p = p.span(Span::new(" ").font_size(base_size));
         } else {
-            p = p.span(
-                Span::new(display_text)
-                    .font_size(font_size)
-                    .font_weight(font_weight)
-                    .color(color),
-            );
+            for s in styled.spans {
+                let weight = if s.bold || base_weight == FontWeight::BOLD {
+                    FontWeight::BOLD
+                } else {
+                    FontWeight::NORMAL
+                };
+
+                let color = if s.code {
+                    (180, 220, 255)
+                } else if s.link_url.is_some() {
+                    (137, 180, 250)
+                } else {
+                    base_color
+                };
+
+                let mut span = Span::new(s.text)
+                    .font_size(base_size)
+                    .font_weight(weight)
+                    .color(color);
+
+                if s.italic {
+                    span = span.font_slant(FontSlant::Italic);
+                }
+
+                if s.strikethrough {
+                    span = span.text_decoration(TextDecoration::LineThrough);
+                }
+
+                if s.code {
+                    span = span.font_family("monospace");
+                }
+
+                p = p.span(span);
+            }
         }
 
         p
