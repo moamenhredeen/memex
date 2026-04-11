@@ -28,6 +28,7 @@ pub fn app() -> impl IntoElement {
         .height(Size::fill())
         .background(bg_color)
         .direction(Direction::Vertical)
+        .content(Content::Flex)
         .on_global_key_down(on_global_key)
         .child(Editor { app_state })
         .child(StatusBar { app_state })
