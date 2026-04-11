@@ -167,6 +167,7 @@ impl Component for CommandBar {
             .corner_radius(8.)
             .padding(8.)
             .overflow(Overflow::Clip)
+            .cross_align(Alignment::Center)
             .child(
                 // Search input display
                 rect()
@@ -197,10 +198,12 @@ impl Component for CommandBar {
         // Overlay — stable tree, visibility controlled by size + overflow
         if is_visible {
             rect()
-                .width(Size::fill())
-                .height(Size::fill())
-                .position(Position::new_global())
+                .width(Size::window_percent(100.))
+                .height(Size::window_percent(100.))
+                .position(Position::new_global().top(0.).left(0.))
+                .layer(Layer::Overlay)
                 .background((0, 0, 0, 120))
+                .cross_align(Alignment::Center)
                 .on_global_key_down(on_key_down)
                 .child(inner_content)
         } else {
