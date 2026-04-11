@@ -1,7 +1,7 @@
 use gpui::*;
 
 use crate::markdown::{
-    LineInfo, LineKind, StyleKind, analyze_line,
+    LineKind, StyleKind, parse_document,
 };
 
 use super::{EditorState, LinePaintInfo};
@@ -113,23 +113,7 @@ impl Element for EditorElement {
         let text_style = window.text_style();
         let font_family: SharedString = text_style.font_family.clone();
 
-        let raw_lines: Vec<&str> = if content.is_empty() {
-            vec![""]
-        } else {
-            content.split('\n').collect()
-        };
-
-        let mut in_code_block = false;
-        let mut line_infos: Vec<(LineInfo, usize)> = Vec::new();
-        let mut offset = 0;
-        for (i, raw_line) in raw_lines.iter().enumerate() {
-            let info = analyze_line(raw_line, &mut in_code_block);
-            line_infos.push((info, offset));
-            offset += raw_line.len();
-            if i < raw_lines.len() - 1 {
-                offset += 1; // '\n'
-            }
-        }
+        let line_infos = parse_document(&content);
 
         let mut prepaint_lines = Vec::new();
         let mut cursor_quad: Option<PaintQuad> = None;
@@ -280,6 +264,14 @@ impl Element for EditorElement {
                             None,
                             None,
                             true,
+                        ),
+                        StyleKind::BlockQuoteSyntax => (
+                            FontWeight::NORMAL,
+                            FontStyle::Normal,
+                            dim_color,
+                            None,
+                            None,
+                            false,
                         ),
                     };
 

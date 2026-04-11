@@ -1,3 +1,4 @@
+use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 use std::ops::Range;
 
 #[derive(Clone, Debug)]
@@ -19,6 +20,7 @@ pub enum StyleKind {
     HrSyntax,
     ListBullet,
     TableSyntax,
+    BlockQuoteSyntax,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -29,6 +31,7 @@ pub enum LineKind {
     ThematicBreak,
     ListItem,
     TableRow,
+    BlockQuote,
 }
 
 pub struct LineInfo {
@@ -93,6 +96,213 @@ pub fn analyze_line(line: &str, in_code_block: &mut bool) -> LineInfo {
     LineInfo {
         kind: LineKind::Normal,
         spans,
+    }
+}
+
+/// Parse a complete document using pulldown-cmark for block-level detection
+/// and existing inline parsers for per-line span generation.
+pub fn parse_document(content: &str) -> Vec<(LineInfo, usize)> {
+    if content.is_empty() {
+        return vec![(
+            LineInfo {
+                kind: LineKind::Normal,
+                spans: vec![StyleSpan {
+                    range: 0..0,
+                    kind: StyleKind::Normal,
+                }],
+            },
+            0,
+        )];
+    }
+
+    let raw_lines: Vec<&str> = content.split('\n').collect();
+
+    let mut line_starts = Vec::with_capacity(raw_lines.len());
+    let mut off = 0usize;
+    for line in &raw_lines {
+        line_starts.push(off);
+        off += line.len() + 1;
+    }
+
+    let line_kinds = determine_line_kinds(content, &raw_lines, &line_starts);
+
+    raw_lines
+        .iter()
+        .enumerate()
+        .map(|(i, line)| {
+            let kind = line_kinds[i].clone();
+            let info = build_line_info(line, kind);
+            (info, line_starts[i])
+        })
+        .collect()
+}
+
+fn build_line_info(line: &str, kind: LineKind) -> LineInfo {
+    let spans = match &kind {
+        LineKind::CodeBlock => {
+            let trimmed = line.trim();
+            if trimmed.starts_with("```") {
+                vec![StyleSpan {
+                    range: 0..line.len().max(1),
+                    kind: StyleKind::CodeFence,
+                }]
+            } else {
+                vec![StyleSpan {
+                    range: 0..line.len().max(1),
+                    kind: StyleKind::Code,
+                }]
+            }
+        }
+        LineKind::ThematicBreak => {
+            vec![StyleSpan {
+                range: 0..line.len().max(1),
+                kind: StyleKind::HrSyntax,
+            }]
+        }
+        LineKind::Heading(level) => heading_line_info(line, *level).spans,
+        LineKind::ListItem => {
+            let trimmed = line.trim_start();
+            let leading_ws = line.len() - trimmed.len();
+            let prefix_end = detect_list_prefix(trimmed)
+                .map(|p| leading_ws + p)
+                .unwrap_or(0);
+            if prefix_end > 0 {
+                list_line_info(line, prefix_end).spans
+            } else {
+                parse_inline_styles(line)
+            }
+        }
+        LineKind::TableRow => table_line_info(line).spans,
+        LineKind::BlockQuote => {
+            // Style the `> ` prefix, parse inline for the rest
+            let trimmed = line.trim_start();
+            if let Some(rest) = trimmed.strip_prefix('>') {
+                let prefix_len = line.len() - trimmed.len()
+                    + 1
+                    + if rest.starts_with(' ') { 1 } else { 0 };
+                let mut spans = vec![StyleSpan {
+                    range: 0..prefix_len,
+                    kind: StyleKind::BlockQuoteSyntax,
+                }];
+                if prefix_len < line.len() {
+                    let content_spans = parse_inline_styles(&line[prefix_len..]);
+                    for mut s in content_spans {
+                        s.range = (s.range.start + prefix_len)..(s.range.end + prefix_len);
+                        spans.push(s);
+                    }
+                }
+                spans
+            } else {
+                parse_inline_styles(line)
+            }
+        }
+        LineKind::Normal => parse_inline_styles(line),
+    };
+    LineInfo { kind, spans }
+}
+
+fn determine_line_kinds(
+    content: &str,
+    raw_lines: &[&str],
+    line_starts: &[usize],
+) -> Vec<LineKind> {
+    let num_lines = raw_lines.len();
+    let mut kinds = vec![LineKind::Normal; num_lines];
+
+    let options = Options::ENABLE_TABLES
+        | Options::ENABLE_STRIKETHROUGH
+        | Options::ENABLE_TASKLISTS;
+
+    let parser = Parser::new_ext(content, options).into_offset_iter();
+
+    let mut code_block_range: Option<Range<usize>> = None;
+    let mut blockquote_depth = 0usize;
+
+    for (event, range) in parser {
+        match event {
+            Event::Start(Tag::Heading { level, .. }) => {
+                let line = byte_to_line(line_starts, range.start);
+                kinds[line] = LineKind::Heading(heading_to_u8(level));
+            }
+            Event::Start(Tag::CodeBlock(_)) => {
+                code_block_range = Some(range.clone());
+                let start_line = byte_to_line(line_starts, range.start);
+                kinds[start_line] = LineKind::CodeBlock;
+            }
+            Event::End(TagEnd::CodeBlock) => {
+                if let Some(ref cb_range) = code_block_range {
+                    let start_line = byte_to_line(line_starts, cb_range.start);
+                    let end_line =
+                        byte_to_line(line_starts, range.end.saturating_sub(1).max(range.start));
+                    for l in start_line..=end_line.min(num_lines - 1) {
+                        kinds[l] = LineKind::CodeBlock;
+                    }
+                }
+                code_block_range = None;
+            }
+            Event::Start(Tag::Table(_)) => {
+                let start_line = byte_to_line(line_starts, range.start);
+                let end_line =
+                    byte_to_line(line_starts, range.end.saturating_sub(1).max(range.start));
+                for l in start_line..=end_line.min(num_lines - 1) {
+                    kinds[l] = LineKind::TableRow;
+                }
+            }
+            Event::Start(Tag::Item) => {
+                let line = byte_to_line(line_starts, range.start);
+                kinds[line] = LineKind::ListItem;
+            }
+            Event::Start(Tag::BlockQuote(_)) => {
+                blockquote_depth += 1;
+                let start_line = byte_to_line(line_starts, range.start);
+                let end_line =
+                    byte_to_line(line_starts, range.end.saturating_sub(1).max(range.start));
+                for l in start_line..=end_line.min(num_lines - 1) {
+                    if kinds[l] == LineKind::Normal {
+                        kinds[l] = LineKind::BlockQuote;
+                    }
+                }
+            }
+            Event::End(TagEnd::BlockQuote(_)) => {
+                blockquote_depth = blockquote_depth.saturating_sub(1);
+            }
+            Event::Rule => {
+                let line = byte_to_line(line_starts, range.start);
+                kinds[line] = LineKind::ThematicBreak;
+            }
+            _ => {}
+        }
+    }
+
+    // Fallback: detect partial tables that pulldown-cmark might miss
+    // (user is typing a table row but hasn't completed the header/separator yet)
+    for (i, line) in raw_lines.iter().enumerate() {
+        if kinds[i] == LineKind::Normal {
+            let trimmed = line.trim();
+            if trimmed.starts_with('|') && trimmed.ends_with('|') && trimmed.len() > 1 {
+                kinds[i] = LineKind::TableRow;
+            }
+        }
+    }
+
+    kinds
+}
+
+fn byte_to_line(line_starts: &[usize], byte_offset: usize) -> usize {
+    match line_starts.binary_search(&byte_offset) {
+        Ok(i) => i,
+        Err(i) => i.saturating_sub(1),
+    }
+}
+
+fn heading_to_u8(level: HeadingLevel) -> u8 {
+    match level {
+        HeadingLevel::H1 => 1,
+        HeadingLevel::H2 => 2,
+        HeadingLevel::H3 => 3,
+        HeadingLevel::H4 => 4,
+        HeadingLevel::H5 => 5,
+        HeadingLevel::H6 => 6,
     }
 }
 
@@ -656,5 +866,61 @@ mod tests {
         let pos = cursor_pos_in_formatted_table(1, 0, &rows, &widths, &is_sep);
         // The formatted table should be valid — verify cursor lands in the right spot
         assert_eq!(&formatted[pos - 5..pos], "Alice");
+    }
+
+    #[test]
+    fn test_parse_document_headings() {
+        let doc = "# Title\n\nSome text\n\n## Subtitle";
+        let infos = parse_document(doc);
+        assert_eq!(infos[0].0.kind, LineKind::Heading(1));
+        assert_eq!(infos[2].0.kind, LineKind::Normal);
+        assert_eq!(infos[4].0.kind, LineKind::Heading(2));
+    }
+
+    #[test]
+    fn test_parse_document_code_block() {
+        let doc = "text\n\n```rust\nlet x = 1;\n```\n\nmore";
+        let infos = parse_document(doc);
+        assert_eq!(infos[0].0.kind, LineKind::Normal);
+        assert_eq!(infos[2].0.kind, LineKind::CodeBlock);
+        assert_eq!(infos[3].0.kind, LineKind::CodeBlock);
+        assert_eq!(infos[4].0.kind, LineKind::CodeBlock);
+        assert_eq!(infos[6].0.kind, LineKind::Normal);
+    }
+
+    #[test]
+    fn test_parse_document_list() {
+        let doc = "- first\n- second\n- third";
+        let infos = parse_document(doc);
+        for (info, _) in &infos {
+            assert_eq!(info.kind, LineKind::ListItem);
+            assert_eq!(info.spans[0].kind, StyleKind::ListBullet);
+        }
+    }
+
+    #[test]
+    fn test_parse_document_table() {
+        let doc = "| A | B |\n| --- | --- |\n| 1 | 2 |";
+        let infos = parse_document(doc);
+        for (info, _) in &infos {
+            assert_eq!(info.kind, LineKind::TableRow);
+        }
+    }
+
+    #[test]
+    fn test_parse_document_blockquote() {
+        let doc = "> quoted text";
+        let infos = parse_document(doc);
+        assert_eq!(infos[0].0.kind, LineKind::BlockQuote);
+        assert_eq!(infos[0].0.spans[0].kind, StyleKind::BlockQuoteSyntax);
+    }
+
+    #[test]
+    fn test_parse_document_offsets() {
+        let doc = "line one\nline two\nline three";
+        let infos = parse_document(doc);
+        assert_eq!(infos[0].1, 0);
+        assert_eq!(infos[1].1, 9);
+        assert_eq!(infos[2].1, 18);
     }
 }
