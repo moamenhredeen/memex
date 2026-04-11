@@ -52,6 +52,16 @@ impl EntityInputHandler for EditorState {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // In vim Normal/Visual modes, suppress OS text input — keys are handled by vim
+        if self.vim.enabled {
+            match self.mode {
+                super::keymap::EditorMode::Normal
+                | super::keymap::EditorMode::Visual
+                | super::keymap::EditorMode::VisualLine => return,
+                _ => {}
+            }
+        }
+
         let range = range_utf16
             .as_ref()
             .map(|r| self.range_from_utf16(r))
@@ -99,6 +109,16 @@ impl EntityInputHandler for EditorState {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // In vim Normal/Visual modes, suppress OS text input
+        if self.vim.enabled {
+            match self.mode {
+                super::keymap::EditorMode::Normal
+                | super::keymap::EditorMode::Visual
+                | super::keymap::EditorMode::VisualLine => return,
+                _ => {}
+            }
+        }
+
         let range = range_utf16
             .as_ref()
             .map(|r| self.range_from_utf16(r))
