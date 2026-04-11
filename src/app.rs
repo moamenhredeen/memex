@@ -31,7 +31,26 @@ Use **Ctrl+P** to search and create notes.
 
 ---
 
-Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.".to_string()
+Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
+
+## Lists
+
+- First item
+- Second item
+- Third item with **bold**
+
+1. Ordered one
+2. Ordered two
+
+- [ ] Unchecked task
+- [x] Completed task
+
+## Table
+
+| Name | Role | Status |
+|------|------|--------|
+| Alice | Dev | Active |
+| Bob | Design | Away |".to_string()
         } else {
             state.content.clone()
         };
@@ -350,6 +369,7 @@ impl Render for Memex {
             .id("memex-root")
             .size_full()
             .bg(rgb(0xF8F8F8))
+            .font_family("Noto Sans")
             .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
                 if e.keystroke.modifiers.control && e.keystroke.key == "p" {
                     this.toggle_command_bar(window, cx);

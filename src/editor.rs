@@ -93,6 +93,8 @@ enum StyleKind {
     HeadingSyntax,
     CodeFence,
     HrSyntax,
+    ListBullet,
+    TableSyntax,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -101,6 +103,8 @@ enum LineKind {
     Heading(u8),
     CodeBlock,
     ThematicBreak,
+    ListItem,
+    TableRow,
 }
 
 impl LineKind {
@@ -188,10 +192,105 @@ fn analyze_line(line: &str, in_code_block: &mut bool) -> LineInfo {
         }
     }
 
+    // List items: - item, * item, + item, 1. item, - [ ] task, - [x] task
+    if let Some(bullet_end) = detect_list_prefix(trimmed) {
+        let leading_ws = line.len() - line.trim_start().len();
+        let prefix_end = leading_ws + bullet_end;
+        return list_line_info(line, prefix_end);
+    }
+
+    // Table rows: | col1 | col2 |
+    if trimmed.starts_with('|') && trimmed.ends_with('|') && trimmed.len() > 1 {
+        return table_line_info(line);
+    }
+
     // Normal line with inline styles
     let spans = parse_inline_styles(line);
     LineInfo {
         kind: LineKind::Normal,
+        spans,
+    }
+}
+
+fn detect_list_prefix(trimmed: &str) -> Option<usize> {
+    // Unordered: - , * , +
+    if trimmed.starts_with("- [ ] ")
+        || trimmed.starts_with("- [x] ")
+        || trimmed.starts_with("- [X] ")
+    {
+        return Some(6);
+    }
+    if (trimmed.starts_with("- ") || trimmed.starts_with("* ") || trimmed.starts_with("+ "))
+        && trimmed.len() > 2
+    {
+        return Some(2);
+    }
+    // Ordered: 1. , 2. , etc.
+    let bytes = trimmed.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() && bytes[i].is_ascii_digit() {
+        i += 1;
+    }
+    if i > 0 && i < bytes.len() - 1 && bytes[i] == b'.' && bytes[i + 1] == b' ' {
+        return Some(i + 2);
+    }
+    None
+}
+
+fn list_line_info(line: &str, prefix_end: usize) -> LineInfo {
+    let mut spans = vec![StyleSpan {
+        range: 0..prefix_end,
+        kind: StyleKind::ListBullet,
+    }];
+    if prefix_end < line.len() {
+        let content_spans = parse_inline_styles(&line[prefix_end..]);
+        for mut s in content_spans {
+            s.range = (s.range.start + prefix_end)..(s.range.end + prefix_end);
+            spans.push(s);
+        }
+    }
+    LineInfo {
+        kind: LineKind::ListItem,
+        spans,
+    }
+}
+
+fn table_line_info(line: &str) -> LineInfo {
+    let mut spans = Vec::new();
+    let bytes = line.as_bytes();
+    let mut i = 0;
+    let mut normal_start = 0;
+
+    while i < bytes.len() {
+        if bytes[i] == b'|' {
+            if i > normal_start {
+                spans.push(StyleSpan {
+                    range: normal_start..i,
+                    kind: StyleKind::Normal,
+                });
+            }
+            spans.push(StyleSpan {
+                range: i..i + 1,
+                kind: StyleKind::TableSyntax,
+            });
+            normal_start = i + 1;
+        }
+        i += 1;
+    }
+    if normal_start < line.len() {
+        spans.push(StyleSpan {
+            range: normal_start..line.len(),
+            kind: StyleKind::Normal,
+        });
+    }
+    if spans.is_empty() {
+        spans.push(StyleSpan {
+            range: 0..line.len().max(1),
+            kind: StyleKind::Normal,
+        });
+    }
+    LineInfo {
+        kind: LineKind::TableRow,
         spans,
     }
 }
@@ -713,7 +812,6 @@ impl Element for EditorElement {
     ) -> Self::PrepaintState {
         let state = self.state.read(cx);
         let padding = px(24.);
-        let available_width = (bounds.size.width - padding * 2.0).max(px(100.));
         let scroll = state.scroll_offset;
         let cursor_pos = state.cursor;
         let selected_range = state.selected_range.clone();
@@ -721,7 +819,8 @@ impl Element for EditorElement {
         // state borrow ends here since content is cloned
 
         let text_system = window.text_system().clone();
-        let font_family: SharedString = "sans-serif".into();
+        let text_style = window.text_style();
+        let font_family: SharedString = text_style.font_family.clone();
 
         let raw_lines: Vec<&str> = if content.is_empty() {
             vec![""]
@@ -876,10 +975,26 @@ impl Element for EditorElement {
                             None,
                             false,
                         ),
+                        StyleKind::ListBullet => (
+                            FontWeight::BOLD,
+                            FontStyle::Normal,
+                            dim_color,
+                            None,
+                            None,
+                            false,
+                        ),
+                        StyleKind::TableSyntax => (
+                            FontWeight::NORMAL,
+                            FontStyle::Normal,
+                            dim_color,
+                            None,
+                            None,
+                            false,
+                        ),
                     };
 
                     let family = if use_mono {
-                        SharedString::from("monospace")
+                        SharedString::from("Noto Sans Mono")
                     } else {
                         font_family.clone()
                     };
