@@ -25,12 +25,16 @@ impl Component for CommandBar {
         let mut app_state = self.app_state;
         let mut visible = self.visible;
 
-        if !*visible.read() {
-            return rect();
-        }
-
+        // Always call hooks regardless of visibility (consistent hook ordering)
         let mut query = use_state(String::new);
         let mut selected_index = use_state(|| 0usize);
+
+        let is_visible = *visible.read();
+
+        if !is_visible {
+            // Return a zero-size rect that's always in the tree
+            return rect().width(Size::px(0.)).height(Size::px(0.));
+        }
 
         let query_text = query.read().clone();
         let results = search_notes(&app_state.read(), &query_text);

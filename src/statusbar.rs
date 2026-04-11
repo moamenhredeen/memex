@@ -59,8 +59,8 @@ struct VaultSwitcher {
 
 impl Component for VaultSwitcher {
     fn render(&self) -> impl IntoElement {
-        let mut app_state = self.app_state;
-        let mut show_dropdown = use_state(|| false);
+        let app_state = self.app_state;
+        let show_dropdown = use_state(|| false);
         let vault_name = self.vault_name.clone();
 
         let toggle = {
@@ -70,6 +70,10 @@ impl Component for VaultSwitcher {
                 show_dropdown.set(!current);
             }
         };
+
+        let is_open = *show_dropdown.read();
+        let registry = app_state.read().registry.clone();
+        let vault_paths = registry.vault_paths();
 
         let mut container = rect()
             .child(
@@ -87,16 +91,22 @@ impl Component for VaultSwitcher {
                     ),
             );
 
-        if *show_dropdown.read() {
-            let registry = app_state.read().registry.clone();
-            let vault_paths = registry.vault_paths();
-
+        // Always include dropdown in tree to avoid torin cache panic.
+        // When hidden, render an empty absolute rect.
+        if is_open {
             container = container.child(
                 VaultDropdown {
                     app_state,
                     vault_paths,
                     show_dropdown,
                 },
+            );
+        } else {
+            container = container.child(
+                rect()
+                    .width(Size::px(0.))
+                    .height(Size::px(0.))
+                    .position(Position::new_absolute().bottom(STATUSBAR_HEIGHT + 4.)),
             );
         }
 
