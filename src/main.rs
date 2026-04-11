@@ -1,11 +1,11 @@
 mod app;
 mod command_bar;
+mod config;
 mod editor;
 mod fs;
 mod markdown;
 mod state;
 mod statusbar;
-mod theme;
 mod vault;
 
 use freya::prelude::*;

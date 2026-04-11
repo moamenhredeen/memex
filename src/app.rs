@@ -4,11 +4,12 @@ use crate::command_bar::CommandBar;
 use crate::editor::Editor;
 use crate::state::AppState;
 use crate::statusbar::StatusBar;
-use crate::theme;
 
 pub fn app() -> impl IntoElement {
     let app_state = use_state(AppState::new);
     let command_bar_visible = use_state(|| false);
+
+    let bg_color = app_state.read().config.bg_color;
 
     // Global Ctrl+P handler
     let mut command_bar_visible_toggle = command_bar_visible;
@@ -25,7 +26,7 @@ pub fn app() -> impl IntoElement {
     rect()
         .width(Size::fill())
         .height(Size::fill())
-        .background(theme::BG_COLOR)
+        .background(bg_color)
         .direction(Direction::Vertical)
         .on_global_key_down(on_global_key)
         .child(

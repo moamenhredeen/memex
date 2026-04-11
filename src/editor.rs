@@ -1,9 +1,9 @@
 use freya::prelude::*;
 use freya::text_edit::*;
 
+use crate::config::MemexConfig;
 use crate::markdown::{self, HeadingLevel};
 use crate::state::AppState;
-use crate::theme;
 
 const WELCOME_TEXT: &str = "\
 # Welcome to Memex
@@ -28,6 +28,8 @@ impl Component for Editor {
         } else {
             initial_content
         };
+
+        let config = app_state.read().config.clone();
 
         let mut editable = use_editable(move || content_for_init.clone(), EditableConfig::new);
 
@@ -68,7 +70,7 @@ impl Component for Editor {
         rect()
             .width(Size::fill())
             .height(Size::fill())
-            .background(theme::EDITOR_BG)
+            .background(config.editor_bg)
             .corner_radius(8.)
             .padding(24.)
             .on_global_pointer_press(on_global_pointer_press)
@@ -82,6 +84,7 @@ impl Component for Editor {
                             EditableLine {
                                 line_index: i,
                                 editable,
+                                config: config.clone(),
                             }
                             .into_element()
                         })),
@@ -95,6 +98,7 @@ impl Component for Editor {
 struct EditableLine {
     line_index: usize,
     editable: UseEditable,
+    config: MemexConfig,
 }
 
 impl Component for EditableLine {
@@ -137,10 +141,10 @@ impl Component for EditableLine {
 
         let styled = markdown::parse_line(&line_text);
         let (font_size, font_weight, color) = match styled.level {
-            HeadingLevel::H1 => (theme::H1_SIZE, FontWeight::BOLD, theme::HEADING_COLOR),
-            HeadingLevel::H2 => (theme::H2_SIZE, FontWeight::BOLD, theme::HEADING_COLOR),
-            HeadingLevel::H3 => (theme::H3_SIZE, FontWeight::BOLD, theme::HEADING_COLOR),
-            HeadingLevel::Body => (theme::BODY_SIZE, FontWeight::NORMAL, theme::TEXT_COLOR),
+            HeadingLevel::H1 => (self.config.h1_size, FontWeight::BOLD, self.config.heading_color),
+            HeadingLevel::H2 => (self.config.h2_size, FontWeight::BOLD, self.config.heading_color),
+            HeadingLevel::H3 => (self.config.h3_size, FontWeight::BOLD, self.config.heading_color),
+            HeadingLevel::Body => (self.config.body_size, FontWeight::NORMAL, self.config.text_color),
         };
 
         let display_text = if line_text.is_empty() {
@@ -164,7 +168,7 @@ impl Component for EditableLine {
                 Span::new(styled.marker)
                     .font_size(font_size)
                     .font_weight(font_weight)
-                    .color(theme::MARKER_COLOR),
+                    .color(self.config.marker_color),
             );
             p = p.span(
                 Span::new(styled.content.clone())

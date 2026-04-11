@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 
+use crate::config::{self, MemexConfig};
 use crate::fs;
 use crate::vault::{Vault, VaultRegistry};
 
@@ -16,6 +17,8 @@ pub struct AppState {
     pub dirty: bool,
     /// Persisted vault registry.
     pub registry: VaultRegistry,
+    /// Configuration loaded from Rhai scripts.
+    pub config: MemexConfig,
 }
 
 impl AppState {
@@ -28,12 +31,19 @@ impl AppState {
             content: String::new(),
             dirty: false,
             registry,
+            config: MemexConfig::default(),
         };
+
+        // Load global config
+        state.config = config::load_config(None);
 
         // Try to restore last session
         if let Some(vault_path) = state.registry.last_vault_path() {
             if vault_path.is_dir() {
                 if let Ok(vault) = Vault::open(vault_path.clone()) {
+                    // Reload config with vault path for per-vault overrides
+                    state.config = config::load_config(Some(&vault_path));
+
                     // Try last note, otherwise first note
                     let note_to_open = state
                         .registry
@@ -121,6 +131,9 @@ impl AppState {
     pub fn open_vault(&mut self, path: PathBuf) -> Result<(), std::io::Error> {
         let vault = Vault::open(path.clone())?;
 
+        // Reload config with vault-specific overrides
+        self.config = config::load_config(Some(&path));
+
         // Try last note for this vault, otherwise first note
         let note_to_open = self
             .registry
@@ -144,6 +157,12 @@ impl AppState {
         let _ = self.registry.save();
 
         Ok(())
+    }
+
+    /// Reload configuration from Rhai scripts.
+    pub fn reload_config(&mut self) {
+        let vault_path = self.vault.as_ref().map(|v| v.path.as_path());
+        self.config = config::load_config(vault_path);
     }
 
     /// Get display title of current note.
