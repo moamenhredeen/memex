@@ -55,10 +55,34 @@ impl Render for EditorView {
                 let shift = e.keystroke.modifiers.shift;
                 let alt = e.keystroke.modifiers.alt;
 
-                let combo = KeyCombo::from_keystroke(key, ctrl, shift, alt);
-
                 this.state.update(cx, |state, cx| {
                     let mode = state.mode;
+
+                    // In vim Normal/Visual modes, route to vim handler
+                    if state.vim.enabled {
+                        match mode {
+                            super::keymap::EditorMode::Normal
+                            | super::keymap::EditorMode::Visual
+                            | super::keymap::EditorMode::VisualLine => {
+                                // Escape in Insert mode → Normal mode
+                                state.handle_vim_key(key, window, cx);
+                                return;
+                            }
+                            super::keymap::EditorMode::Insert => {
+                                if key == "escape" {
+                                    state.mode = super::keymap::EditorMode::Normal;
+                                    state.history.break_coalescing();
+                                    cx.notify();
+                                    return;
+                                }
+                                // Fall through to normal keymap handling
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    // Standard keymap-based dispatch
+                    let combo = KeyCombo::from_keystroke(key, ctrl, shift, alt);
                     if let Some(cmd) = state.keymap.resolve(mode, &combo) {
                         state.dispatch(cmd, window, cx);
                     }

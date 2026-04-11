@@ -7,6 +7,7 @@ mod movement;
 mod table;
 pub mod undo;
 mod view;
+pub mod vim;
 
 use std::ops::Range;
 
@@ -32,6 +33,7 @@ pub struct EditorState {
     pub history: undo::UndoHistory,
     pub mode: keymap::EditorMode,
     pub keymap: keymap::Keymap,
+    pub vim: vim::VimState,
     _blink_sub: Subscription,
 }
 
@@ -63,6 +65,7 @@ impl EditorState {
             history: undo::UndoHistory::new(),
             mode: keymap::EditorMode::Insert,
             keymap: keymap::Keymap::new(),
+            vim: vim::VimState::new(),
             _blink_sub,
         }
     }
@@ -250,11 +253,75 @@ impl EditorState {
                     .unwrap_or(content.len());
                 self.move_to(line_end, cx);
             }
+            MoveToOffset(offset) => {
+                self.move_to(offset, cx);
+            }
             SelectLeft => {
                 self.select_to(self.prev_grapheme(self.cursor_offset()), cx);
             }
             SelectRight => {
                 self.select_to(self.next_grapheme(self.cursor_offset()), cx);
+            }
+            SelectUp => {
+                // Extend selection upward (same logic as MoveUp but with select_to)
+                let content = self.content();
+                let pos = self.cursor_offset();
+                let before = &content[..pos.min(content.len())];
+                let line_start = before.rfind('\n').map(|i| i + 1).unwrap_or(0);
+                let col = pos - line_start;
+                if line_start == 0 {
+                    self.select_to(0, cx);
+                } else {
+                    let prev_end = line_start - 1;
+                    let prev_start =
+                        content[..prev_end].rfind('\n').map(|i| i + 1).unwrap_or(0);
+                    let prev_len = prev_end - prev_start;
+                    self.select_to(prev_start + col.min(prev_len), cx);
+                }
+            }
+            SelectDown => {
+                let content = self.content();
+                let pos = self.cursor_offset();
+                let before = &content[..pos.min(content.len())];
+                let line_start = before.rfind('\n').map(|i| i + 1).unwrap_or(0);
+                let col = pos - line_start;
+                let after = &content[pos..];
+                if let Some(nl) = after.find('\n') {
+                    let next_start = pos + nl + 1;
+                    let rest = &content[next_start..];
+                    let next_len = rest.find('\n').unwrap_or(rest.len());
+                    self.select_to(next_start + col.min(next_len), cx);
+                } else {
+                    self.select_to(content.len(), cx);
+                }
+            }
+            SelectToOffset(offset) => {
+                self.select_to(offset, cx);
+            }
+            SelectAll => {
+                self.selected_range = 0..self.content_len();
+                self.selection_reversed = false;
+                self.cursor = self.content_len();
+                cx.notify();
+            }
+            DeleteSelection => {
+                if !self.selected_range.is_empty() {
+                    self.replace_text_in_range(None, "", window, cx);
+                }
+            }
+            YankSelection => {
+                if !self.selected_range.is_empty() {
+                    let char_start = self.buffer.byte_to_char(self.selected_range.start);
+                    let char_end = self.buffer.byte_to_char(self.selected_range.end);
+                    let text = self.buffer.slice(char_start..char_end).to_string();
+                    self.vim.register_content = text;
+                    // Collapse selection
+                    let pos = self.selected_range.start;
+                    self.move_to(pos, cx);
+                }
+            }
+            YankText(text) => {
+                self.vim.register_content = text;
             }
             DeleteBackward => {
                 if self.selected_range.is_empty() {
@@ -266,6 +333,10 @@ impl EditorState {
                 if self.selected_range.is_empty() {
                     self.select_to(self.next_grapheme(self.cursor_offset()), cx);
                 }
+                self.replace_text_in_range(None, "", window, cx);
+            }
+            DeleteRange(range) => {
+                self.selected_range = range;
                 self.replace_text_in_range(None, "", window, cx);
             }
             InsertNewline => {
@@ -281,6 +352,9 @@ impl EditorState {
                 let s = ch.encode_utf8(&mut buf);
                 self.replace_text_in_range(None, s, window, cx);
             }
+            InsertText(text) => {
+                self.replace_text_in_range(None, &text, window, cx);
+            }
             Undo => self.undo(cx),
             Redo => self.redo(cx),
             TableNextCell => {
@@ -288,6 +362,98 @@ impl EditorState {
             }
             TablePrevCell => {
                 self.handle_table_tab(false, cx);
+            }
+            EnterMode(new_mode) => {
+                self.mode = new_mode;
+                cx.notify();
+            }
+        }
+    }
+
+    /// Handle vim key processing. Called from view.rs for Normal/Visual modes.
+    pub fn handle_vim_key(
+        &mut self,
+        key: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let content = self.content();
+        let cursor = self.cursor;
+
+        let action = match self.mode {
+            keymap::EditorMode::Normal => self.vim.handle_normal_key(key, &content, cursor),
+            keymap::EditorMode::Visual | keymap::EditorMode::VisualLine => {
+                self.vim.handle_visual_key(key, &content, cursor)
+            }
+            _ => return,
+        };
+
+        self.apply_vim_action(action, window, cx);
+    }
+
+    fn apply_vim_action(
+        &mut self,
+        action: vim::VimAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use vim::VimAction;
+        match action {
+            VimAction::None => {}
+            VimAction::Command(cmd) => {
+                self.dispatch(cmd, window, cx);
+            }
+            VimAction::Commands(cmds) => {
+                for cmd in cmds {
+                    self.dispatch(cmd, window, cx);
+                }
+            }
+            VimAction::ChangeMode(new_mode) => {
+                self.mode = new_mode;
+                if new_mode == keymap::EditorMode::Insert {
+                    // Break undo coalescing when entering insert mode
+                    self.history.break_coalescing();
+                }
+                cx.notify();
+            }
+            VimAction::InsertAt(offset) => {
+                self.move_to(offset, cx);
+                self.mode = keymap::EditorMode::Insert;
+                self.history.break_coalescing();
+                cx.notify();
+            }
+            VimAction::ReplaceChar(ch, count) => {
+                let content = self.content();
+                let pos = self.cursor;
+                let mut end = pos;
+                for _ in 0..count {
+                    if end < content.len() {
+                        let mut p = end + 1;
+                        while p < content.len() && !content.is_char_boundary(p) {
+                            p += 1;
+                        }
+                        end = p;
+                    }
+                }
+                if end > pos {
+                    let replacement: String = std::iter::repeat(ch).take(count).collect();
+                    self.selected_range = pos..end;
+                    self.replace_text_in_range(None, &replacement, window, cx);
+                }
+            }
+            VimAction::OperatorResult {
+                delete_range,
+                yank_text,
+                enter_insert,
+            } => {
+                self.vim.register_content = yank_text;
+                self.selected_range = delete_range;
+                self.replace_text_in_range(None, "", window, cx);
+                if enter_insert {
+                    self.mode = keymap::EditorMode::Insert;
+                    self.history.break_coalescing();
+                    cx.notify();
+                }
             }
         }
     }

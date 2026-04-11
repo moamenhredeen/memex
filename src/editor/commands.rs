@@ -8,22 +8,29 @@ pub enum EditorCommand {
     MoveDown,
     MoveLineStart,
     MoveLineEnd,
+    MoveToOffset(usize),
 
     // Selection
     SelectLeft,
     SelectRight,
+    SelectUp,
+    SelectDown,
+    SelectToOffset(usize),
+    SelectAll,
+    DeleteSelection,
+    YankSelection,
 
     // Editing
     InsertChar(char),
     InsertNewline,
     InsertTab,
+    InsertText(String),
     DeleteBackward,
     DeleteForward,
+    DeleteRange(std::ops::Range<usize>),
 
-    // Clipboard (future)
-    // Copy,
-    // Cut,
-    // Paste,
+    // Clipboard / Yank
+    YankText(String),
 
     // History
     Undo,
@@ -32,4 +39,7 @@ pub enum EditorCommand {
     // Table
     TableNextCell,
     TablePrevCell,
+
+    // Mode
+    EnterMode(super::keymap::EditorMode),
 }
