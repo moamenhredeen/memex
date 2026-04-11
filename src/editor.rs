@@ -266,8 +266,9 @@ pub fn parse_blocks(content: &str) -> Vec<Block> {
             },
             Event::Text(text) => {
                 if current_block_kind.is_some() {
+                    let clean = text.replace('\n', " ");
                     let start = display_text.len();
-                    display_text.push_str(&text);
+                    display_text.push_str(&clean);
                     let end = display_text.len();
                     let style = style_stack.last().cloned().unwrap_or(SpanStyle::Normal);
                     spans.push(InlineSpan {
@@ -278,8 +279,9 @@ pub fn parse_blocks(content: &str) -> Vec<Block> {
             }
             Event::Code(code) => {
                 if current_block_kind.is_some() {
+                    let clean = code.replace('\n', " ");
                     let start = display_text.len();
-                    display_text.push_str(&code);
+                    display_text.push_str(&clean);
                     let end = display_text.len();
                     spans.push(InlineSpan {
                         range: start..end,
@@ -289,8 +291,9 @@ pub fn parse_blocks(content: &str) -> Vec<Block> {
             }
             Event::SoftBreak | Event::HardBreak => {
                 if current_block_kind.is_some() {
+                    // Use space instead of newline — shape_line forbids newlines
                     let start = display_text.len();
-                    display_text.push('\n');
+                    display_text.push(' ');
                     let end = display_text.len();
                     spans.push(InlineSpan {
                         range: start..end,
@@ -317,12 +320,14 @@ pub fn parse_blocks(content: &str) -> Vec<Block> {
 
     // If content is empty or has no markdown, treat as single paragraph
     if blocks.is_empty() && !content.is_empty() {
+        let clean = content.replace('\n', " ");
+        let len = clean.len();
         blocks.push(Block {
             kind: BlockKind::Paragraph,
             source_range: 0..content.len(),
-            display_text: content.to_string(),
+            display_text: clean,
             spans: vec![InlineSpan {
-                range: 0..content.len(),
+                range: 0..len,
                 style: SpanStyle::Normal,
             }],
         });
