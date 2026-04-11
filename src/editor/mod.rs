@@ -1,4 +1,5 @@
 mod blink;
+pub mod commands;
 mod element;
 mod input;
 mod movement;
@@ -171,6 +172,119 @@ impl EditorState {
         self.blink_cursor.update(cx, |bc, cx| bc.pause(cx));
         cx.emit(EditorEvent::Changed);
         cx.notify();
+    }
+
+    /// Execute an editor command. This is the central dispatch point
+    /// for all editor operations.
+    pub fn dispatch(
+        &mut self,
+        cmd: commands::EditorCommand,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        use commands::EditorCommand::*;
+        match cmd {
+            MoveLeft => {
+                if self.selected_range.is_empty() {
+                    self.move_to(self.prev_grapheme(self.cursor_offset()), cx);
+                } else {
+                    self.move_to(self.selected_range.start, cx);
+                }
+            }
+            MoveRight => {
+                if self.selected_range.is_empty() {
+                    self.move_to(self.next_grapheme(self.cursor_offset()), cx);
+                } else {
+                    self.move_to(self.selected_range.end, cx);
+                }
+            }
+            MoveUp => {
+                let content = self.content();
+                let pos = self.cursor;
+                let before = &content[..pos.min(content.len())];
+                let line_start = before.rfind('\n').map(|i| i + 1).unwrap_or(0);
+                let col = pos - line_start;
+                if line_start == 0 {
+                    self.move_to(0, cx);
+                } else {
+                    let prev_end = line_start - 1;
+                    let prev_start =
+                        content[..prev_end].rfind('\n').map(|i| i + 1).unwrap_or(0);
+                    let prev_len = prev_end - prev_start;
+                    self.move_to(prev_start + col.min(prev_len), cx);
+                }
+            }
+            MoveDown => {
+                let content = self.content();
+                let pos = self.cursor;
+                let before = &content[..pos.min(content.len())];
+                let line_start = before.rfind('\n').map(|i| i + 1).unwrap_or(0);
+                let col = pos - line_start;
+                let after = &content[pos..];
+                if let Some(nl) = after.find('\n') {
+                    let next_start = pos + nl + 1;
+                    let rest = &content[next_start..];
+                    let next_len = rest.find('\n').unwrap_or(rest.len());
+                    self.move_to(next_start + col.min(next_len), cx);
+                } else {
+                    self.move_to(content.len(), cx);
+                }
+            }
+            MoveLineStart => {
+                let content = self.content();
+                let pos = self.cursor.min(content.len());
+                let line_start = content[..pos].rfind('\n').map(|i| i + 1).unwrap_or(0);
+                self.move_to(line_start, cx);
+            }
+            MoveLineEnd => {
+                let content = self.content();
+                let pos = self.cursor.min(content.len());
+                let line_end = content[pos..]
+                    .find('\n')
+                    .map(|p| pos + p)
+                    .unwrap_or(content.len());
+                self.move_to(line_end, cx);
+            }
+            SelectLeft => {
+                self.select_to(self.prev_grapheme(self.cursor_offset()), cx);
+            }
+            SelectRight => {
+                self.select_to(self.next_grapheme(self.cursor_offset()), cx);
+            }
+            DeleteBackward => {
+                if self.selected_range.is_empty() {
+                    self.select_to(self.prev_grapheme(self.cursor_offset()), cx);
+                }
+                self.replace_text_in_range(None, "", window, cx);
+            }
+            DeleteForward => {
+                if self.selected_range.is_empty() {
+                    self.select_to(self.next_grapheme(self.cursor_offset()), cx);
+                }
+                self.replace_text_in_range(None, "", window, cx);
+            }
+            InsertNewline => {
+                self.replace_text_in_range(None, "\n", window, cx);
+            }
+            InsertTab => {
+                if !self.handle_table_tab(true, cx) {
+                    self.replace_text_in_range(None, "    ", window, cx);
+                }
+            }
+            InsertChar(ch) => {
+                let mut buf = [0u8; 4];
+                let s = ch.encode_utf8(&mut buf);
+                self.replace_text_in_range(None, s, window, cx);
+            }
+            Undo => self.undo(cx),
+            Redo => self.redo(cx),
+            TableNextCell => {
+                self.handle_table_tab(true, cx);
+            }
+            TablePrevCell => {
+                self.handle_table_tab(false, cx);
+            }
+        }
     }
 }
 

@@ -1,5 +1,6 @@
 use gpui::*;
 
+use super::commands::EditorCommand;
 use super::element::EditorElement;
 use super::{EditorState, TabAction, ShiftTabAction};
 
@@ -39,9 +40,7 @@ impl Render for EditorView {
             .key_context("Editor")
             .on_action(cx.listener(|this, _: &TabAction, window, cx| {
                 this.state.update(cx, |state, cx| {
-                    if !state.handle_table_tab(true, cx) {
-                        state.replace_text_in_range(None, "    ", window, cx);
-                    }
+                    state.dispatch(EditorCommand::InsertTab, window, cx);
                 });
             }))
             .on_action(cx.listener(|this, _: &ShiftTabAction, _window, cx| {
@@ -54,102 +53,28 @@ impl Render for EditorView {
                 let shift = e.keystroke.modifiers.shift;
                 let ctrl = e.keystroke.modifiers.control;
 
-                // Handle ctrl shortcuts
-                if ctrl {
-                    this.state.update(cx, |state, cx| {
-                        match (key, shift) {
-                            ("z", false) => state.undo(cx),
-                            ("z", true) => state.redo(cx),
-                            _ => {}
-                        }
-                    });
-                    return;
-                }
+                let cmd = match (key, ctrl, shift) {
+                    ("z", true, false) => Some(EditorCommand::Undo),
+                    ("z", true, true) => Some(EditorCommand::Redo),
+                    ("backspace", false, _) => Some(EditorCommand::DeleteBackward),
+                    ("delete", false, _) => Some(EditorCommand::DeleteForward),
+                    ("left", false, true) => Some(EditorCommand::SelectLeft),
+                    ("right", false, true) => Some(EditorCommand::SelectRight),
+                    ("left", false, false) => Some(EditorCommand::MoveLeft),
+                    ("right", false, false) => Some(EditorCommand::MoveRight),
+                    ("up", false, _) => Some(EditorCommand::MoveUp),
+                    ("down", false, _) => Some(EditorCommand::MoveDown),
+                    ("home", false, _) => Some(EditorCommand::MoveLineStart),
+                    ("end", false, _) => Some(EditorCommand::MoveLineEnd),
+                    ("enter", false, _) => Some(EditorCommand::InsertNewline),
+                    _ => None,
+                };
 
-                this.state.update(cx, |state, cx| {
-                    let content = state.content();
-                    match key {
-                    "backspace" => {
-                        if state.selected_range.is_empty() {
-                            state.select_to(state.prev_grapheme(state.cursor_offset()), cx);
-                        }
-                        state.replace_text_in_range(None, "", window, cx);
-                    }
-                    "delete" => {
-                        if state.selected_range.is_empty() {
-                            state.select_to(state.next_grapheme(state.cursor_offset()), cx);
-                        }
-                        state.replace_text_in_range(None, "", window, cx);
-                    }
-                    "left" => {
-                        if shift {
-                            state.select_to(state.prev_grapheme(state.cursor_offset()), cx);
-                        } else if state.selected_range.is_empty() {
-                            state.move_to(state.prev_grapheme(state.cursor_offset()), cx);
-                        } else {
-                            state.move_to(state.selected_range.start, cx);
-                        }
-                    }
-                    "right" => {
-                        if shift {
-                            state.select_to(state.next_grapheme(state.cursor_offset()), cx);
-                        } else if state.selected_range.is_empty() {
-                            state.move_to(state.next_grapheme(state.cursor_offset()), cx);
-                        } else {
-                            state.move_to(state.selected_range.end, cx);
-                        }
-                    }
-                    "up" => {
-                        let pos = state.cursor;
-                        let before = &content[..pos.min(content.len())];
-                        let line_start = before.rfind('\n').map(|i| i + 1).unwrap_or(0);
-                        let col = pos - line_start;
-                        if line_start == 0 {
-                            state.move_to(0, cx);
-                        } else {
-                            let prev_end = line_start - 1;
-                            let prev_start = content[..prev_end]
-                                .rfind('\n')
-                                .map(|i| i + 1)
-                                .unwrap_or(0);
-                            let prev_len = prev_end - prev_start;
-                            state.move_to(prev_start + col.min(prev_len), cx);
-                        }
-                    }
-                    "down" => {
-                        let pos = state.cursor;
-                        let before = &content[..pos.min(content.len())];
-                        let line_start = before.rfind('\n').map(|i| i + 1).unwrap_or(0);
-                        let col = pos - line_start;
-                        let after = &content[pos..];
-                        if let Some(nl) = after.find('\n') {
-                            let next_start = pos + nl + 1;
-                            let rest = &content[next_start..];
-                            let next_len = rest.find('\n').unwrap_or(rest.len());
-                            state.move_to(next_start + col.min(next_len), cx);
-                        } else {
-                            state.move_to(content.len(), cx);
-                        }
-                    }
-                    "home" => {
-                        let pos = state.cursor.min(content.len());
-                        let line_start =
-                            content[..pos].rfind('\n').map(|i| i + 1).unwrap_or(0);
-                        state.move_to(line_start, cx);
-                    }
-                    "end" => {
-                        let pos = state.cursor.min(content.len());
-                        let line_end = content[pos..]
-                            .find('\n')
-                            .map(|p| pos + p)
-                            .unwrap_or(content.len());
-                        state.move_to(line_end, cx);
-                    }
-                    "enter" => {
-                        state.replace_text_in_range(None, "\n", window, cx);
-                    }
-                    _ => {}
-                }});
+                if let Some(cmd) = cmd {
+                    this.state.update(cx, |state, cx| {
+                        state.dispatch(cmd, window, cx);
+                    });
+                }
             }))
             .on_mouse_down(
                 MouseButton::Left,
