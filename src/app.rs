@@ -369,7 +369,7 @@ impl Render for Memex {
             .id("memex-root")
             .size_full()
             .bg(rgb(0xF8F8F8))
-            .font_family("Noto Sans")
+            .font_family("FiraCode Nerd Font")
             .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
                 if e.keystroke.modifiers.control && e.keystroke.key == "p" {
                     this.toggle_command_bar(window, cx);

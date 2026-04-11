@@ -897,7 +897,7 @@ impl Element for EditorElement {
 
                     // Use monospace for table rows and code spans
                     let family = if use_mono || matches!(info.kind, LineKind::TableRow) {
-                        SharedString::from("Noto Sans Mono")
+                        SharedString::from("FiraCode Nerd Font Mono")
                     } else {
                         font_family.clone()
                     };

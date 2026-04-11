@@ -328,6 +328,7 @@ pub fn is_separator_row(line: &str) -> bool {
 }
 
 /// Compute column widths from table rows (minimum 3).
+/// Widths are in character count, not byte length.
 pub fn compute_col_widths(rows: &[Vec<String>], is_separator: &[bool]) -> Vec<usize> {
     let max_cols = rows.iter().map(|r| r.len()).max().unwrap_or(0);
     let mut widths = vec![3usize; max_cols];
@@ -336,7 +337,7 @@ pub fn compute_col_widths(rows: &[Vec<String>], is_separator: &[bool]) -> Vec<us
             continue;
         }
         for (ci, cell) in row.iter().enumerate() {
-            widths[ci] = widths[ci].max(cell.trim().len());
+            widths[ci] = widths[ci].max(cell.trim().chars().count());
         }
     }
     widths
@@ -361,9 +362,10 @@ pub fn format_table(
                 out.push(' ');
             } else {
                 let content = cell.trim();
+                let char_len = content.chars().count();
                 out.push(' ');
                 out.push_str(content);
-                for _ in content.len()..w {
+                for _ in char_len..w {
                     out.push(' ');
                 }
                 out.push(' ');
@@ -391,18 +393,32 @@ pub fn cursor_pos_in_formatted_table(
         pos += 1; // leading |
         for ci in 0..rows[ri].len() {
             let w = col_widths.get(ci).copied().unwrap_or(3);
-            pos += 1 + w + 1 + 1; // space + width + space + |
+            if is_separator[ri] {
+                // ` ` + w dashes + ` ` + `|` — all ASCII
+                pos += 1 + w + 1 + 1;
+            } else {
+                let content = rows[ri][ci].trim();
+                let char_len = content.chars().count();
+                // ` ` + content_bytes + padding_spaces + ` ` + `|`
+                pos += 1 + content.len() + (w - char_len) + 1 + 1;
+            }
         }
         pos += 1; // newline
     }
     pos += 1; // leading | of target row
     for ci in 0..target_col {
         let w = col_widths.get(ci).copied().unwrap_or(3);
-        pos += 1 + w + 1 + 1;
+        if is_separator[target_row] {
+            pos += 1 + w + 1 + 1;
+        } else {
+            let content = rows[target_row][ci].trim();
+            let char_len = content.chars().count();
+            pos += 1 + content.len() + (w - char_len) + 1 + 1;
+        }
     }
     pos += 1; // space after |
     if !is_separator[target_row] {
-        pos += rows[target_row][target_col].trim().len();
+        pos += rows[target_row][target_col].trim().len(); // byte offset to end of content
     }
     pos
 }
@@ -599,8 +615,46 @@ mod tests {
         let formatted = format_table(&rows, &is_sep, &widths);
         let lines: Vec<&str> = formatted.split('\n').collect();
         // Both lines should be same length
-        assert_eq!(lines[0].len(), lines[1].len());
+        assert_eq!(lines[0].chars().count(), lines[1].chars().count());
         assert_eq!(lines[0], "| a   | longer text |");
         assert_eq!(lines[1], "| x   | y           |");
+    }
+
+    #[test]
+    fn test_format_table_multibyte_chars() {
+        // Multi-byte characters like ö (2 bytes) should still align correctly
+        let rows = vec![
+            vec![" Name ".into(), " Role ".into()],
+            vec!["------".into(), "------".into()],
+            vec![" Böb ".into(), " Dev ".into()],
+            vec![" Alice ".into(), " Désign ".into()],
+        ];
+        let is_sep = vec![false, true, false, false];
+        let widths = compute_col_widths(&rows, &is_sep);
+        let formatted = format_table(&rows, &is_sep, &widths);
+        let lines: Vec<&str> = formatted.split('\n').collect();
+        // All lines should have the same character count
+        let char_counts: Vec<usize> = lines.iter().map(|l| l.chars().count()).collect();
+        assert!(
+            char_counts.windows(2).all(|w| w[0] == w[1]),
+            "Lines have different char widths: {:?}\n{}",
+            char_counts,
+            formatted
+        );
+    }
+
+    #[test]
+    fn test_cursor_pos_multibyte() {
+        let rows = vec![
+            vec![" Böb ".into(), " Dev ".into()],
+            vec![" Alice ".into(), " OK ".into()],
+        ];
+        let is_sep = vec![false, false];
+        let widths = compute_col_widths(&rows, &is_sep);
+        let formatted = format_table(&rows, &is_sep, &widths);
+        // Cursor at row 1, col 0 should point to byte offset of "Alice" end
+        let pos = cursor_pos_in_formatted_table(1, 0, &rows, &widths, &is_sep);
+        // The formatted table should be valid — verify cursor lands in the right spot
+        assert_eq!(&formatted[pos - 5..pos], "Alice");
     }
 }
