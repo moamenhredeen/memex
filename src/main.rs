@@ -3,6 +3,7 @@ mod editor;
 mod fs;
 mod markdown;
 mod state;
+mod statusbar;
 mod theme;
 mod vault;
 
