@@ -9,22 +9,24 @@ impl EditorState {
         if offset == 0 {
             return 0;
         }
-        let mut p = offset - 1;
-        while p > 0 && !self.content.is_char_boundary(p) {
-            p -= 1;
+        let offset = offset.min(self.content_len());
+        let char_idx = self.buffer.byte_to_char(offset);
+        if char_idx == 0 {
+            return 0;
         }
-        p
+        self.buffer.char_to_byte(char_idx - 1)
     }
 
     pub fn next_grapheme(&self, offset: usize) -> usize {
-        if offset >= self.content.len() {
-            return self.content.len();
+        let len = self.content_len();
+        if offset >= len {
+            return len;
         }
-        let mut p = offset + 1;
-        while p < self.content.len() && !self.content.is_char_boundary(p) {
-            p += 1;
+        let char_idx = self.buffer.byte_to_char(offset);
+        if char_idx + 1 >= self.buffer.len_chars() {
+            return len;
         }
-        p
+        self.buffer.char_to_byte(char_idx + 1)
     }
 
     pub(crate) fn index_for_mouse_position(&self, position: Point<Pixels>) -> usize {
@@ -50,11 +52,12 @@ impl EditorState {
         }
 
         // Below all lines
-        self.content.len()
+        self.content_len()
     }
 
     pub(crate) fn offset_to_utf16(&self, offset: usize) -> usize {
-        self.content[..offset.min(self.content.len())]
+        let content = self.content();
+        content[..offset.min(content.len())]
             .encode_utf16()
             .count()
     }
@@ -62,7 +65,7 @@ impl EditorState {
     pub(crate) fn offset_from_utf16(&self, utf16_offset: usize) -> usize {
         let mut utf8_offset = 0;
         let mut utf16_count = 0;
-        for ch in self.content.chars() {
+        for ch in self.buffer.chars() {
             if utf16_count >= utf16_offset {
                 break;
             }

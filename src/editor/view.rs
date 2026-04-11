@@ -53,7 +53,9 @@ impl Render for EditorView {
                 let key = e.keystroke.key.as_str();
                 let shift = e.keystroke.modifiers.shift;
 
-                this.state.update(cx, |state, cx| match key {
+                this.state.update(cx, |state, cx| {
+                    let content = state.content();
+                    match key {
                     "backspace" => {
                         if state.selected_range.is_empty() {
                             state.select_to(state.prev_grapheme(state.cursor_offset()), cx);
@@ -86,14 +88,14 @@ impl Render for EditorView {
                     }
                     "up" => {
                         let pos = state.cursor;
-                        let before = &state.content[..pos.min(state.content.len())];
+                        let before = &content[..pos.min(content.len())];
                         let line_start = before.rfind('\n').map(|i| i + 1).unwrap_or(0);
                         let col = pos - line_start;
                         if line_start == 0 {
                             state.move_to(0, cx);
                         } else {
                             let prev_end = line_start - 1;
-                            let prev_start = state.content[..prev_end]
+                            let prev_start = content[..prev_end]
                                 .rfind('\n')
                                 .map(|i| i + 1)
                                 .unwrap_or(0);
@@ -103,38 +105,38 @@ impl Render for EditorView {
                     }
                     "down" => {
                         let pos = state.cursor;
-                        let before = &state.content[..pos.min(state.content.len())];
+                        let before = &content[..pos.min(content.len())];
                         let line_start = before.rfind('\n').map(|i| i + 1).unwrap_or(0);
                         let col = pos - line_start;
-                        let after = &state.content[pos..];
+                        let after = &content[pos..];
                         if let Some(nl) = after.find('\n') {
                             let next_start = pos + nl + 1;
-                            let rest = &state.content[next_start..];
+                            let rest = &content[next_start..];
                             let next_len = rest.find('\n').unwrap_or(rest.len());
                             state.move_to(next_start + col.min(next_len), cx);
                         } else {
-                            state.move_to(state.content.len(), cx);
+                            state.move_to(content.len(), cx);
                         }
                     }
                     "home" => {
-                        let pos = state.cursor.min(state.content.len());
+                        let pos = state.cursor.min(content.len());
                         let line_start =
-                            state.content[..pos].rfind('\n').map(|i| i + 1).unwrap_or(0);
+                            content[..pos].rfind('\n').map(|i| i + 1).unwrap_or(0);
                         state.move_to(line_start, cx);
                     }
                     "end" => {
-                        let pos = state.cursor.min(state.content.len());
-                        let line_end = state.content[pos..]
+                        let pos = state.cursor.min(content.len());
+                        let line_end = content[pos..]
                             .find('\n')
                             .map(|p| pos + p)
-                            .unwrap_or(state.content.len());
+                            .unwrap_or(content.len());
                         state.move_to(line_end, cx);
                     }
                     "enter" => {
                         state.replace_text_in_range(None, "\n", window, cx);
                     }
                     _ => {}
-                });
+                }});
             }))
             .on_mouse_down(
                 MouseButton::Left,

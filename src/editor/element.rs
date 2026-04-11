@@ -107,7 +107,7 @@ impl Element for EditorElement {
         let scroll = state.scroll_offset;
         let cursor_pos = state.cursor;
         let selected_range = state.selected_range.clone();
-        let content = state.content.clone();
+        let content = state.content();
 
         let text_system = window.text_system().clone();
         let text_style = window.text_style();

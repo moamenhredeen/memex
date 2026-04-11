@@ -100,7 +100,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
     }
 
     fn save(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        let text = self.editor_state.read(cx).content.clone();
+        let text = self.editor_state.read(cx).content();
         self.state.content = text;
         if let Err(e) = self.state.save() {
             eprintln!("save error: {}", e);

@@ -8,6 +8,7 @@ mod view;
 use std::ops::Range;
 
 use gpui::*;
+use ropey::Rope;
 
 pub use blink::BlinkCursor;
 pub use view::EditorView;
@@ -15,7 +16,7 @@ pub use view::EditorView;
 actions!(editor, [TabAction, ShiftTabAction]);
 
 pub struct EditorState {
-    pub content: String,
+    pub buffer: Rope,
     pub cursor: usize,
     pub selected_range: Range<usize>,
     pub selection_reversed: bool,
@@ -47,7 +48,7 @@ impl EditorState {
             selected_range: 0..0,
             selection_reversed: false,
             marked_range: None,
-            content,
+            buffer: Rope::from_str(&content),
             focus_handle,
             blink_cursor,
             scroll_offset: px(0.),
@@ -57,8 +58,18 @@ impl EditorState {
         }
     }
 
+    /// Snapshot the buffer as a String (allocates). Use for read-heavy operations
+    /// that need string slicing. Mutations should use the rope API directly.
+    pub fn content(&self) -> String {
+        self.buffer.to_string()
+    }
+
+    pub fn content_len(&self) -> usize {
+        self.buffer.len_bytes()
+    }
+
     pub fn set_content(&mut self, content: String, _window: &mut Window, cx: &mut Context<Self>) {
-        self.content = content;
+        self.buffer = Rope::from_str(&content);
         self.cursor = 0;
         self.selected_range = 0..0;
         self.marked_range = None;
@@ -78,7 +89,7 @@ impl EditorState {
     }
 
     pub fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
-        let offset = offset.min(self.content.len());
+        let offset = offset.min(self.content_len());
         self.selected_range = offset..offset;
         self.cursor = offset;
         self.blink_cursor.update(cx, |bc, cx| bc.pause(cx));
@@ -86,7 +97,7 @@ impl EditorState {
     }
 
     pub fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
-        let offset = offset.min(self.content.len());
+        let offset = offset.min(self.content_len());
         if self.selection_reversed {
             self.selected_range.start = offset;
         } else {

@@ -7,15 +7,16 @@ use super::{EditorEvent, EditorState};
 impl EditorState {
     /// Handle tab/shift-tab inside a table. Returns true if handled.
     pub fn handle_table_tab(&mut self, forward: bool, cx: &mut Context<Self>) -> bool {
-        let pos = self.cursor.min(self.content.len());
+        let content = self.content();
+        let pos = self.cursor.min(content.len());
 
         // Find current line boundaries
-        let line_start = self.content[..pos].rfind('\n').map(|i| i + 1).unwrap_or(0);
-        let line_end = self.content[pos..]
+        let line_start = content[..pos].rfind('\n').map(|i| i + 1).unwrap_or(0);
+        let line_end = content[pos..]
             .find('\n')
             .map(|p| pos + p)
-            .unwrap_or(self.content.len());
-        let current_line = &self.content[line_start..line_end];
+            .unwrap_or(content.len());
+        let current_line = &content[line_start..line_end];
 
         // Check if current line is a table row
         let trimmed = current_line.trim();
@@ -24,15 +25,15 @@ impl EditorState {
         }
 
         // Find the full table block
-        let table_start = self.find_table_start(line_start);
-        let table_end = self.find_table_end(line_end);
+        let table_start = Self::find_table_start_in(&content, line_start);
+        let table_end = Self::find_table_end_in(&content, line_end);
 
         // Determine which cell the cursor is in
         let cursor_col_in_line = pos - line_start;
-        let cursor_col_idx = self.cell_index_at(current_line, cursor_col_in_line);
+        let cursor_col_idx = Self::cell_index_at_in(current_line, cursor_col_in_line);
 
         // Parse the full table into rows of cells
-        let table_text = self.content[table_start..table_end].to_string();
+        let table_text = &content[table_start..table_end];
         let mut rows: Vec<Vec<String>> = Vec::new();
         let mut is_separator = Vec::new();
         for row_str in table_text.split('\n') {
@@ -49,12 +50,11 @@ impl EditorState {
             return false;
         }
 
-        // Find max column count and max width per column
+        // Find max column count
         let max_cols = rows.iter().map(|r| r.len()).max().unwrap_or(0);
         if max_cols == 0 {
             return false;
         }
-        let mut col_widths = compute_col_widths(&rows, &is_separator);
 
         // Determine cursor's row index within the table
         let mut cursor_row_idx = 0;
@@ -72,21 +72,9 @@ impl EditorState {
 
         // Calculate target cell
         let (next_row, next_col, need_new_row) = if forward {
-            self.next_table_cell(
-                cursor_row_idx,
-                cursor_col_idx,
-                &rows,
-                &is_separator,
-                max_cols,
-            )
+            Self::next_table_cell(cursor_row_idx, cursor_col_idx, &rows, &is_separator, max_cols)
         } else {
-            self.prev_table_cell(
-                cursor_row_idx,
-                cursor_col_idx,
-                &rows,
-                &is_separator,
-                max_cols,
-            )
+            Self::prev_table_cell(cursor_row_idx, cursor_col_idx, &rows, &is_separator, max_cols)
         };
 
         if need_new_row {
@@ -102,7 +90,7 @@ impl EditorState {
         }
 
         // Recalculate widths after padding
-        col_widths = compute_col_widths(&rows, &is_separator);
+        let col_widths = compute_col_widths(&rows, &is_separator);
 
         // Rebuild the aligned table
         let new_table = format_table(&rows, &is_separator, &col_widths);
@@ -112,12 +100,12 @@ impl EditorState {
             cursor_pos_in_formatted_table(next_row, next_col, &rows, &col_widths, &is_separator);
         let new_cursor = (table_start + cursor_in_table).min(table_start + new_table.len());
 
-        // Replace table text in content
-        let mut new_content = String::with_capacity(self.content.len());
-        new_content.push_str(&self.content[..table_start]);
-        new_content.push_str(&new_table);
-        new_content.push_str(&self.content[table_end..]);
-        self.content = new_content;
+        // Replace table text in the rope buffer
+        let char_start = self.buffer.byte_to_char(table_start);
+        let char_end = self.buffer.byte_to_char(table_end);
+        self.buffer.remove(char_start..char_end);
+        self.buffer.insert(char_start, &new_table);
+
         self.selected_range = new_cursor..new_cursor;
         self.cursor = new_cursor;
         self.marked_range.take();
@@ -127,15 +115,15 @@ impl EditorState {
         true
     }
 
-    fn find_table_start(&self, line_start: usize) -> usize {
+    fn find_table_start_in(content: &str, line_start: usize) -> usize {
         let mut start = line_start;
         while start > 0 {
             let prev_end = start - 1;
-            let prev_start = self.content[..prev_end]
+            let prev_start = content[..prev_end]
                 .rfind('\n')
                 .map(|i| i + 1)
                 .unwrap_or(0);
-            let prev_line = self.content[prev_start..prev_end].trim();
+            let prev_line = content[prev_start..prev_end].trim();
             if prev_line.starts_with('|') && prev_line.ends_with('|') && prev_line.len() > 1 {
                 start = prev_start;
             } else {
@@ -145,18 +133,18 @@ impl EditorState {
         start
     }
 
-    fn find_table_end(&self, line_end: usize) -> usize {
+    fn find_table_end_in(content: &str, line_end: usize) -> usize {
         let mut end = line_end;
-        while end < self.content.len() {
-            if self.content.as_bytes()[end] != b'\n' {
+        while end < content.len() {
+            if content.as_bytes()[end] != b'\n' {
                 break;
             }
             let next_start = end + 1;
-            let next_end = self.content[next_start..]
+            let next_end = content[next_start..]
                 .find('\n')
                 .map(|p| next_start + p)
-                .unwrap_or(self.content.len());
-            let next_line = self.content[next_start..next_end].trim();
+                .unwrap_or(content.len());
+            let next_line = content[next_start..next_end].trim();
             if next_line.starts_with('|') && next_line.ends_with('|') && next_line.len() > 1 {
                 end = next_end;
             } else {
@@ -166,7 +154,7 @@ impl EditorState {
         end
     }
 
-    fn cell_index_at(&self, line: &str, col_offset: usize) -> usize {
+    fn cell_index_at_in(line: &str, col_offset: usize) -> usize {
         let pipes = line[..col_offset.min(line.len())]
             .chars()
             .filter(|&c| c == '|')
@@ -175,7 +163,6 @@ impl EditorState {
     }
 
     fn next_table_cell(
-        &self,
         row: usize,
         col: usize,
         rows: &[Vec<String>],
@@ -201,7 +188,6 @@ impl EditorState {
     }
 
     fn prev_table_cell(
-        &self,
         row: usize,
         col: usize,
         rows: &[Vec<String>],

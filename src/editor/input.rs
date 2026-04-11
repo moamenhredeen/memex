@@ -4,6 +4,20 @@ use gpui::*;
 
 use super::{EditorEvent, EditorState};
 
+impl EditorState {
+    /// Replace a byte range in the rope buffer with new text. O(log n).
+    fn rope_replace(&mut self, range: Range<usize>, new_text: &str) {
+        let char_start = self.buffer.byte_to_char(range.start);
+        let char_end = self.buffer.byte_to_char(range.end);
+        if char_start != char_end {
+            self.buffer.remove(char_start..char_end);
+        }
+        if !new_text.is_empty() {
+            self.buffer.insert(char_start, new_text);
+        }
+    }
+}
+
 impl EntityInputHandler for EditorState {
     fn text_for_range(
         &mut self,
@@ -14,7 +28,9 @@ impl EntityInputHandler for EditorState {
     ) -> Option<String> {
         let range = self.range_from_utf16(&range_utf16);
         actual_range.replace(self.range_to_utf16(&range));
-        Some(self.content[range].to_string())
+        let char_start = self.buffer.byte_to_char(range.start);
+        let char_end = self.buffer.byte_to_char(range.end);
+        Some(self.buffer.slice(char_start..char_end).to_string())
     }
 
     fn selected_text_range(
@@ -56,9 +72,8 @@ impl EntityInputHandler for EditorState {
             .or(self.marked_range.clone())
             .unwrap_or(self.selected_range.clone());
 
-        self.content =
-            (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
-                .into();
+        self.rope_replace(range.clone(), new_text);
+
         let new_cursor = range.start + new_text.len();
         self.selected_range = new_cursor..new_cursor;
         self.cursor = new_cursor;
@@ -82,9 +97,7 @@ impl EntityInputHandler for EditorState {
             .or(self.marked_range.clone())
             .unwrap_or(self.selected_range.clone());
 
-        self.content =
-            (self.content[0..range.start].to_owned() + new_text + &self.content[range.end..])
-                .into();
+        self.rope_replace(range.clone(), new_text);
 
         if !new_text.is_empty() {
             self.marked_range = Some(range.start..range.start + new_text.len());
