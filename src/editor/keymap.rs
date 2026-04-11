@@ -132,6 +132,8 @@ impl Keymap {
             kb("backspace", EditorCommand::DeleteBackward),
             kb("delete", EditorCommand::DeleteForward),
             kb("enter", EditorCommand::InsertNewline),
+            // Vim toggle
+            kb("ctrl-shift-v", EditorCommand::ToggleVimMode),
         ];
 
         self.bindings.insert(EditorMode::Insert, insert);

@@ -42,4 +42,5 @@ pub enum EditorCommand {
 
     // Mode
     EnterMode(super::keymap::EditorMode),
+    ToggleVimMode,
 }

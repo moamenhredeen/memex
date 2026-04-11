@@ -380,6 +380,16 @@ impl EditorState {
                 self.mode = new_mode;
                 cx.notify();
             }
+            ToggleVimMode => {
+                self.vim.enabled = !self.vim.enabled;
+                if self.vim.enabled {
+                    self.mode = keymap::EditorMode::Normal;
+                } else {
+                    self.mode = keymap::EditorMode::Insert;
+                }
+                self.history.break_coalescing();
+                cx.notify();
+            }
         }
     }
 
