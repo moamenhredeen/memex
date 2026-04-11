@@ -29,13 +29,7 @@ pub fn app() -> impl IntoElement {
         .background(bg_color)
         .direction(Direction::Vertical)
         .on_global_key_down(on_global_key)
-        .child(
-            // Editor takes all remaining space
-            rect()
-                .width(Size::fill())
-                .height(Size::flex(1.))
-                .child(Editor { app_state }),
-        )
+        .child(Editor { app_state })
         .child(StatusBar { app_state })
         .child(CommandBar {
             app_state,

@@ -69,7 +69,7 @@ impl Component for Editor {
 
         rect()
             .width(Size::fill())
-            .height(Size::fill())
+            .height(Size::flex(1.))
             .background(config.editor_bg)
             .corner_radius(8.)
             .padding(24.)
