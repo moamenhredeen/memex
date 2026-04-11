@@ -59,7 +59,7 @@ struct VaultSwitcher {
 
 impl Component for VaultSwitcher {
     fn render(&self) -> impl IntoElement {
-        let app_state = self.app_state;
+        let mut app_state = self.app_state;
         let show_dropdown = use_state(|| false);
         let vault_name = self.vault_name.clone();
 
@@ -75,66 +75,10 @@ impl Component for VaultSwitcher {
         let registry = app_state.read().registry.clone();
         let vault_paths = registry.vault_paths();
 
-        let mut container = rect()
-            .child(
-                // Vault name button
-                rect()
-                    .padding((4., 8., 4., 8.))
-                    .corner_radius(4.)
-                    .background(DROPDOWN_BG)
-                    .on_pointer_press(toggle)
-                    .child(
-                        label()
-                            .text(format!("⌂ {}", vault_name))
-                            .font_size(13.)
-                            .color(STATUSBAR_ACCENT),
-                    ),
-            );
+        // Build dropdown items (always built, shown/hidden via size)
+        let mut dropdown_inner = rect().width(Size::fill());
 
-        // Always include dropdown in tree to avoid torin cache panic.
-        // When hidden, render an empty absolute rect.
-        if is_open {
-            container = container.child(
-                VaultDropdown {
-                    app_state,
-                    vault_paths,
-                    show_dropdown,
-                },
-            );
-        } else {
-            container = container.child(
-                rect()
-                    .width(Size::px(0.))
-                    .height(Size::px(0.))
-                    .position(Position::new_global()),
-            );
-        }
-
-        container
-    }
-}
-
-/// The dropdown menu listing all registered vaults.
-#[derive(PartialEq)]
-struct VaultDropdown {
-    app_state: State<AppState>,
-    vault_paths: Vec<std::path::PathBuf>,
-    show_dropdown: State<bool>,
-}
-
-impl Component for VaultDropdown {
-    fn render(&self) -> impl IntoElement {
-        let mut app_state = self.app_state;
-        let mut show_dropdown = self.show_dropdown;
-
-        let mut dropdown = rect()
-            .width(Size::px(250.))
-            .background(DROPDOWN_BG)
-            .corner_radius(6.)
-            .padding(4.)
-            .position(Position::new_global().bottom(STATUSBAR_HEIGHT + 4.).left(12.));
-
-        for vault_path in &self.vault_paths {
+        for vault_path in &vault_paths {
             let name = vault_path
                 .file_name()
                 .and_then(|s| s.to_str())
@@ -151,7 +95,7 @@ impl Component for VaultDropdown {
                 show_dropdown.set(false);
             };
 
-            dropdown = dropdown.child(
+            dropdown_inner = dropdown_inner.child(
                 rect()
                     .width(Size::fill())
                     .padding((6., 8., 6., 8.))
@@ -162,12 +106,13 @@ impl Component for VaultDropdown {
         }
 
         // "Open vault..." option
+        let mut show_dd = show_dropdown;
         let on_open_vault = move |_: Event<PointerEventData>| {
             eprintln!("TODO: open folder picker dialog");
-            show_dropdown.set(false);
+            show_dd.set(false);
         };
 
-        dropdown = dropdown.child(
+        dropdown_inner = dropdown_inner.child(
             rect()
                 .width(Size::fill())
                 .padding((6., 8., 6., 8.))
@@ -181,6 +126,39 @@ impl Component for VaultDropdown {
                 ),
         );
 
-        dropdown
+        // Dropdown container: always in tree, visibility controlled by size
+        let dropdown = if is_open {
+            rect()
+                .width(Size::px(250.))
+                .background(DROPDOWN_BG)
+                .corner_radius(6.)
+                .padding(4.)
+                .position(Position::new_global().bottom(STATUSBAR_HEIGHT + 4.).left(12.))
+                .child(dropdown_inner)
+        } else {
+            rect()
+                .width(Size::px(0.))
+                .height(Size::px(0.))
+                .overflow(Overflow::Clip)
+                .position(Position::new_global())
+                .child(dropdown_inner)
+        };
+
+        rect()
+            .child(
+                // Vault name button
+                rect()
+                    .padding((4., 8., 4., 8.))
+                    .corner_radius(4.)
+                    .background(DROPDOWN_BG)
+                    .on_pointer_press(toggle)
+                    .child(
+                        label()
+                            .text(format!("⌂ {}", vault_name))
+                            .font_size(13.)
+                            .color(STATUSBAR_ACCENT),
+                    ),
+            )
+            .child(dropdown)
     }
 }
