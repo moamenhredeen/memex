@@ -1,5 +1,6 @@
 use freya::prelude::*;
 
+use crate::command_bar::CommandBar;
 use crate::editor::Editor;
 use crate::state::AppState;
 use crate::statusbar::StatusBar;
@@ -7,12 +8,26 @@ use crate::theme;
 
 pub fn app() -> impl IntoElement {
     let app_state = use_state(AppState::new);
+    let command_bar_visible = use_state(|| false);
+
+    // Global Ctrl+P handler
+    let mut command_bar_visible_toggle = command_bar_visible;
+    let on_global_key = move |e: Event<KeyboardEventData>| {
+        if e.modifiers.contains(Modifiers::CONTROL)
+            && e.key == Key::Character("p".to_string())
+        {
+            let current = *command_bar_visible_toggle.read();
+            command_bar_visible_toggle.set(!current);
+            e.stop_propagation();
+        }
+    };
 
     rect()
         .width(Size::fill())
         .height(Size::fill())
         .background(theme::BG_COLOR)
         .direction(Direction::Vertical)
+        .on_global_key_down(on_global_key)
         .child(
             // Editor takes all remaining space
             rect()
@@ -21,4 +36,8 @@ pub fn app() -> impl IntoElement {
                 .child(Editor { app_state }),
         )
         .child(StatusBar { app_state })
+        .child(CommandBar {
+            app_state,
+            visible: command_bar_visible,
+        })
 }

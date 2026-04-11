@@ -1,4 +1,5 @@
 mod app;
+mod command_bar;
 mod editor;
 mod fs;
 mod markdown;
