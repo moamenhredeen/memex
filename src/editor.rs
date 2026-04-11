@@ -3,7 +3,8 @@ use std::ops::Range;
 use gpui::*;
 
 use crate::markdown::{
-    analyze_line, is_separator_row, parse_table_cells, LineInfo, LineKind, StyleKind,
+    analyze_line, compute_col_widths, cursor_pos_in_formatted_table, format_table,
+    is_separator_row, parse_table_cells, LineInfo, LineKind, StyleKind,
 };
 
 // Tab action for key binding
@@ -278,8 +279,8 @@ impl EditorState {
         self.offset_from_utf16(range.start)..self.offset_from_utf16(range.end)
     }
 
-    /// Returns true if cursor is on a table line and handles the tab.
-    pub fn handle_table_tab(&mut self, cx: &mut Context<Self>) -> bool {
+    /// Handle tab/shift-tab inside a table. Returns true if handled.
+    pub fn handle_table_tab(&mut self, forward: bool, cx: &mut Context<Self>) -> bool {
         let pos = self.cursor.min(self.content.len());
 
         // Find current line boundaries
@@ -301,12 +302,11 @@ impl EditorState {
         let table_end = self.find_table_end(line_end);
 
         // Determine which cell the cursor is in
-        let cursor_row_start = line_start;
         let cursor_col_in_line = pos - line_start;
         let cursor_col_idx = self.cell_index_at(current_line, cursor_col_in_line);
 
         // Parse the full table into rows of cells
-        let table_text = &self.content[table_start..table_end];
+        let table_text = self.content[table_start..table_end].to_string();
         let mut rows: Vec<Vec<String>> = Vec::new();
         let mut is_separator = Vec::new();
         for row_str in table_text.split('\n') {
@@ -328,19 +328,12 @@ impl EditorState {
         if max_cols == 0 {
             return false;
         }
-        let mut col_widths = vec![3usize; max_cols]; // minimum 3 chars
-        for (ri, row) in rows.iter().enumerate() {
-            if is_separator[ri] {
-                continue;
-            }
-            for (ci, cell) in row.iter().enumerate() {
-                col_widths[ci] = col_widths[ci].max(cell.trim().len());
-            }
-        }
+        let mut col_widths = compute_col_widths(&rows, &is_separator);
 
         // Determine cursor's row index within the table
         let mut cursor_row_idx = 0;
         {
+            let cursor_row_start = line_start;
             let mut offset = table_start;
             for row_str in table_text.split('\n') {
                 if offset == cursor_row_start {
@@ -351,11 +344,13 @@ impl EditorState {
             }
         }
 
-        // Calculate next cell position (skip separator rows)
-        let (next_row, next_col, need_new_row) =
-            self.next_table_cell(cursor_row_idx, cursor_col_idx, &rows, &is_separator, max_cols);
+        // Calculate target cell
+        let (next_row, next_col, need_new_row) = if forward {
+            self.next_table_cell(cursor_row_idx, cursor_col_idx, &rows, &is_separator, max_cols)
+        } else {
+            self.prev_table_cell(cursor_row_idx, cursor_col_idx, &rows, &is_separator, max_cols)
+        };
 
-        // If we need a new row, add it
         if need_new_row {
             rows.push(vec![String::new(); max_cols]);
             is_separator.push(false);
@@ -368,51 +363,17 @@ impl EditorState {
             }
         }
 
+        // Recalculate widths after padding
+        col_widths = compute_col_widths(&rows, &is_separator);
+
         // Rebuild the aligned table
-        let mut new_table = String::new();
-        for (ri, row) in rows.iter().enumerate() {
-            new_table.push('|');
-            for (ci, cell) in row.iter().enumerate() {
-                let w = col_widths[ci];
-                if is_separator[ri] {
-                    new_table.push(' ');
-                    for _ in 0..w {
-                        new_table.push('-');
-                    }
-                    new_table.push(' ');
-                } else {
-                    let trimmed_cell = cell.trim();
-                    new_table.push(' ');
-                    new_table.push_str(trimmed_cell);
-                    for _ in trimmed_cell.len()..w {
-                        new_table.push(' ');
-                    }
-                    new_table.push(' ');
-                }
-                new_table.push('|');
-            }
-            if ri < rows.len() - 1 {
-                new_table.push('\n');
-            }
-        }
+        let new_table = format_table(&rows, &is_separator, &col_widths);
 
-        // Calculate new cursor position: after "| " in the target cell
-        let mut new_cursor = table_start;
-        for ri in 0..next_row {
-            // row length + 1 for newline
-            let row_len = self.formatted_row_len(&rows[ri], &col_widths, is_separator[ri]);
-            new_cursor += row_len + 1;
-        }
-        // Within the target row, find the target cell start
-        new_cursor += 1; // leading |
-        for ci in 0..next_col {
-            new_cursor += 1 + col_widths[ci] + 1 + 1; // space + content + space + |
-        }
-        new_cursor += 1; // space after |
-
-        // Place cursor at end of cell content
-        let cell_content = rows[next_row][next_col].trim();
-        new_cursor += cell_content.len();
+        // Calculate cursor position in the new table string
+        let cursor_in_table = cursor_pos_in_formatted_table(
+            next_row, next_col, &rows, &col_widths, &is_separator,
+        );
+        let new_cursor = (table_start + cursor_in_table).min(table_start + new_table.len());
 
         // Replace table text in content
         let mut new_content = String::with_capacity(self.content.len());
@@ -420,7 +381,6 @@ impl EditorState {
         new_content.push_str(&new_table);
         new_content.push_str(&self.content[table_end..]);
         self.content = new_content;
-        let new_cursor = new_cursor.min(self.content.len());
         self.selected_range = new_cursor..new_cursor;
         self.cursor = new_cursor;
         self.marked_range.take();
@@ -490,42 +450,47 @@ impl EditorState {
     ) -> (usize, usize, bool) {
         let mut r = row;
         let mut c = col + 1;
-
         loop {
             if c >= max_cols {
                 c = 0;
                 r += 1;
             }
             if r >= rows.len() {
-                // Need a new row
                 return (r, 0, true);
             }
             if !is_separator[r] {
                 return (r, c, false);
             }
-            // Skip separator row — move to next row, first column
             c = 0;
             r += 1;
         }
     }
 
-    fn formatted_row_len(
+    fn prev_table_cell(
         &self,
-        row: &[String],
-        col_widths: &[usize],
-        _is_sep: bool,
-    ) -> usize {
-        // | content |content |...| 
-        let mut len = 1; // leading |
-        for (ci, _) in row.iter().enumerate() {
-            let w = if ci < col_widths.len() {
-                col_widths[ci]
-            } else {
-                3
-            };
-            len += 1 + w + 1 + 1; // space + content_width + space + |
+        row: usize,
+        col: usize,
+        rows: &[Vec<String>],
+        is_separator: &[bool],
+        max_cols: usize,
+    ) -> (usize, usize, bool) {
+        let mut r = row as isize;
+        let mut c = col as isize - 1;
+        loop {
+            if c < 0 {
+                c = max_cols as isize - 1;
+                r -= 1;
+            }
+            if r < 0 {
+                // Already at the very first cell, stay put
+                return (0, 0, false);
+            }
+            if !is_separator[r as usize] {
+                return (r as usize, c as usize, false);
+            }
+            c = max_cols as isize - 1;
+            r -= 1;
         }
-        len
     }
 }
 
@@ -1164,9 +1129,14 @@ impl Render for EditorView {
             .key_context("Editor")
             .on_action(cx.listener(|this, _: &TabAction, window, cx| {
                 this.state.update(cx, |state, cx| {
-                    if !state.handle_table_tab(cx) {
+                    if !state.handle_table_tab(true, cx) {
                         state.replace_text_in_range(None, "    ", window, cx);
                     }
+                });
+            }))
+            .on_action(cx.listener(|this, _: &ShiftTabAction, _window, cx| {
+                this.state.update(cx, |state, cx| {
+                    state.handle_table_tab(false, cx);
                 });
             }))
             .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {

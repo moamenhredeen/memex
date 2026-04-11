@@ -327,6 +327,86 @@ pub fn is_separator_row(line: &str) -> bool {
         .all(|cell| cell.trim().chars().all(|c| c == '-' || c == ':' || c == ' '))
 }
 
+/// Compute column widths from table rows (minimum 3).
+pub fn compute_col_widths(rows: &[Vec<String>], is_separator: &[bool]) -> Vec<usize> {
+    let max_cols = rows.iter().map(|r| r.len()).max().unwrap_or(0);
+    let mut widths = vec![3usize; max_cols];
+    for (ri, row) in rows.iter().enumerate() {
+        if is_separator[ri] {
+            continue;
+        }
+        for (ci, cell) in row.iter().enumerate() {
+            widths[ci] = widths[ci].max(cell.trim().len());
+        }
+    }
+    widths
+}
+
+/// Format a table as aligned markdown text.
+pub fn format_table(
+    rows: &[Vec<String>],
+    is_separator: &[bool],
+    col_widths: &[usize],
+) -> String {
+    let mut out = String::new();
+    for (ri, row) in rows.iter().enumerate() {
+        out.push('|');
+        for (ci, cell) in row.iter().enumerate() {
+            let w = col_widths.get(ci).copied().unwrap_or(3);
+            if is_separator[ri] {
+                out.push(' ');
+                for _ in 0..w {
+                    out.push('-');
+                }
+                out.push(' ');
+            } else {
+                let content = cell.trim();
+                out.push(' ');
+                out.push_str(content);
+                for _ in content.len()..w {
+                    out.push(' ');
+                }
+                out.push(' ');
+            }
+            out.push('|');
+        }
+        if ri < rows.len() - 1 {
+            out.push('\n');
+        }
+    }
+    out
+}
+
+/// Calculate cursor byte offset within a formatted table for a given cell.
+/// Places cursor at end of cell content.
+pub fn cursor_pos_in_formatted_table(
+    target_row: usize,
+    target_col: usize,
+    rows: &[Vec<String>],
+    col_widths: &[usize],
+    is_separator: &[bool],
+) -> usize {
+    let mut pos = 0;
+    for ri in 0..target_row {
+        pos += 1; // leading |
+        for ci in 0..rows[ri].len() {
+            let w = col_widths.get(ci).copied().unwrap_or(3);
+            pos += 1 + w + 1 + 1; // space + width + space + |
+        }
+        pos += 1; // newline
+    }
+    pos += 1; // leading | of target row
+    for ci in 0..target_col {
+        let w = col_widths.get(ci).copied().unwrap_or(3);
+        pos += 1 + w + 1 + 1;
+    }
+    pos += 1; // space after |
+    if !is_separator[target_row] {
+        pos += rows[target_row][target_col].trim().len();
+    }
+    pos
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -456,5 +536,71 @@ mod tests {
         let info = analyze_line("```", &mut in_code);
         assert_eq!(info.kind, LineKind::CodeBlock);
         assert!(!in_code);
+    }
+
+    #[test]
+    fn test_format_table_alignment() {
+        let rows = vec![
+            vec![" Name ".into(), " Role ".into(), " Status ".into()],
+            vec!["---".into(), "---".into(), "---".into()],
+            vec![" Alice ".into(), " Dev ".into(), " Active ".into()],
+            vec![" Bob ".into(), " Design ".into(), " Away ".into()],
+        ];
+        let is_sep = vec![false, true, false, false];
+        let widths = compute_col_widths(&rows, &is_sep);
+        assert_eq!(widths, vec![5, 6, 6]); // Alice, Design, Active/Status
+        let formatted = format_table(&rows, &is_sep, &widths);
+        let lines: Vec<&str> = formatted.split('\n').collect();
+        assert_eq!(lines[0], "| Name  | Role   | Status |");
+        assert_eq!(lines[1], "| ----- | ------ | ------ |");
+        assert_eq!(lines[2], "| Alice | Dev    | Active |");
+        assert_eq!(lines[3], "| Bob   | Design | Away   |");
+        // All lines should be same length
+        assert!(lines.iter().all(|l| l.len() == lines[0].len()));
+    }
+
+    #[test]
+    fn test_cursor_pos_in_formatted_table() {
+        let rows = vec![
+            vec![" Name ".into(), " Role ".into()],
+            vec!["---".into(), "---".into()],
+            vec![" Alice ".into(), " Dev ".into()],
+        ];
+        let is_sep = vec![false, true, false];
+        let widths = compute_col_widths(&rows, &is_sep);
+        let formatted = format_table(&rows, &is_sep, &widths);
+
+        // Row 0, Col 0: after "| Name" => pos should point after "Name"
+        let pos = cursor_pos_in_formatted_table(0, 0, &rows, &widths, &is_sep);
+        assert_eq!(&formatted[pos - 4..pos], "Name");
+
+        // Row 0, Col 1: after "| Role" => pos should point after "Role"  
+        let pos = cursor_pos_in_formatted_table(0, 1, &rows, &widths, &is_sep);
+        assert_eq!(&formatted[pos - 4..pos], "Role");
+
+        // Row 2, Col 0: after "| Alice"
+        let pos = cursor_pos_in_formatted_table(2, 0, &rows, &widths, &is_sep);
+        assert_eq!(&formatted[pos - 5..pos], "Alice");
+
+        // Row 2, Col 1: after "| Dev"
+        let pos = cursor_pos_in_formatted_table(2, 1, &rows, &widths, &is_sep);
+        assert_eq!(&formatted[pos - 3..pos], "Dev");
+    }
+
+    #[test]
+    fn test_format_table_uneven_columns() {
+        // Simulate a table where user typed short content in some cells
+        let rows = vec![
+            vec![" a ".into(), " longer text ".into()],
+            vec![" x ".into(), " y ".into()],
+        ];
+        let is_sep = vec![false, false];
+        let widths = compute_col_widths(&rows, &is_sep);
+        let formatted = format_table(&rows, &is_sep, &widths);
+        let lines: Vec<&str> = formatted.split('\n').collect();
+        // Both lines should be same length
+        assert_eq!(lines[0].len(), lines[1].len());
+        assert_eq!(lines[0], "| a   | longer text |");
+        assert_eq!(lines[1], "| x   | y           |");
     }
 }

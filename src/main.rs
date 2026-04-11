@@ -18,6 +18,7 @@ fn main() {
 
             cx.bind_keys([
                 gpui::KeyBinding::new("tab", editor::TabAction, Some("Editor")),
+                gpui::KeyBinding::new("shift-tab", editor::ShiftTabAction, Some("Editor")),
             ]);
 
             cx.open_window(
