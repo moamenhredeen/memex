@@ -230,7 +230,12 @@ fn parse_inline_styles(text: &str) -> Vec<StyleSpan> {
     let mut normal_start = 0;
 
     while i < len {
-        // Inline code: `...`
+        // Skip if not at a char boundary (inside multi-byte UTF-8)
+        if !text.is_char_boundary(i) {
+            i += 1;
+            continue;
+        }
+        // Only check ASCII markdown delimiters
         if bytes[i] == b'`' {
             if let Some(end) = find_closing(text, i + 1, "`") {
                 push_normal(&mut spans, normal_start, i);
@@ -243,8 +248,7 @@ fn parse_inline_styles(text: &str) -> Vec<StyleSpan> {
                 continue;
             }
         }
-        // Bold+italic: ***...***
-        if i + 2 < len && &text[i..i + 3] == "***" {
+        if bytes[i] == b'*' && i + 2 < len && bytes[i + 1] == b'*' && bytes[i + 2] == b'*' {
             if let Some(end) = find_closing(text, i + 3, "***") {
                 push_normal(&mut spans, normal_start, i);
                 spans.push(StyleSpan {
@@ -256,8 +260,7 @@ fn parse_inline_styles(text: &str) -> Vec<StyleSpan> {
                 continue;
             }
         }
-        // Bold: **...**
-        if i + 1 < len && &text[i..i + 2] == "**" {
+        if bytes[i] == b'*' && i + 1 < len && bytes[i + 1] == b'*' {
             if let Some(end) = find_closing(text, i + 2, "**") {
                 push_normal(&mut spans, normal_start, i);
                 spans.push(StyleSpan {
@@ -269,7 +272,6 @@ fn parse_inline_styles(text: &str) -> Vec<StyleSpan> {
                 continue;
             }
         }
-        // Italic: *...*
         if bytes[i] == b'*' {
             if let Some(end) = find_closing(text, i + 1, "*") {
                 push_normal(&mut spans, normal_start, i);
@@ -282,8 +284,7 @@ fn parse_inline_styles(text: &str) -> Vec<StyleSpan> {
                 continue;
             }
         }
-        // Strikethrough: ~~...~~
-        if i + 1 < len && &text[i..i + 2] == "~~" {
+        if bytes[i] == b'~' && i + 1 < len && bytes[i + 1] == b'~' {
             if let Some(end) = find_closing(text, i + 2, "~~") {
                 push_normal(&mut spans, normal_start, i);
                 spans.push(StyleSpan {
@@ -717,7 +718,7 @@ impl Element for EditorElement {
         let cursor_pos = state.cursor;
         let selected_range = state.selected_range.clone();
         let content = state.content.clone();
-        drop(state);
+        // state borrow ends here since content is cloned
 
         let text_system = window.text_system().clone();
         let font_family: SharedString = "sans-serif".into();
