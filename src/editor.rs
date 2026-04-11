@@ -1079,15 +1079,19 @@ pub struct EditorView {
     pub state: Entity<EditorState>,
     focus_handle: FocusHandle,
     is_selecting: bool,
+    _observe_state: Subscription,
 }
 
 impl EditorView {
     pub fn new(state: Entity<EditorState>, cx: &mut Context<Self>) -> Self {
         let focus_handle = state.read(cx).focus_handle.clone();
+        // Re-render EditorView whenever EditorState changes
+        let _observe_state = cx.observe(&state, |_, _, cx| cx.notify());
         Self {
             state,
             focus_handle,
             is_selecting: false,
+            _observe_state,
         }
     }
 }
