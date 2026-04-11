@@ -100,11 +100,33 @@ impl EditorState {
             cursor_pos_in_formatted_table(next_row, next_col, &rows, &col_widths, &is_separator);
         let new_cursor = (table_start + cursor_in_table).min(table_start + new_table.len());
 
-        // Replace table text in the rope buffer
+        // Replace table text in the rope buffer with undo tracking
+        let old_table_text = {
+            let char_start = self.buffer.byte_to_char(table_start);
+            let char_end = self.buffer.byte_to_char(table_end);
+            self.buffer.slice(char_start..char_end).to_string()
+        };
+        let cursor_before = self.cursor;
+        let selection_before = self.selected_range.clone();
+
         let char_start = self.buffer.byte_to_char(table_start);
         let char_end = self.buffer.byte_to_char(table_end);
         self.buffer.remove(char_start..char_end);
         self.buffer.insert(char_start, &new_table);
+
+        // Record as a single undo unit (suppress coalescing)
+        self.history.begin_group(selection_before);
+        self.history.record(
+            super::undo::EditOp {
+                range: table_start..table_end,
+                old_text: old_table_text,
+                new_text: new_table,
+                cursor_before,
+                cursor_after: new_cursor,
+            },
+            self.selected_range.clone(),
+        );
+        self.history.end_group();
 
         self.selected_range = new_cursor..new_cursor;
         self.cursor = new_cursor;

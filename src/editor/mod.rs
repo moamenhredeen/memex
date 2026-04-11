@@ -3,6 +3,7 @@ mod element;
 mod input;
 mod movement;
 mod table;
+pub mod undo;
 mod view;
 
 use std::ops::Range;
@@ -26,6 +27,7 @@ pub struct EditorState {
     pub scroll_offset: Pixels,
     pub last_line_layouts: Vec<LinePaintInfo>,
     pub last_bounds: Option<Bounds<Pixels>>,
+    pub history: undo::UndoHistory,
     _blink_sub: Subscription,
 }
 
@@ -54,6 +56,7 @@ impl EditorState {
             scroll_offset: px(0.),
             last_line_layouts: Vec::new(),
             last_bounds: None,
+            history: undo::UndoHistory::new(),
             _blink_sub,
         }
     }
@@ -73,11 +76,24 @@ impl EditorState {
         self.cursor = 0;
         self.selected_range = 0..0;
         self.marked_range = None;
+        self.history.clear();
         cx.notify();
     }
 
     pub fn focus(&self, window: &mut Window) {
         self.focus_handle.focus(window);
+    }
+
+    /// Replace a byte range in the rope buffer with new text. O(log n).
+    pub(crate) fn rope_replace(&mut self, range: Range<usize>, new_text: &str) {
+        let char_start = self.buffer.byte_to_char(range.start);
+        let char_end = self.buffer.byte_to_char(range.end);
+        if char_start != char_end {
+            self.buffer.remove(char_start..char_end);
+        }
+        if !new_text.is_empty() {
+            self.buffer.insert(char_start, new_text);
+        }
     }
 
     pub fn cursor_offset(&self) -> usize {
@@ -108,6 +124,52 @@ impl EditorState {
             self.selected_range = self.selected_range.end..self.selected_range.start;
         }
         self.cursor = self.cursor_offset();
+        cx.notify();
+    }
+
+    pub fn undo(&mut self, cx: &mut Context<Self>) {
+        let txn = match self.history.undo() {
+            Some(t) => t,
+            None => return,
+        };
+
+        // Apply inverse operations in reverse order
+        for inv_op in txn.inverse_ops() {
+            self.rope_replace(inv_op.range.clone(), &inv_op.new_text);
+        }
+
+        // Restore cursor/selection to before the transaction
+        self.selected_range = txn.selection_before.clone();
+        self.cursor = if self.selection_reversed {
+            txn.selection_before.start
+        } else {
+            txn.selection_before.end
+        };
+        self.blink_cursor.update(cx, |bc, cx| bc.pause(cx));
+        cx.emit(EditorEvent::Changed);
+        cx.notify();
+    }
+
+    pub fn redo(&mut self, cx: &mut Context<Self>) {
+        let txn = match self.history.redo() {
+            Some(t) => t,
+            None => return,
+        };
+
+        // Re-apply all operations in forward order
+        for op in &txn.ops {
+            self.rope_replace(op.range.clone(), &op.new_text);
+        }
+
+        // Restore cursor/selection to after the transaction
+        self.selected_range = txn.selection_after.clone();
+        self.cursor = if self.selection_reversed {
+            txn.selection_after.start
+        } else {
+            txn.selection_after.end
+        };
+        self.blink_cursor.update(cx, |bc, cx| bc.pause(cx));
+        cx.emit(EditorEvent::Changed);
         cx.notify();
     }
 }

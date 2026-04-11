@@ -52,6 +52,19 @@ impl Render for EditorView {
             .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
                 let key = e.keystroke.key.as_str();
                 let shift = e.keystroke.modifiers.shift;
+                let ctrl = e.keystroke.modifiers.control;
+
+                // Handle ctrl shortcuts
+                if ctrl {
+                    this.state.update(cx, |state, cx| {
+                        match (key, shift) {
+                            ("z", false) => state.undo(cx),
+                            ("z", true) => state.redo(cx),
+                            _ => {}
+                        }
+                    });
+                    return;
+                }
 
                 this.state.update(cx, |state, cx| {
                     let content = state.content();
