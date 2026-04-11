@@ -3,6 +3,7 @@ mod config;
 mod editor;
 mod fs;
 mod markdown;
+mod plugin;
 mod state;
 mod vault;
 

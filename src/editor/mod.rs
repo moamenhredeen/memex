@@ -36,6 +36,7 @@ pub struct EditorState {
     pub keymap: keymap::Keymap,
     pub vim: vim::VimState,
     pub display_map: display_map::DisplayMap,
+    pub plugins: crate::plugin::PluginEngine,
     _blink_sub: Subscription,
 }
 
@@ -56,6 +57,9 @@ impl EditorState {
         let mut display = display_map::DisplayMap::new(px(24.));
         display.update(&content);
 
+        let mut plugins = crate::plugin::PluginEngine::new();
+        plugins.load_all_plugins(None);
+
         Self {
             cursor: 0,
             selected_range: 0..0,
@@ -72,6 +76,7 @@ impl EditorState {
             keymap: keymap::Keymap::new(),
             vim: vim::VimState::new(),
             display_map: display,
+            plugins,
             _blink_sub,
         }
     }
