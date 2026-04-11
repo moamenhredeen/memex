@@ -891,11 +891,12 @@ impl Element for EditorElement {
                             dim_color,
                             None,
                             None,
-                            false,
+                            true, // monospace for table alignment
                         ),
                     };
 
-                    let family = if use_mono {
+                    // Use monospace for table rows and code spans
+                    let family = if use_mono || matches!(info.kind, LineKind::TableRow) {
                         SharedString::from("Noto Sans Mono")
                     } else {
                         font_family.clone()
