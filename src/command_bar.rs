@@ -31,13 +31,16 @@ impl Component for CommandBar {
 
         let is_visible = *visible.read();
 
-        if !is_visible {
-            // Return a zero-size rect that's always in the tree
-            return rect().width(Size::px(0.)).height(Size::px(0.));
-        }
-
-        let query_text = query.read().clone();
-        let results = search_notes(&app_state.read(), &query_text);
+        let query_text = if is_visible {
+            query.read().clone()
+        } else {
+            String::new()
+        };
+        let results = if is_visible {
+            search_notes(&app_state.read(), &query_text)
+        } else {
+            Vec::new()
+        };
         let has_exact_match = results
             .iter()
             .any(|(title, _)| title.to_lowercase() == query_text.to_lowercase());
@@ -55,6 +58,9 @@ impl Component for CommandBar {
         };
 
         let on_key_down = move |e: Event<KeyboardEventData>| {
+            if !*visible.read() {
+                return;
+            }
             match &e.key {
                 Key::Named(NamedKey::Escape) => {
                     visible.set(false);
@@ -115,7 +121,7 @@ impl Component for CommandBar {
             e.stop_propagation();
         };
 
-        // Build result items
+        // Build result items (always built to keep stable tree)
         let mut items_container = rect().width(Size::fill());
 
         for (i, (title, _path)) in results.iter().enumerate() {
@@ -152,49 +158,60 @@ impl Component for CommandBar {
             );
         }
 
-        // Overlay — use global positioning to avoid torin cache invalidation issues
-        rect()
-            .width(Size::fill())
-            .height(Size::fill())
-            .position(Position::new_global())
-            .background((0, 0, 0, 120))
-            .on_global_key_down(on_key_down)
+        // Build the inner content (always rendered for stable tree)
+        let inner_content = rect()
+            .width(Size::px(500.))
+            .max_height(Size::px(400.))
+            .margin((80., 0., 0., 0.))
+            .background(OVERLAY_BG)
+            .corner_radius(8.)
+            .padding(8.)
+            .overflow(Overflow::Clip)
             .child(
+                // Search input display
                 rect()
-                    .width(Size::px(500.))
-                    .max_height(Size::px(400.))
-                    .margin((80., 0., 0., 0.))
-                    .background(OVERLAY_BG)
-                    .corner_radius(8.)
-                    .padding(8.)
-                    .overflow(Overflow::Clip)
+                    .width(Size::fill())
+                    .padding((10., 12., 10., 12.))
+                    .background(INPUT_BG)
+                    .corner_radius(6.)
                     .child(
-                        // Search input display
-                        rect()
-                            .width(Size::fill())
-                            .padding((10., 12., 10., 12.))
-                            .background(INPUT_BG)
-                            .corner_radius(6.)
-                            .child(
-                                label()
-                                    .text(if query_text.is_empty() {
-                                        "Search notes...".to_string()
-                                    } else {
-                                        query_text.clone()
-                                    })
-                                    .font_size(15.)
-                                    .color(if query_text.is_empty() {
-                                        (100, 100, 120)
-                                    } else {
-                                        INPUT_TEXT
-                                    }),
-                            ),
-                    )
-                    .child(
-                        // Results list
-                        ScrollView::new().child(items_container),
+                        label()
+                            .text(if query_text.is_empty() {
+                                "Search notes...".to_string()
+                            } else {
+                                query_text.clone()
+                            })
+                            .font_size(15.)
+                            .color(if query_text.is_empty() {
+                                (100, 100, 120)
+                            } else {
+                                INPUT_TEXT
+                            }),
                     ),
             )
+            .child(
+                // Results list
+                ScrollView::new().child(items_container),
+            );
+
+        // Overlay — stable tree, visibility controlled by size + overflow
+        if is_visible {
+            rect()
+                .width(Size::fill())
+                .height(Size::fill())
+                .position(Position::new_global())
+                .background((0, 0, 0, 120))
+                .on_global_key_down(on_key_down)
+                .child(inner_content)
+        } else {
+            rect()
+                .width(Size::px(0.))
+                .height(Size::px(0.))
+                .overflow(Overflow::Clip)
+                .position(Position::new_global())
+                .on_global_key_down(on_key_down)
+                .child(inner_content)
+        }
     }
 }
 

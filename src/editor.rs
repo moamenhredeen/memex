@@ -50,6 +50,12 @@ impl Component for Editor {
                 return;
             }
 
+            // Don't consume Ctrl+P — let app-level handler toggle command bar
+            if e.modifiers.contains(Modifiers::CONTROL) && e.key == Key::Character("p".to_string())
+            {
+                return;
+            }
+
             editable.process_event(EditableEvent::KeyDown {
                 key: &e.key,
                 modifiers: e.modifiers,
