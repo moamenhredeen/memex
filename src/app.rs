@@ -373,8 +373,10 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         // If query looks like a path, try listing that directory's subdirectories
         if query.starts_with('/') || query.starts_with('~') || query.starts_with('.') {
             let expanded = if query.starts_with('~') {
+                let rest = query.get(1..).unwrap_or("");
+                let rest = rest.strip_prefix('/').unwrap_or(rest);
                 dirs::home_dir()
-                    .map(|h| h.join(&query[2..]))
+                    .map(|h| if rest.is_empty() { h } else { h.join(rest) })
                     .unwrap_or_else(|| std::path::PathBuf::from(query))
             } else {
                 std::path::PathBuf::from(query)
