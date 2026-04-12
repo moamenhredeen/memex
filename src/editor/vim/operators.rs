@@ -58,8 +58,28 @@ pub(super) fn apply_operator(
             enter_insert: true,
         },
         Operator::Yank => {
-            // Don't delete, just yank
             VimAction::Commands(vec![EditorCommand::YankText(yanked)])
+        }
+        Operator::Indent => {
+            // Indent: insert 4 spaces at start of line
+            let line_start = content[..start].rfind('\n').map(|i| i + 1).unwrap_or(0);
+            VimAction::Commands(vec![
+                EditorCommand::MoveToOffset(line_start),
+                EditorCommand::InsertText("    ".to_string()),
+            ])
+        }
+        Operator::Dedent => {
+            let line_start = content[..start].rfind('\n').map(|i| i + 1).unwrap_or(0);
+            let spaces = content[line_start..].chars().take_while(|c| *c == ' ').count().min(4);
+            if spaces > 0 {
+                VimAction::OperatorResult {
+                    delete_range: line_start..line_start + spaces,
+                    yank_text: String::new(),
+                    enter_insert: false,
+                }
+            } else {
+                VimAction::None
+            }
         }
     }
 }

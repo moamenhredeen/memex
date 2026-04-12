@@ -144,6 +144,13 @@ impl EditorState {
         cx.notify();
     }
 
+    /// Return the selection range in (start, end) order.
+    fn ordered_selection(&self) -> (usize, usize) {
+        let s = self.selected_range.start;
+        let e = self.selected_range.end;
+        if s <= e { (s, e) } else { (e, s) }
+    }
+
     pub fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
         let offset = offset.min(self.content_len());
         if self.selection_reversed {
@@ -400,6 +407,86 @@ impl EditorState {
                 self.history.break_coalescing();
                 cx.notify();
             }
+            IndentSelection => {
+                let (start, end) = self.ordered_selection();
+                if start < end {
+                    let content = self.content();
+                    let line_start = content[..start].rfind('\n').map(|i| i + 1).unwrap_or(0);
+                    let line_end = content[..end].rfind('\n').map(|i| i + 1).unwrap_or(0);
+                    // Indent each line in selection
+                    let mut offset = 0usize;
+                    let mut pos = line_start;
+                    while pos <= line_end {
+                        let insert_at = pos + offset;
+                        self.selected_range = insert_at..insert_at;
+                        self.replace_text_in_range(None, "    ", window, cx);
+                        offset += 4;
+                        if let Some(nl) = content[pos..].find('\n') {
+                            pos = pos + nl + 1;
+                        } else {
+                            break;
+                        }
+                    }
+                }
+            }
+            DedentSelection => {
+                let (start, end) = self.ordered_selection();
+                if start < end {
+                    let content = self.content();
+                    let line_start = content[..start].rfind('\n').map(|i| i + 1).unwrap_or(0);
+                    let mut pos = line_start;
+                    let mut offset: isize = 0;
+                    while pos <= end.saturating_add_signed(offset) {
+                        let actual = (pos as isize + offset) as usize;
+                        let current = self.content();
+                        let spaces = current[actual..].chars().take_while(|c| *c == ' ').count().min(4);
+                        if spaces > 0 {
+                            self.selected_range = actual..actual + spaces;
+                            self.replace_text_in_range(None, "", window, cx);
+                            offset -= spaces as isize;
+                        }
+                        if let Some(nl) = content[pos..].find('\n') {
+                            pos = pos + nl + 1;
+                        } else {
+                            break;
+                        }
+                    }
+                }
+            }
+            JoinSelection => {
+                let (start, end) = self.ordered_selection();
+                let content = self.content();
+                // Find all newlines in selection and replace with space
+                let selected = &content[start..end];
+                let joined = selected.replace('\n', " ");
+                self.selected_range = start..end;
+                self.replace_text_in_range(None, &joined, window, cx);
+            }
+            ToggleCaseSelection => {
+                let (start, end) = self.ordered_selection();
+                let content = self.content();
+                let selected = &content[start..end];
+                let toggled: String = selected.chars().map(|c| {
+                    if c.is_uppercase() { c.to_lowercase().next().unwrap_or(c) }
+                    else { c.to_uppercase().next().unwrap_or(c) }
+                }).collect();
+                self.selected_range = start..end;
+                self.replace_text_in_range(None, &toggled, window, cx);
+            }
+            UppercaseSelection => {
+                let (start, end) = self.ordered_selection();
+                let content = self.content();
+                let upper = content[start..end].to_uppercase();
+                self.selected_range = start..end;
+                self.replace_text_in_range(None, &upper, window, cx);
+            }
+            LowercaseSelection => {
+                let (start, end) = self.ordered_selection();
+                let content = self.content();
+                let lower = content[start..end].to_lowercase();
+                self.selected_range = start..end;
+                self.replace_text_in_range(None, &lower, window, cx);
+            }
         }
     }
 
@@ -474,14 +561,24 @@ impl EditorState {
                     self.replace_text_in_range(None, &replacement, window, cx);
                 }
             }
+            VimAction::ReplaceAndAdvance(replacement, range) => {
+                let next_pos = range.end.min(self.content().len());
+                self.selected_range = range;
+                self.replace_text_in_range(None, &replacement, window, cx);
+                let new_len = self.content().len();
+                self.move_to(next_pos.min(new_len), cx);
+            }
             VimAction::OperatorResult {
                 delete_range,
                 yank_text,
                 enter_insert,
             } => {
                 self.vim.register_content = yank_text;
+                let target = delete_range.start;
                 self.selected_range = delete_range;
                 self.replace_text_in_range(None, "", window, cx);
+                // After J (join), keep cursor at join point
+                self.move_to(target.min(self.content().len()), cx);
                 if enter_insert {
                     self.mode = keymap::EditorMode::Insert;
                     self.history.break_coalescing();

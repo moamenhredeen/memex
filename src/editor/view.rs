@@ -68,6 +68,31 @@ impl Render for EditorView {
                             EditorMode::Normal
                             | EditorMode::Visual
                             | EditorMode::VisualLine => {
+                                // Handle Ctrl-key combos that vim needs
+                                if ctrl {
+                                    match key {
+                                        "r" => {
+                                            state.suppress_next_input = true;
+                                            state.dispatch(EditorCommand::Redo, window, cx);
+                                            return;
+                                        }
+                                        "d" => {
+                                            // Ctrl+D — half page down
+                                            state.suppress_next_input = true;
+                                            state.scroll_offset = (state.scroll_offset + px(200.)).max(px(0.));
+                                            cx.notify();
+                                            return;
+                                        }
+                                        "u" => {
+                                            // Ctrl+U — half page up
+                                            state.suppress_next_input = true;
+                                            state.scroll_offset = (state.scroll_offset - px(200.)).max(px(0.));
+                                            cx.notify();
+                                            return;
+                                        }
+                                        _ => {}
+                                    }
+                                }
                                 state.suppress_next_input = true;
                                 state.handle_vim_key(key, window, cx);
                                 return;
@@ -79,6 +104,7 @@ impl Render for EditorView {
                                     cx.notify();
                                     return;
                                 }
+                                // Ctrl+R in insert mode → redo (not a standard vim binding but useful)
                             }
                         }
                     }

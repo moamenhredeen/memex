@@ -11,6 +11,8 @@ pub enum Operator {
     Delete,
     Change,
     Yank,
+    Indent,
+    Dedent,
 }
 
 /// Vim motion types.
@@ -23,13 +25,25 @@ pub enum Motion {
     WordForward,
     WordBackward,
     WordEnd,
-    LineStart,
-    LineEnd,
-    Line,      // dd, yy, cc — entire line
-    DocStart,  // gg
-    DocEnd,    // G
-    FindChar(char),  // f{char}
-    TilChar(char),   // t{char}
+    BigWordForward,   // W
+    BigWordBackward,  // B
+    BigWordEnd,       // E
+    LineStart,        // 0
+    FirstNonWhitespace, // ^
+    LineEnd,          // $
+    Line,             // dd, yy, cc — entire line
+    DocStart,         // gg
+    DocEnd,           // G
+    GotoLine(usize),  // {n}G
+    FindChar(char),        // f{char}
+    TilChar(char),         // t{char}
+    FindCharBackward(char),// F{char}
+    TilCharBackward(char), // T{char}
+    ParagraphForward,      // }
+    ParagraphBackward,     // {
+    MatchingBracket,       // %
+    Indent,                // > (motion for operator)
+    Dedent,                // < (motion for operator)
 }
 
 /// Per-editor vim state.
@@ -44,18 +58,23 @@ pub struct VimState {
     pub register: char,
     /// Yank register contents.
     pub register_content: String,
-    /// Pending input state for f/t motions.
+    /// Pending input state for f/t/r/g motions.
     pub waiting_for_char: Option<WaitingFor>,
     /// Last change for dot-repeat.
     pub last_change: Option<RecordedChange>,
+    /// Last f/t/F/T search for ; and , repeat.
+    pub last_char_search: Option<Motion>,
 }
 
 /// What we're waiting for after a key press.
 #[derive(Clone, Debug)]
 pub enum WaitingFor {
-    FindChar,  // f
-    TilChar,   // t
-    Replace,   // r
+    FindChar,          // f
+    TilChar,           // t
+    FindCharBackward,  // F
+    TilCharBackward,   // T
+    Replace,           // r
+    GPrefix,           // g (waiting for second key: gg, etc.)
 }
 
 /// A recorded change for dot-repeat.
@@ -74,6 +93,7 @@ impl VimState {
             register_content: String::new(),
             waiting_for_char: None,
             last_change: None,
+            last_char_search: None,
         }
     }
 
@@ -112,23 +132,51 @@ impl VimState {
         content: &str,
         cursor: usize,
     ) -> VimAction {
-        // If waiting for a character (f, t, r)
+        // If waiting for a character (f, t, F, T, r, g)
         if let Some(waiting) = self.waiting_for_char.take() {
             if let Some(ch) = key.chars().next() {
                 if key.chars().count() == 1 {
                     return match waiting {
                         WaitingFor::FindChar => {
                             let motion = Motion::FindChar(ch);
+                            self.last_char_search = Some(motion.clone());
                             self.resolve_motion_or_operator(motion, content, cursor)
                         }
                         WaitingFor::TilChar => {
                             let motion = Motion::TilChar(ch);
+                            self.last_char_search = Some(motion.clone());
+                            self.resolve_motion_or_operator(motion, content, cursor)
+                        }
+                        WaitingFor::FindCharBackward => {
+                            let motion = Motion::FindCharBackward(ch);
+                            self.last_char_search = Some(motion.clone());
+                            self.resolve_motion_or_operator(motion, content, cursor)
+                        }
+                        WaitingFor::TilCharBackward => {
+                            let motion = Motion::TilCharBackward(ch);
+                            self.last_char_search = Some(motion.clone());
                             self.resolve_motion_or_operator(motion, content, cursor)
                         }
                         WaitingFor::Replace => {
                             let count = self.effective_count();
                             self.clear_pending();
                             VimAction::ReplaceChar(ch, count)
+                        }
+                        WaitingFor::GPrefix => {
+                            self.clear_pending();
+                            match ch {
+                                'g' => {
+                                    // gg — go to document start
+                                    VimAction::Command(EditorCommand::MoveToOffset(
+                                        normal::compute_motion_target(&Motion::DocStart, content, cursor, 1)
+                                    ))
+                                }
+                                'd' => {
+                                    // gd — placeholder: go to definition (same as gg for now)
+                                    VimAction::Command(EditorCommand::MoveToOffset(0))
+                                }
+                                _ => VimAction::None,
+                            }
                         }
                     };
                 }
@@ -190,6 +238,8 @@ pub enum VimAction {
     Commands(Vec<EditorCommand>),
     /// Replace character(s) at cursor.
     ReplaceChar(char, usize),
+    /// Replace text at range and advance cursor (for ~ toggle case).
+    ReplaceAndAdvance(String, std::ops::Range<usize>),
     /// Change mode.
     ChangeMode(EditorMode),
     /// Switch to insert mode at a specific offset.

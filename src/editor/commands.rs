@@ -43,4 +43,12 @@ pub enum EditorCommand {
     // Mode
     EnterMode(super::keymap::EditorMode),
     ToggleVimMode,
+
+    // Visual mode operations
+    IndentSelection,
+    DedentSelection,
+    JoinSelection,
+    ToggleCaseSelection,
+    UppercaseSelection,
+    LowercaseSelection,
 }
