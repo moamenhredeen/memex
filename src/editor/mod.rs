@@ -668,11 +668,16 @@ impl EditorState {
             }
             "e" | "edit" => {
                 if args.is_empty() {
-                    // Reload current file
                     self.status_message = Some("Specify a file path".into());
                 } else {
                     cx.emit(EditorEvent::RequestOpen(args.to_string()));
                 }
+            }
+            "vault" | "vaults" | "open-vault" | "switch-vault" => {
+                cx.emit(EditorEvent::RequestVaultSearch);
+            }
+            "notes" | "find-note" | "find" | "note" => {
+                cx.emit(EditorEvent::RequestNoteSearch);
             }
             _ => {
                 // Try plugin commands
@@ -729,6 +734,8 @@ pub enum EditorEvent {
     RequestSave,
     RequestQuit,
     RequestOpen(String),
+    RequestVaultSearch,
+    RequestNoteSearch,
 }
 
 impl EventEmitter<EditorEvent> for EditorState {}

@@ -14,8 +14,10 @@ const MAX_RESULTS: usize = 15;
 enum MinibufferMode {
     /// Inactive — shows status line only
     Idle,
-    /// Note search (Ctrl+P) — vertico-style vertical completion
+    /// Note search (Ctrl+P / :notes) — vertico-style vertical completion
     NoteSearch,
+    /// Vault search (:vault) — pick from registered vaults or type a path
+    VaultSearch,
     /// Vim command line (:) — handled by EditorState, we just display it
     VimCommand,
 }
@@ -27,7 +29,6 @@ pub struct Memex {
     minibuffer_mode: MinibufferMode,
     minibuffer_input: String,
     minibuffer_selected: usize,
-    vault_dropdown_visible: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -93,6 +94,12 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                         let path = std::path::PathBuf::from(path.clone());
                         this.open_note_by_path(path, window, cx);
                     }
+                    EditorEvent::RequestVaultSearch => {
+                        this.activate_vault_search(window, cx);
+                    }
+                    EditorEvent::RequestNoteSearch => {
+                        this.activate_note_search(window, cx);
+                    }
                 }
             },
         );
@@ -104,13 +111,19 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             minibuffer_mode: MinibufferMode::Idle,
             minibuffer_input: String::new(),
             minibuffer_selected: 0,
-            vault_dropdown_visible: false,
             _subscriptions: vec![editor_sub],
         }
     }
 
     fn activate_note_search(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         self.minibuffer_mode = MinibufferMode::NoteSearch;
+        self.minibuffer_input.clear();
+        self.minibuffer_selected = 0;
+        cx.notify();
+    }
+
+    fn activate_vault_search(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.minibuffer_mode = MinibufferMode::VaultSearch;
         self.minibuffer_input.clear();
         self.minibuffer_selected = 0;
         cx.notify();
@@ -136,17 +149,47 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 self.dismiss_minibuffer(window, cx);
             }
             "enter" => {
-                let results = self.search_notes(&self.minibuffer_input);
-                let idx = self.minibuffer_selected;
-                if let Some((_, path)) = results.get(idx) {
-                    let p = path.clone();
-                    self.open_note_by_path(p, window, cx);
-                } else if !self.minibuffer_input.is_empty() {
-                    // Create new note
-                    let title = self.minibuffer_input.clone();
-                    self.create_note_by_title(&title, window, cx);
+                match self.minibuffer_mode.clone() {
+                    MinibufferMode::NoteSearch => {
+                        let results = self.search_notes(&self.minibuffer_input);
+                        let idx = self.minibuffer_selected;
+                        if let Some((_, path)) = results.get(idx) {
+                            let p = path.clone();
+                            self.open_note_by_path(p, window, cx);
+                        } else if !self.minibuffer_input.is_empty() {
+                            let title = self.minibuffer_input.clone();
+                            self.create_note_by_title(&title, window, cx);
+                        }
+                        self.dismiss_minibuffer(window, cx);
+                    }
+                    MinibufferMode::VaultSearch => {
+                        let results = self.search_vaults(&self.minibuffer_input);
+                        let idx = self.minibuffer_selected;
+                        if let Some((_, path)) = results.get(idx) {
+                            let p = path.clone();
+                            self.dismiss_minibuffer(window, cx);
+                            self.open_vault_by_path(p, window, cx);
+                            // Auto-chain: open note search after vault switch
+                            self.activate_note_search(window, cx);
+                        } else if !self.minibuffer_input.is_empty() {
+                            // Treat input as a directory path
+                            let path = std::path::PathBuf::from(&self.minibuffer_input);
+                            if path.is_dir() {
+                                let p = path.clone();
+                                self.dismiss_minibuffer(window, cx);
+                                self.open_vault_by_path(p, window, cx);
+                                self.activate_note_search(window, cx);
+                            } else {
+                                self.editor_state.update(cx, |state, _cx| {
+                                    state.status_message =
+                                        Some(format!("Not a directory: {}", self.minibuffer_input));
+                                });
+                                self.dismiss_minibuffer(window, cx);
+                            }
+                        }
+                    }
+                    _ => {}
                 }
-                self.dismiss_minibuffer(window, cx);
             }
             "backspace" => {
                 self.minibuffer_input.pop();
@@ -160,17 +203,45 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 cx.notify();
             }
             "down" => {
-                let results = self.search_notes(&self.minibuffer_input);
-                if self.minibuffer_selected + 1 < results.len() {
+                let max = match &self.minibuffer_mode {
+                    MinibufferMode::NoteSearch => {
+                        let results = self.search_notes(&self.minibuffer_input);
+                        let has_exact = results
+                            .iter()
+                            .any(|(t, _)| t.to_lowercase() == self.minibuffer_input.to_lowercase());
+                        let show_create = !self.minibuffer_input.is_empty() && !has_exact;
+                        results.len() + if show_create { 1 } else { 0 }
+                    }
+                    MinibufferMode::VaultSearch => {
+                        let results = self.search_vaults(&self.minibuffer_input);
+                        let show_new = !self.minibuffer_input.is_empty()
+                            && !results.iter().any(|(_, p)| {
+                                p.to_string_lossy() == self.minibuffer_input
+                            });
+                        results.len() + if show_new { 1 } else { 0 }
+                    }
+                    _ => 0,
+                };
+                if self.minibuffer_selected + 1 < max {
                     self.minibuffer_selected += 1;
                 }
                 cx.notify();
             }
             "tab" => {
-                // Insert selected candidate text into minibuffer (like vertico-insert)
-                let results = self.search_notes(&self.minibuffer_input);
-                if let Some((title, _)) = results.get(self.minibuffer_selected) {
-                    self.minibuffer_input = title.clone();
+                match &self.minibuffer_mode {
+                    MinibufferMode::NoteSearch => {
+                        let results = self.search_notes(&self.minibuffer_input);
+                        if let Some((title, _)) = results.get(self.minibuffer_selected) {
+                            self.minibuffer_input = title.clone();
+                        }
+                    }
+                    MinibufferMode::VaultSearch => {
+                        let results = self.search_vaults(&self.minibuffer_input);
+                        if let Some((_, path)) = results.get(self.minibuffer_selected) {
+                            self.minibuffer_input = path.to_string_lossy().to_string();
+                        }
+                    }
+                    _ => {}
                 }
                 cx.notify();
             }
@@ -180,18 +251,11 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     self.minibuffer_selected = 0;
                     cx.notify();
                 } else if key == "n" {
-                    // Ctrl+N = next (like Emacs)
-                    let results = self.search_notes(&self.minibuffer_input);
-                    if self.minibuffer_selected + 1 < results.len() {
-                        self.minibuffer_selected += 1;
-                    }
-                    cx.notify();
+                    // same as down
+                    self.handle_minibuffer_key("down", false, window, cx);
                 } else if key == "p" {
-                    // Ctrl+P in minibuffer = previous
-                    if self.minibuffer_selected > 0 {
-                        self.minibuffer_selected -= 1;
-                    }
-                    cx.notify();
+                    // same as up
+                    self.handle_minibuffer_key("up", false, window, cx);
                 }
             }
             _ => {
@@ -257,7 +321,6 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         self.editor_state.update(cx, |state, cx| {
             state.set_content(content, window, cx);
         });
-        self.vault_dropdown_visible = false;
         cx.notify();
     }
     fn search_notes(&self, query: &str) -> Vec<(String, std::path::PathBuf)> {
@@ -287,6 +350,97 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             .into_iter()
             .take(MAX_RESULTS)
             .map(|(_, title, path)| (title, path))
+            .collect()
+    }
+
+    /// Search registered vaults + scan home for directories.
+    fn search_vaults(&self, query: &str) -> Vec<(String, std::path::PathBuf)> {
+        let registered = self.state.registry.vault_paths();
+
+        // Build display entries: (display_name, path)
+        let mut entries: Vec<(String, std::path::PathBuf)> = registered
+            .iter()
+            .map(|p| {
+                let name = p
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("vault")
+                    .to_string();
+                (name, p.clone())
+            })
+            .collect();
+
+        // If query looks like a path, try listing that directory's subdirectories
+        if query.starts_with('/') || query.starts_with('~') || query.starts_with('.') {
+            let expanded = if query.starts_with('~') {
+                dirs::home_dir()
+                    .map(|h| h.join(&query[2..]))
+                    .unwrap_or_else(|| std::path::PathBuf::from(query))
+            } else {
+                std::path::PathBuf::from(query)
+            };
+
+            // List subdirectories of the parent that match the partial name
+            let (parent, prefix) = if expanded.is_dir() {
+                (expanded.clone(), String::new())
+            } else {
+                let parent = expanded.parent().unwrap_or(std::path::Path::new("/")).to_path_buf();
+                let prefix = expanded
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_lowercase();
+                (parent, prefix)
+            };
+
+            if let Ok(read_dir) = std::fs::read_dir(&parent) {
+                for entry in read_dir.flatten() {
+                    let path = entry.path();
+                    if !path.is_dir() {
+                        continue;
+                    }
+                    let name = path
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("")
+                        .to_string();
+                    // Skip hidden directories
+                    if name.starts_with('.') {
+                        continue;
+                    }
+                    if !prefix.is_empty() && !name.to_lowercase().starts_with(&prefix) {
+                        continue;
+                    }
+                    // Don't duplicate registered vaults
+                    if !entries.iter().any(|(_, p)| *p == path) {
+                        entries.push((name, path));
+                    }
+                }
+            }
+        }
+
+        if query.is_empty() {
+            return entries.into_iter().take(MAX_RESULTS).collect();
+        }
+
+        // Fuzzy match against query
+        let matcher = SkimMatcherV2::default();
+        let mut scored: Vec<(i64, String, std::path::PathBuf)> = entries
+            .into_iter()
+            .filter_map(|(name, path)| {
+                // Match against both name and full path
+                let name_score = matcher.fuzzy_match(&name, query);
+                let path_score = matcher.fuzzy_match(&path.to_string_lossy(), query);
+                let best = name_score.max(path_score);
+                best.map(|score| (score, name, path))
+            })
+            .collect();
+
+        scored.sort_by(|a, b| b.0.cmp(&a.0));
+        scored
+            .into_iter()
+            .take(MAX_RESULTS)
+            .map(|(_, name, path)| (name, path))
             .collect()
     }
 
@@ -481,6 +635,111 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     // Candidates (vertico-style vertical list)
                     .child(items)
             }
+            MinibufferMode::VaultSearch => {
+                let results = self.search_vaults(&self.minibuffer_input);
+                let show_new = !self.minibuffer_input.is_empty()
+                    && !results
+                        .iter()
+                        .any(|(_, p)| p.to_string_lossy() == self.minibuffer_input);
+                let selected = self.minibuffer_selected;
+
+                let mut items = v_flex().w_full();
+
+                for (i, (name, path)) in results.iter().enumerate() {
+                    let is_selected = i == selected;
+                    let bg_color = if is_selected {
+                        rgb(0xEEE8D5)
+                    } else {
+                        rgb(0xFDF6E3)
+                    };
+                    // Show vault name with path underneath
+                    let is_current = self
+                        .state
+                        .vault
+                        .as_ref()
+                        .map(|v| v.path == *path)
+                        .unwrap_or(false);
+                    let suffix = if is_current { "  (current)" } else { "" };
+                    items = items.child(
+                        div()
+                            .id(ElementId::Name(format!("mb-vault-{}", i).into()))
+                            .w_full()
+                            .px(px(8.))
+                            .py(px(2.))
+                            .bg(bg_color)
+                            .child(
+                                h_flex()
+                                    .gap(px(8.))
+                                    .child(
+                                        div()
+                                            .text_size(px(13.))
+                                            .text_color(if is_selected {
+                                                rgb(0x073642)
+                                            } else {
+                                                rgb(0x657B83)
+                                            })
+                                            .child(format!("{}{}", name, suffix)),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(11.))
+                                            .text_color(rgb(0x93A1A1))
+                                            .child(path.to_string_lossy().to_string()),
+                                    ),
+                            ),
+                    );
+                }
+
+                if show_new {
+                    let is_selected = selected == results.len();
+                    let bg_color = if is_selected {
+                        rgb(0xEEE8D5)
+                    } else {
+                        rgb(0xFDF6E3)
+                    };
+                    items = items.child(
+                        div()
+                            .id("mb-vault-new")
+                            .w_full()
+                            .px(px(8.))
+                            .py(px(2.))
+                            .bg(bg_color)
+                            .child(
+                                div()
+                                    .text_size(px(13.))
+                                    .text_color(rgb(0x859900))
+                                    .child(format!(
+                                        "⊕ Open directory: {}",
+                                        self.minibuffer_input
+                                    )),
+                            ),
+                    );
+                }
+
+                base
+                    .border_t_1()
+                    .border_color(rgb(0xD3CBB8))
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .px(px(8.))
+                            .py(px(3.))
+                            .gap(px(4.))
+                            .child(
+                                div()
+                                    .text_size(px(13.))
+                                    .text_color(rgb(0x268BD2))
+                                    .child("Switch vault:"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(13.))
+                                    .text_color(rgb(0x073642))
+                                    .child(format!("{}█", self.minibuffer_input)),
+                            ),
+                    )
+                    .child(items)
+            }
             _ if vim_command_mode => {
                 // Vim command line
                 base
@@ -520,60 +779,14 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         }
     }
 
-    fn render_vault_dropdown(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let vault_paths = self.state.registry.vault_paths();
-
-        let mut dropdown = v_flex()
-            .absolute()
-            .bottom(px(40.))
-            .left(px(12.))
-            .w(px(250.))
-            .bg(rgb(0xEEE8D5))  // base2
-            .rounded(px(6.))
-            .p(px(4.))
-            .border_1()
-            .border_color(rgb(0xD3CBB8))  // subtle border
-            .shadow_md();
-
-        for (i, vault_path) in vault_paths.into_iter().enumerate() {
-            let name = vault_path
-                .file_name()
-                .and_then(|s| s.to_str())
-                .unwrap_or("vault")
-                .to_string();
-
-            let path = vault_path.clone();
-            dropdown = dropdown.child(
-                div()
-                    .id(ElementId::Name(format!("vault-{}", i).into()))
-                    .w_full()
-                    .px(px(8.))
-                    .py(px(6.))
-                    .rounded(px(4.))
-                    .cursor_pointer()
-                    .hover(|s| s.bg(rgb(0xFDF6E3)))  // base3 on hover
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _e: &MouseDownEvent, window, cx| {
-                            this.open_vault_by_path(path.clone(), window, cx);
-                        }),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(13.))
-                            .text_color(rgb(0x586E75))  // base01
-                            .child(name),
-                    ),
-            );
-        }
-
-        dropdown
-    }
 }
 
 impl Render for Memex {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let minibuffer_active = self.minibuffer_mode == MinibufferMode::NoteSearch;
+        let minibuffer_active = matches!(
+            self.minibuffer_mode,
+            MinibufferMode::NoteSearch | MinibufferMode::VaultSearch
+        );
 
         let mut root = v_flex()
             .id("memex-root")
@@ -582,7 +795,10 @@ impl Render for Memex {
             .font_family("FiraCode Nerd Font")
             .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
                 // If minibuffer is active, route keys there
-                if this.minibuffer_mode == MinibufferMode::NoteSearch {
+                if matches!(
+                    this.minibuffer_mode,
+                    MinibufferMode::NoteSearch | MinibufferMode::VaultSearch
+                ) {
                     let key = e.keystroke.key.as_str();
                     let ctrl = e.keystroke.modifiers.control;
                     this.handle_minibuffer_key(key, ctrl, window, cx);
@@ -602,12 +818,7 @@ impl Render for Memex {
             // Minibuffer area (below mode line, like emacs)
             .child(self.render_minibuffer(cx));
 
-        // Vault dropdown overlay
-        if self.vault_dropdown_visible {
-            root = root.child(self.render_vault_dropdown(cx));
-        }
-
-        // Dim overlay when minibuffer is active (optional)
+        // Dim overlay when minibuffer is active
         if minibuffer_active {
             root = root.child(
                 div()
