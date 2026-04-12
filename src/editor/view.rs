@@ -40,12 +40,12 @@ impl Render for EditorView {
             .key_context("Editor")
             .on_action(cx.listener(|this, _: &TabAction, window, cx| {
                 this.state.update(cx, |state, cx| {
-                    state.dispatch(EditorCommand::InsertTab, window, cx);
+                    state.dispatch(EditorCommand::OutlineCycleFold, window, cx);
                 });
             }))
-            .on_action(cx.listener(|this, _: &ShiftTabAction, _window, cx| {
+            .on_action(cx.listener(|this, _: &ShiftTabAction, window, cx| {
                 this.state.update(cx, |state, cx| {
-                    state.handle_table_tab(false, cx);
+                    state.dispatch(EditorCommand::OutlineGlobalCycle, window, cx);
                 });
             }))
             .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {

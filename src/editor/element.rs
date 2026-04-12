@@ -27,6 +27,7 @@ pub struct PrepaintState {
     lines: Vec<PrepaintLine>,
     cursor: Option<PaintQuad>,
     selection_quads: Vec<PaintQuad>,
+    fold_indicators: Vec<FoldIndicator>,
 }
 
 struct PrepaintLine {
@@ -34,6 +35,12 @@ struct PrepaintLine {
     origin: Point<Pixels>,
     line_height: Pixels,
     content_offset: usize,
+}
+
+struct FoldIndicator {
+    shaped: ShapedLine,
+    origin: Point<Pixels>,
+    line_height: Pixels,
 }
 
 impl Element for EditorElement {
@@ -74,6 +81,12 @@ impl Element for EditorElement {
         self.state.update(cx, |state, _cx| {
             let content = state.content();
             state.display_map.update(&content);
+            // Reapply outline fold visibility after display map refresh
+            let kinds = state.display_map.line_kinds();
+            let headings = crate::editor::outline::extract_headings(&kinds);
+            let line_count = state.display_map.line_count();
+            let hidden = state.outline.compute_hidden_lines(&headings, line_count);
+            state.display_map.update_visibility(&hidden);
         });
 
         let state = self.state.read(cx);
@@ -98,6 +111,7 @@ impl Element for EditorElement {
         let mut prepaint_lines = Vec::new();
         let mut cursor_quad: Option<PaintQuad> = None;
         let mut selection_quads = Vec::new();
+        let mut fold_indicators: Vec<FoldIndicator> = Vec::new();
 
         // Solarized Light palette (hsla for text shaping API)
         let base_color = hsla(0.544, 0.129, 0.455, 1.0);  // base00 — body text
@@ -106,12 +120,55 @@ impl Element for EditorElement {
         let heading_color = hsla(0.534, 0.808, 0.143, 1.0); // base03 — headings
         let hr_color = hsla(0.117, 0.235, 0.775, 1.0);    // subtle rule
 
+        // Fold indicator glyph width
+        let _indicator_margin = px(14.);
+
         for i in vis_first..vis_last {
+            // Skip lines hidden by outline folding
+            if dm.is_line_hidden(i) {
+                continue;
+            }
+
             let info = dm.line_info(i);
             let line_start = dm.line_offset(i);
             let line_height = dm.line_height(i);
             let font_size = info.kind.display_font_size();
             let y = bounds.origin.y + padding - scroll + dm.line_y(i);
+
+            // Fold indicator for heading lines
+            if let LineKind::Heading(_) = &info.kind {
+                let has_section = i + 1 < dm.line_count();
+                if has_section {
+                    let is_folded = dm.is_line_hidden(i + 1);
+                    let glyph: SharedString = if is_folded { "▶".into() } else { "▼".into() };
+                    let indicator_run = vec![TextRun {
+                        len: glyph.len(),
+                        font: Font {
+                            family: font_family.clone(),
+                            weight: FontWeight::NORMAL,
+                            style: FontStyle::Normal,
+                            features: FontFeatures::default(),
+                            fallbacks: None,
+                        },
+                        color: dim_color,
+                        background_color: None,
+                        underline: None,
+                        strikethrough: None,
+                    }];
+                    let indicator_shaped = text_system.shape_line(
+                        glyph,
+                        px(12.),
+                        &indicator_run,
+                        None,
+                    );
+                    let indicator_y = y + (line_height - px(12.)) / 2.0;
+                    fold_indicators.push(FoldIndicator {
+                        shaped: indicator_shaped,
+                        origin: point(bounds.origin.x + px(4.), indicator_y),
+                        line_height,
+                    });
+                }
+            }
 
             let line_text_end = content[line_start..]
                 .find('\n')
@@ -406,6 +463,7 @@ impl Element for EditorElement {
             lines: prepaint_lines,
             cursor: cursor_quad,
             selection_quads,
+            fold_indicators,
         }
     }
 
@@ -432,6 +490,11 @@ impl Element for EditorElement {
         // Selections
         for sel in &prepaint.selection_quads {
             window.paint_quad(sel.clone());
+        }
+
+        // Fold indicators (▶/▼ in left margin)
+        for fi in &prepaint.fold_indicators {
+            let _ = fi.shaped.paint(fi.origin, fi.line_height, window, cx);
         }
 
         // Lines

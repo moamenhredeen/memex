@@ -644,8 +644,15 @@ fn register_transient_layers(stack: &mut LayerStack) {
 
 fn register_markdown_layer(stack: &mut LayerStack) {
     let layer = Layer::new("markdown")
-        // Table navigation handled at app level for now
-        ;
+        // Outline mode (org-mode style)
+        .bind("tab", Action::Command("outline-cycle-fold"))
+        .bind("shift-tab", Action::Command("outline-global-cycle"))
+        .bind("alt-left", Action::Command("outline-promote"))
+        .bind("alt-right", Action::Command("outline-demote"))
+        .bind("alt-up", Action::Command("outline-move-up"))
+        .bind("alt-down", Action::Command("outline-move-down"))
+        .bind("alt-n", Action::Command("outline-next-heading"))
+        .bind("alt-p", Action::Command("outline-prev-heading"));
     stack.register_layer(layer);
 }
 

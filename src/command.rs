@@ -176,6 +176,63 @@ impl CommandRegistry {
             aliases: &[],
             binding: None,
         });
+        // Outline commands
+        self.register(Command {
+            id: "outline-cycle-fold",
+            name: "Outline: Toggle Fold",
+            description: "Cycle fold state on current heading",
+            aliases: &["fold", "toggle-fold"],
+            binding: Some("Tab"),
+        });
+        self.register(Command {
+            id: "outline-global-cycle",
+            name: "Outline: Global Cycle",
+            description: "Cycle all headings: overview → children → show all",
+            aliases: &["fold-all", "unfold-all"],
+            binding: Some("S-Tab"),
+        });
+        self.register(Command {
+            id: "outline-promote",
+            name: "Outline: Promote Heading",
+            description: "Decrease heading level (## → #)",
+            aliases: &["promote"],
+            binding: Some("M-left"),
+        });
+        self.register(Command {
+            id: "outline-demote",
+            name: "Outline: Demote Heading",
+            description: "Increase heading level (# → ##)",
+            aliases: &["demote"],
+            binding: Some("M-right"),
+        });
+        self.register(Command {
+            id: "outline-move-up",
+            name: "Outline: Move Subtree Up",
+            description: "Swap heading subtree with previous sibling",
+            aliases: &[],
+            binding: Some("M-up"),
+        });
+        self.register(Command {
+            id: "outline-move-down",
+            name: "Outline: Move Subtree Down",
+            description: "Swap heading subtree with next sibling",
+            aliases: &[],
+            binding: Some("M-down"),
+        });
+        self.register(Command {
+            id: "outline-next-heading",
+            name: "Outline: Next Heading",
+            description: "Jump to next heading",
+            aliases: &[],
+            binding: Some("M-n"),
+        });
+        self.register(Command {
+            id: "outline-prev-heading",
+            name: "Outline: Previous Heading",
+            description: "Jump to previous heading",
+            aliases: &[],
+            binding: Some("M-p"),
+        });
     }
 }
 

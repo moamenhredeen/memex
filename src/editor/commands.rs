@@ -51,4 +51,14 @@ pub enum EditorCommand {
     ToggleCaseSelection,
     UppercaseSelection,
     LowercaseSelection,
+
+    // Outline
+    OutlineCycleFold,
+    OutlineGlobalCycle,
+    OutlinePromote,
+    OutlineDemote,
+    OutlineMoveUp,
+    OutlineMoveDown,
+    OutlineNextHeading,
+    OutlinePrevHeading,
 }

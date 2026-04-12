@@ -4,6 +4,7 @@ mod display_map;
 mod element;
 mod input;
 mod movement;
+pub mod outline;
 mod table;
 pub mod undo;
 mod view;
@@ -33,6 +34,7 @@ pub struct EditorState {
     pub keymap: crate::keymap::KeymapSystem,
     pub display_map: display_map::DisplayMap,
     pub plugins: crate::plugin::PluginEngine,
+    pub outline: outline::OutlineState,
     /// Status message shown briefly after command execution
     pub status_message: Option<String>,
     /// When true, the next OS text input event is suppressed (keymap already handled the key).
@@ -78,6 +80,7 @@ impl EditorState {
             keymap,
             display_map: display,
             plugins,
+            outline: outline::OutlineState::new(),
             status_message: None,
             suppress_next_input: false,
             _blink_sub,
@@ -195,6 +198,34 @@ impl EditorState {
         cx.notify();
     }
 
+    /// If the cursor is on a hidden (folded) line, move it to the nearest
+    /// visible line above (the heading that folded it).
+    pub fn ensure_cursor_visible(&mut self, cx: &mut Context<Self>) {
+        if !self.display_map.is_offset_hidden(self.cursor) {
+            return;
+        }
+        let line = self.display_map.line_for_offset(self.cursor);
+        // Move to the nearest visible line above
+        if let Some(vis) = self.display_map.next_visible_line(line, false) {
+            let offset = self.display_map.line_offset(vis);
+            self.move_to(offset, cx);
+        } else if let Some(vis) = self.display_map.next_visible_line(line, true) {
+            let offset = self.display_map.line_offset(vis);
+            self.move_to(offset, cx);
+        }
+    }
+
+    /// Recompute outline fold visibility and update display map.
+    pub fn refresh_outline_visibility(&mut self, cx: &mut Context<Self>) {
+        let kinds = self.display_map.line_kinds();
+        let headings = outline::extract_headings(&kinds);
+        let line_count = self.display_map.line_count();
+        let hidden = self.outline.compute_hidden_lines(&headings, line_count);
+        self.display_map.update_visibility(&hidden);
+        self.ensure_cursor_visible(cx);
+        cx.notify();
+    }
+
     pub fn undo(&mut self, cx: &mut Context<Self>) {
         let txn = match self.history.undo() {
             Some(t) => t,
@@ -274,11 +305,20 @@ impl EditorState {
                 if line_start == 0 {
                     self.move_to(0, cx);
                 } else {
-                    let prev_end = line_start - 1;
-                    let prev_start =
-                        content[..prev_end].rfind('\n').map(|i| i + 1).unwrap_or(0);
-                    let prev_len = prev_end - prev_start;
-                    self.move_to(prev_start + col.min(prev_len), cx);
+                    // Find target line, skipping hidden lines
+                    let current_line = self.display_map.line_for_offset(pos);
+                    let target_line = self.display_map.next_visible_line(current_line, false);
+                    if let Some(tl) = target_line {
+                        let tl_start = self.display_map.line_offset(tl);
+                        let tl_end = content[tl_start..]
+                            .find('\n')
+                            .map(|p| tl_start + p)
+                            .unwrap_or(content.len());
+                        let tl_len = tl_end - tl_start;
+                        self.move_to(tl_start + col.min(tl_len), cx);
+                    } else {
+                        self.move_to(0, cx);
+                    }
                 }
             }
             MoveDown => {
@@ -287,12 +327,14 @@ impl EditorState {
                 let before = &content[..pos.min(content.len())];
                 let line_start = before.rfind('\n').map(|i| i + 1).unwrap_or(0);
                 let col = pos - line_start;
-                let after = &content[pos..];
-                if let Some(nl) = after.find('\n') {
-                    let next_start = pos + nl + 1;
-                    let rest = &content[next_start..];
-                    let next_len = rest.find('\n').unwrap_or(rest.len());
-                    self.move_to(next_start + col.min(next_len), cx);
+                // Find target line, skipping hidden lines
+                let current_line = self.display_map.line_for_offset(pos);
+                let target_line = self.display_map.next_visible_line(current_line, true);
+                if let Some(tl) = target_line {
+                    let tl_start = self.display_map.line_offset(tl);
+                    let rest = &content[tl_start..];
+                    let tl_len = rest.find('\n').unwrap_or(rest.len());
+                    self.move_to(tl_start + col.min(tl_len), cx);
                 } else {
                     self.move_to(content.len(), cx);
                 }
@@ -518,6 +560,152 @@ impl EditorState {
                 let lower = content[start..end].to_lowercase();
                 self.selected_range = start..end;
                 self.edit_text(&lower, cx);
+            }
+            OutlineCycleFold => {
+                let content = self.content();
+                self.display_map.update(&content);
+                let kinds = self.display_map.line_kinds();
+                let headings = outline::extract_headings(&kinds);
+                let line_count = self.display_map.line_count();
+                // Find heading at or above cursor
+                let cursor_line = self.display_map.line_for_offset(self.cursor);
+                let heading = outline::heading_for_line(cursor_line, &headings);
+                if let Some(hi) = heading {
+                    let hl = hi.line_idx;
+                    self.outline.cycle_heading(hl, &headings, line_count);
+                    self.refresh_outline_visibility(cx);
+                } else {
+                    // Not on/under a heading — fall through to insert tab
+                    self.dispatch(commands::EditorCommand::InsertTab, window, cx);
+                }
+            }
+            OutlineGlobalCycle => {
+                let content = self.content();
+                self.display_map.update(&content);
+                let kinds = self.display_map.line_kinds();
+                let headings = outline::extract_headings(&kinds);
+                self.outline.global_cycle(&headings);
+                self.refresh_outline_visibility(cx);
+            }
+            OutlinePromote => {
+                let content = self.content();
+                self.display_map.update(&content);
+                let cursor_line = self.display_map.line_for_offset(self.cursor);
+                let kinds = self.display_map.line_kinds();
+                let headings = outline::extract_headings(&kinds);
+                if let Some(hi) = headings.iter().find(|h| h.line_idx == cursor_line) {
+                    if hi.level > 1 {
+                        let line_start = self.display_map.line_offset(cursor_line);
+                        // Remove one '#' from the heading prefix
+                        let line_end = content[line_start..]
+                            .find('\n')
+                            .map(|p| line_start + p)
+                            .unwrap_or(content.len());
+                        let line_text = &content[line_start..line_end];
+                        if let Some(hash_end) = line_text.find(' ') {
+                            // Remove first '#'
+                            self.selected_range = line_start..line_start + 1;
+                            self.edit_text("", cx);
+                        }
+                    }
+                }
+            }
+            OutlineDemote => {
+                let content = self.content();
+                self.display_map.update(&content);
+                let cursor_line = self.display_map.line_for_offset(self.cursor);
+                let kinds = self.display_map.line_kinds();
+                let headings = outline::extract_headings(&kinds);
+                if let Some(hi) = headings.iter().find(|h| h.line_idx == cursor_line) {
+                    if hi.level < 6 {
+                        let line_start = self.display_map.line_offset(cursor_line);
+                        // Add one '#' at the start of the heading
+                        self.selected_range = line_start..line_start;
+                        self.edit_text("#", cx);
+                    }
+                }
+            }
+            OutlineMoveUp => {
+                let content = self.content();
+                self.display_map.update(&content);
+                let cursor_line = self.display_map.line_for_offset(self.cursor);
+                let kinds = self.display_map.line_kinds();
+                let headings = outline::extract_headings(&kinds);
+                let line_count = self.display_map.line_count();
+                if let Some(hi_idx) = headings.iter().position(|h| h.line_idx == cursor_line) {
+                    if let Some(prev) = outline::prev_sibling(cursor_line, &headings) {
+                        let section_end = outline::section_end_line(hi_idx, &headings, line_count);
+                        let my_start = self.display_map.line_offset(cursor_line);
+                        let my_end = if section_end < line_count {
+                            self.display_map.line_offset(section_end)
+                        } else {
+                            content.len()
+                        };
+                        let prev_start = self.display_map.line_offset(prev.line_idx);
+                        let my_text = content[my_start..my_end].to_string();
+                        let prev_text = content[prev_start..my_start].to_string();
+                        // Swap: replace [prev_start..my_end] with [my_text + prev_text]
+                        self.selected_range = prev_start..my_end;
+                        let swapped = format!("{}{}", my_text, prev_text);
+                        self.edit_text(&swapped, cx);
+                        // Move cursor to the new position of the heading
+                        self.move_to(prev_start, cx);
+                    }
+                }
+            }
+            OutlineMoveDown => {
+                let content = self.content();
+                self.display_map.update(&content);
+                let cursor_line = self.display_map.line_for_offset(self.cursor);
+                let kinds = self.display_map.line_kinds();
+                let headings = outline::extract_headings(&kinds);
+                let line_count = self.display_map.line_count();
+                if let Some(hi_idx) = headings.iter().position(|h| h.line_idx == cursor_line) {
+                    if let Some(next) = outline::next_sibling(cursor_line, &headings) {
+                        let next_idx = headings.iter().position(|h| h.line_idx == next.line_idx).unwrap();
+                        let _my_section_end = outline::section_end_line(hi_idx, &headings, line_count);
+                        let next_section_end = outline::section_end_line(next_idx, &headings, line_count);
+                        let my_start = self.display_map.line_offset(cursor_line);
+                        let next_start = self.display_map.line_offset(next.line_idx);
+                        let next_end = if next_section_end < line_count {
+                            self.display_map.line_offset(next_section_end)
+                        } else {
+                            content.len()
+                        };
+                        let my_text = content[my_start..next_start].to_string();
+                        let next_text = content[next_start..next_end].to_string();
+                        // Swap: replace [my_start..next_end] with [next_text + my_text]
+                        self.selected_range = my_start..next_end;
+                        let swapped = format!("{}{}", next_text, my_text);
+                        let new_cursor = my_start + next_text.len();
+                        self.edit_text(&swapped, cx);
+                        self.move_to(new_cursor, cx);
+                    }
+                }
+            }
+            OutlineNextHeading => {
+                let content = self.content();
+                self.display_map.update(&content);
+                let cursor_line = self.display_map.line_for_offset(self.cursor);
+                let kinds = self.display_map.line_kinds();
+                let headings = outline::extract_headings(&kinds);
+                if let Some(hi) = outline::next_heading(cursor_line, &headings) {
+                    let offset = self.display_map.line_offset(hi.line_idx);
+                    self.move_to(offset, cx);
+                }
+            }
+            OutlinePrevHeading => {
+                let content = self.content();
+                self.display_map.update(&content);
+                let cursor_line = self.display_map.line_for_offset(self.cursor);
+                let kinds = self.display_map.line_kinds();
+                let headings = outline::extract_headings(&kinds);
+                // If cursor is on a heading, go to the previous one
+                // If cursor is on body text, go to the heading above
+                if let Some(hi) = outline::prev_heading(cursor_line, &headings) {
+                    let offset = self.display_map.line_offset(hi.line_idx);
+                    self.move_to(offset, cx);
+                }
             }
         }
     }
@@ -965,6 +1153,15 @@ impl EditorState {
             "find-note" => {
                 cx.emit(EditorEvent::RequestNoteSearch);
             }
+            // Outline commands
+            "outline-cycle-fold" => self.dispatch(EditorCommand::OutlineCycleFold, window, cx),
+            "outline-global-cycle" => self.dispatch(EditorCommand::OutlineGlobalCycle, window, cx),
+            "outline-promote" => self.dispatch(EditorCommand::OutlinePromote, window, cx),
+            "outline-demote" => self.dispatch(EditorCommand::OutlineDemote, window, cx),
+            "outline-move-up" => self.dispatch(EditorCommand::OutlineMoveUp, window, cx),
+            "outline-move-down" => self.dispatch(EditorCommand::OutlineMoveDown, window, cx),
+            "outline-next-heading" => self.dispatch(EditorCommand::OutlineNextHeading, window, cx),
+            "outline-prev-heading" => self.dispatch(EditorCommand::OutlinePrevHeading, window, cx),
             _ => {
                 // Try plugin commands
                 let content = self.content();

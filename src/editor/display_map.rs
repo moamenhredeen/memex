@@ -22,6 +22,8 @@ struct CachedLine {
     line_height: Pixels,
     /// Cumulative Y position (relative to document top, before scroll)
     y_offset: Pixels,
+    /// Whether this line is hidden by outline folding.
+    hidden: bool,
 }
 
 impl DisplayMap {
@@ -56,11 +58,26 @@ impl DisplayMap {
                     content_offset: offset,
                     line_height,
                     y_offset: y,
+                    hidden: false,
                 };
                 y += line_height;
                 cached
             })
             .collect();
+        self.total_height = y;
+    }
+
+    /// Apply fold visibility and recompute Y offsets.
+    /// `hidden[i]` == true means line i is hidden by outline folding.
+    pub fn update_visibility(&mut self, hidden: &[bool]) {
+        let mut y = Pixels::ZERO;
+        for (i, line) in self.lines.iter_mut().enumerate() {
+            line.hidden = hidden.get(i).copied().unwrap_or(false);
+            line.y_offset = y;
+            if !line.hidden {
+                y += line.line_height;
+            }
+        }
         self.total_height = y;
     }
 
@@ -84,9 +101,42 @@ impl DisplayMap {
         self.lines[idx].line_height
     }
 
+    pub fn is_line_hidden(&self, idx: usize) -> bool {
+        self.lines.get(idx).map(|l| l.hidden).unwrap_or(false)
+    }
+
+    /// Collect LineKind for all lines (used by outline to extract headings).
+    pub fn line_kinds(&self) -> Vec<crate::markdown::LineKind> {
+        self.lines.iter().map(|l| l.info.kind.clone()).collect()
+    }
+
     /// Y position of a line relative to document top (before scroll applied).
     pub fn line_y(&self, idx: usize) -> Pixels {
         self.lines[idx].y_offset
+    }
+
+    /// Find line index containing the given byte offset.
+    pub fn line_for_offset(&self, byte_offset: usize) -> usize {
+        self.lines
+            .iter()
+            .rposition(|l| l.content_offset <= byte_offset)
+            .unwrap_or(0)
+    }
+
+    /// Find the next visible line in a given direction.
+    /// Returns `None` if no visible line exists in that direction.
+    pub fn next_visible_line(&self, from_line: usize, forward: bool) -> Option<usize> {
+        if forward {
+            (from_line + 1..self.lines.len()).find(|&i| !self.lines[i].hidden)
+        } else {
+            (0..from_line).rev().find(|&i| !self.lines[i].hidden)
+        }
+    }
+
+    /// Check if a byte offset falls within a hidden line.
+    pub fn is_offset_hidden(&self, byte_offset: usize) -> bool {
+        let line = self.line_for_offset(byte_offset);
+        self.is_line_hidden(line)
     }
 
     /// Find the range of line indices visible in the viewport.

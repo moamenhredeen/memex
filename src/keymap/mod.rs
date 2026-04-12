@@ -27,8 +27,8 @@ impl KeymapSystem {
         if vim_enabled {
             stack.activate_layer("vim:normal");
         }
-        stack.activate_layer("markdown");
         stack.activate_layer("global");
+        stack.activate_layer("markdown");
 
         Self {
             stack,
