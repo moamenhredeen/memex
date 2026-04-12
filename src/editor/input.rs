@@ -58,11 +58,6 @@ impl EntityInputHandler for EditorState {
             return;
         }
 
-        // When minibuffer is active, don't accept OS text input in the editor.
-        if self.input_suspended {
-            return;
-        }
-
         // In vim non-insert modes, suppress OS text input entirely.
         if !self.keymap.is_insert_active() {
             return;

@@ -55,11 +55,6 @@ impl Render for EditorView {
                 let alt = e.keystroke.modifiers.alt;
 
                 this.state.update(cx, |state, cx| {
-                    // When minibuffer is active, don't process keys in the editor.
-                    if state.input_suspended {
-                        return;
-                    }
-
                     let content = state.content();
                     let cursor = state.cursor;
 

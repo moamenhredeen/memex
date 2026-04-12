@@ -39,8 +39,6 @@ pub struct EditorState {
     pub status_message: Option<String>,
     /// When true, the next OS text input event is suppressed (keymap already handled the key).
     pub suppress_next_input: bool,
-    /// When true, all key input is ignored (minibuffer owns focus).
-    pub input_suspended: bool,
     _blink_sub: Subscription,
 }
 
@@ -85,7 +83,6 @@ impl EditorState {
             outline: outline::OutlineState::new(),
             status_message: None,
             suppress_next_input: false,
-            input_suspended: false,
             _blink_sub,
         }
     }

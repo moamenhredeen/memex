@@ -15,6 +15,7 @@ pub struct Memex {
     editor_state: Entity<EditorState>,
     editor_view: Entity<EditorView>,
     minibuffer: Minibuffer,
+    minibuffer_focus: FocusHandle,
     command_registry: CommandRegistry,
     _subscriptions: Vec<Subscription>,
 }
@@ -102,26 +103,27 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             editor_state,
             editor_view,
             minibuffer: Minibuffer::new(),
+            minibuffer_focus: cx.focus_handle(),
             command_registry: CommandRegistry::new(),
             _subscriptions: vec![editor_sub],
         }
     }
 
-    fn activate_note_search(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    fn activate_note_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let vim = self.editor_state.read(cx).keymap.vim_enabled;
         self.minibuffer.activate(DelegateKind::NoteSearch, "Find note:", vim);
-        self.editor_state.update(cx, |s, _| s.input_suspended = true);
+        self.minibuffer_focus.focus(window);
         cx.notify();
     }
 
-    fn activate_vault_switch(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    fn activate_vault_switch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let vim = self.editor_state.read(cx).keymap.vim_enabled;
         self.minibuffer.activate(DelegateKind::VaultSwitch, "Switch vault:", vim);
-        self.editor_state.update(cx, |s, _| s.input_suspended = true);
+        self.minibuffer_focus.focus(window);
         cx.notify();
     }
 
-    fn activate_vault_open(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    fn activate_vault_open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let vim = self.editor_state.read(cx).keymap.vim_enabled;
         self.minibuffer.activate(DelegateKind::VaultOpen, "Open vault:", vim);
         // Seed with home directory
@@ -130,21 +132,20 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             self.minibuffer.input = seed.clone();
             self.minibuffer.cursor = seed.len();
         }
-        self.editor_state.update(cx, |s, _| s.input_suspended = true);
+        self.minibuffer_focus.focus(window);
         cx.notify();
     }
 
-    fn activate_command_palette(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    fn activate_command_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let vim = self.editor_state.read(cx).keymap.vim_enabled;
         let prompt = if vim { ":" } else { "M-x" };
         self.minibuffer.activate(DelegateKind::Command, prompt, vim);
-        self.editor_state.update(cx, |s, _| s.input_suspended = true);
+        self.minibuffer_focus.focus(window);
         cx.notify();
     }
 
     fn dismiss_minibuffer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.minibuffer.dismiss();
-        self.editor_state.update(cx, |s, _| s.input_suspended = false);
         self.editor_state.read(cx).focus(window);
         cx.notify();
     }
@@ -920,6 +921,13 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
 
         base.border_t_1()
             .border_color(rgb(0xD3CBB8))
+            .track_focus(&self.minibuffer_focus)
+            .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
+                let key = e.keystroke.key.as_str();
+                let ctrl = e.keystroke.modifiers.control;
+                let shift = e.keystroke.modifiers.shift;
+                this.handle_minibuffer_key(key, ctrl, shift, window, cx);
+            }))
             // Prompt line with cursor-aware input
             .child(
                 h_flex()
@@ -959,24 +967,15 @@ impl Render for Memex {
             .bg(rgb(0xFDF6E3))  // solarized base3
             .font_family("FiraCode Nerd Font")
             .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
-                // If minibuffer is active, route keys there and stop propagation
-                // to prevent the editor from also processing the key.
-                if this.minibuffer.active {
-                    let key = e.keystroke.key.as_str();
-                    let ctrl = e.keystroke.modifiers.control;
-                    let shift = e.keystroke.modifiers.shift;
-                    this.handle_minibuffer_key(key, ctrl, shift, window, cx);
-                    cx.stop_propagation();
-                    return;
-                }
-
-                if e.keystroke.modifiers.control && e.keystroke.key == "p" {
-                    this.activate_note_search(window, cx);
-                } else if e.keystroke.modifiers.control && e.keystroke.key == "s" {
-                    this.save(window, cx);
-                } else if e.keystroke.modifiers.alt && e.keystroke.key == "x" {
-                    // M-x — command palette
-                    this.activate_command_palette(window, cx);
+                // Global shortcuts (only when minibuffer is not active)
+                if !this.minibuffer.active {
+                    if e.keystroke.modifiers.control && e.keystroke.key == "p" {
+                        this.activate_note_search(window, cx);
+                    } else if e.keystroke.modifiers.control && e.keystroke.key == "s" {
+                        this.save(window, cx);
+                    } else if e.keystroke.modifiers.alt && e.keystroke.key == "x" {
+                        this.activate_command_palette(window, cx);
+                    }
                 }
             }))
             // Custom title bar with drag + window controls
