@@ -122,24 +122,35 @@ impl OutlineState {
                     }
                 }
                 FoldCycle::Children => {
-                    // Show direct child headings, hide everything else.
-                    // Direct child headings are implicitly folded unless the
-                    // user has explicitly expanded them.
+                    // Show heading, body text, and direct child headings.
+                    // Direct child headings' content is implicitly hidden
+                    // unless the user has explicitly expanded them.
+                    let first_child_line = headings
+                        .iter()
+                        .find(|h| h.line_idx > hi.line_idx && h.line_idx < section_end && h.level > hi.level)
+                        .map(|h| h.line_idx);
+
                     let mut line = hi.line_idx + 1;
                     while line < section_end {
+                        // Body text before first child heading — always show
+                        if first_child_line.is_none() || line < first_child_line.unwrap() {
+                            line += 1;
+                            continue;
+                        }
+
+                        // Direct child heading — always show
                         if let Some(child) = headings.iter().find(|h| h.line_idx == line) {
                             if child.level == hi.level + 1 {
-                                // Direct child heading — always show it
                                 line += 1;
                                 continue;
                             }
                         }
-                        // Check if this line is inside a direct child's section
+
+                        // Line inside a direct child's section — only show
+                        // if user has explicitly expanded that child.
                         if let Some(parent_child) = find_direct_child_parent(
                             line, hi, headings, line_count,
                         ) {
-                            // Line is under a direct child — only show if user
-                            // has explicitly set that child to ShowAll.
                             let explicitly_open = self
                                 .fold_states
                                 .get(&parent_child.line_idx)
@@ -153,7 +164,8 @@ impl OutlineState {
                             line += 1;
                             continue;
                         }
-                        // Body text directly under this heading — hide
+
+                        // Deeper non-direct-child heading or text — hide
                         hidden[line] = true;
                         line += 1;
                     }
@@ -373,8 +385,9 @@ mod tests {
         outline.fold_states.insert(0, FoldCycle::Children);
 
         let hidden = outline.compute_hidden_lines(&headings, 6);
-        // H1 visible, body hidden, H2@2 visible, body@3 hidden, H2@4 visible, body@5 hidden
-        assert_eq!(hidden, vec![false, true, false, true, false, true]);
+        // H1 visible, body visible (parent body), H2@2 visible, body@3 hidden (child content),
+        // H2@4 visible, body@5 hidden (child content)
+        assert_eq!(hidden, vec![false, false, false, true, false, true]);
     }
 
     #[test]

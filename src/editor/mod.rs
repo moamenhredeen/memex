@@ -332,27 +332,20 @@ impl EditorState {
             MoveUp => {
                 let content = self.content();
                 let pos = self.snap_to_char_boundary(self.cursor);
+                let current_line = self.display_map.line_for_offset(pos);
                 let before = &content[..pos];
                 let line_start = before.rfind('\n').map(|i| i + 1).unwrap_or(0);
                 let col = pos - line_start;
-                if line_start == 0 {
-                    self.move_to(0, cx);
-                } else {
-                    // Find target line, skipping hidden lines
-                    let current_line = self.display_map.line_for_offset(pos);
-                    let target_line = self.display_map.next_visible_line(current_line, false);
-                    if let Some(tl) = target_line {
-                        let tl_start = self.display_map.line_offset(tl);
-                        let tl_end = content[tl_start..]
-                            .find('\n')
-                            .map(|p| tl_start + p)
-                            .unwrap_or(content.len());
-                        let tl_len = tl_end - tl_start;
-                        self.move_to(tl_start + col.min(tl_len), cx);
-                    } else {
-                        self.move_to(0, cx);
-                    }
+                if let Some(tl) = self.display_map.next_visible_line(current_line, false) {
+                    let tl_start = self.display_map.line_offset(tl);
+                    let tl_end = content[tl_start..]
+                        .find('\n')
+                        .map(|p| tl_start + p)
+                        .unwrap_or(content.len());
+                    let tl_len = tl_end - tl_start;
+                    self.move_to(tl_start + col.min(tl_len), cx);
                 }
+                // else: no visible line above — stay put
             }
             MoveDown => {
                 let content = self.content();
@@ -360,17 +353,14 @@ impl EditorState {
                 let before = &content[..pos];
                 let line_start = before.rfind('\n').map(|i| i + 1).unwrap_or(0);
                 let col = pos - line_start;
-                // Find target line, skipping hidden lines
                 let current_line = self.display_map.line_for_offset(pos);
-                let target_line = self.display_map.next_visible_line(current_line, true);
-                if let Some(tl) = target_line {
+                if let Some(tl) = self.display_map.next_visible_line(current_line, true) {
                     let tl_start = self.display_map.line_offset(tl);
                     let rest = &content[tl_start..];
                     let tl_len = rest.find('\n').unwrap_or(rest.len());
                     self.move_to(tl_start + col.min(tl_len), cx);
-                } else {
-                    self.move_to(content.len(), cx);
                 }
+                // else: no visible line below — stay put
             }
             MoveLineStart => {
                 let content = self.content();
