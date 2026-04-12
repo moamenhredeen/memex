@@ -41,6 +41,9 @@ pub struct EditorState {
     pub command_line: String,
     /// Status message shown briefly after command execution
     pub status_message: Option<String>,
+    /// Suppress the next OS text input (set after vim consumes a key that
+    /// changes mode, so the OS input method doesn't also insert the char).
+    pub suppress_next_input: bool,
     _blink_sub: Subscription,
 }
 
@@ -83,6 +86,7 @@ impl EditorState {
             plugins,
             command_line: String::new(),
             status_message: None,
+            suppress_next_input: false,
             _blink_sub,
         }
     }

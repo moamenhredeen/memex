@@ -52,6 +52,12 @@ impl EntityInputHandler for EditorState {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Suppress OS text input that follows a vim-consumed key
+        if self.suppress_next_input {
+            self.suppress_next_input = false;
+            return;
+        }
+
         // In vim Normal/Visual/Command modes, suppress OS text input
         if self.vim.enabled {
             match self.mode {
@@ -110,6 +116,12 @@ impl EntityInputHandler for EditorState {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Suppress OS text input that follows a vim-consumed key
+        if self.suppress_next_input {
+            self.suppress_next_input = false;
+            return;
+        }
+
         // In vim Normal/Visual/Command modes, suppress OS text input
         if self.vim.enabled {
             match self.mode {
