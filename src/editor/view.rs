@@ -59,6 +59,17 @@ impl Render for EditorView {
                     let cursor = state.cursor;
 
                     let result = state.keymap.process_key(key, ctrl, shift, alt, &content, cursor);
+
+                    // In insert mode, let OS EntityInputHandler handle plain
+                    // character insertion (supports IME, dead keys, etc.).
+                    // Only execute results that represent explicit bindings.
+                    if state.keymap.is_insert_active() {
+                        if matches!(result, crate::keymap::GrammarResult::InsertChar(_)
+                                         | crate::keymap::GrammarResult::Noop) {
+                            return;
+                        }
+                    }
+
                     state.execute_grammar_result(result, window, cx);
                 });
             }))
