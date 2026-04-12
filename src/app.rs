@@ -660,12 +660,14 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             .justify_center()
             .text_size(px(12.))
             .bg(rgba(0x00000010))
+            .cursor_pointer()
             .hover(|s| s
                 .text_color(rgba(0x00000010))
                 .bg(rgba(0xFF000040))
-                .cursor_pointer()
             )
-            .on_mouse_down(MouseButton::Left, |_e, _w, _cx| {})  // stop propagation
+            .on_mouse_down(MouseButton::Left, |_e, _w, cx| {
+                cx.stop_propagation();
+            })
             .on_click(cx.listener(|_this, _e: &ClickEvent, _window, cx| {
                 cx.quit();
             }))
