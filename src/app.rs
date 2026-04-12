@@ -294,7 +294,6 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         let es = self.editor_state.read(cx);
         let vim_enabled = es.vim.enabled;
         let mode = es.mode;
-        let status_msg = es.status_message.clone();
         let cursor = es.cursor;
         let content = es.content();
         drop(es);
@@ -366,7 +365,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             )
             // Spacer
             .child(div().flex_1())
-            // Status message or position
+            // Position (always L:C)
             .child(
                 div()
                     .px(px(8.))
@@ -374,21 +373,23 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                         div()
                             .text_size(px(11.))
                             .text_color(rgb(0x6C7086))
-                            .child(
-                                status_msg.unwrap_or_else(|| {
-                                    format!("L{} C{}", line_num, col_num)
-                                }),
-                            ),
+                            .child(format!("L{} C{}", line_num, col_num)),
                     ),
             )
     }
 
-    /// Render the minibuffer area. When idle: empty. When active: prompt + vertico candidates.
+    /// Render the minibuffer area. Always visible like emacs.
+    /// Shows: status messages (idle), vim command line (:), or note search with vertico candidates.
     fn render_minibuffer(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let es = self.editor_state.read(cx);
         let vim_command_mode = es.vim.enabled && es.mode == EditorMode::Command;
         let command_line = es.command_line.clone();
+        let status_msg = es.status_message.clone();
         drop(es);
+
+        let base = v_flex()
+            .w_full()
+            .bg(rgb(0x1E1E2E));
 
         match &self.minibuffer_mode {
             MinibufferMode::NoteSearch => {
@@ -454,9 +455,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     );
                 }
 
-                v_flex()
-                    .w_full()
-                    .bg(rgb(0x1E1E2E))
+                base
                     .border_t_1()
                     .border_color(rgb(0x45475A))
                     // Prompt line
@@ -482,16 +481,13 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     // Candidates (vertico-style vertical list)
                     .child(items)
             }
-            MinibufferMode::VimCommand | MinibufferMode::Idle if vim_command_mode => {
+            _ if vim_command_mode => {
                 // Vim command line
-                v_flex()
-                    .w_full()
-                    .bg(rgb(0x1E1E2E))
-                    .border_t_1()
-                    .border_color(rgb(0x45475A))
+                base
                     .child(
                         h_flex()
                             .w_full()
+                            .h(px(22.))
                             .px(px(8.))
                             .py(px(3.))
                             .child(
@@ -504,8 +500,22 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     )
             }
             _ => {
-                // Idle — no minibuffer shown
-                v_flex().w_full()
+                // Idle — show status message or empty minibuffer
+                let msg = status_msg.unwrap_or_default();
+                base
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .h(px(22.))
+                            .px(px(8.))
+                            .py(px(3.))
+                            .child(
+                                div()
+                                    .text_size(px(13.))
+                                    .text_color(rgb(0x6C7086))
+                                    .child(msg),
+                            ),
+                    )
             }
         }
     }
