@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
@@ -50,6 +51,9 @@ pub struct VaultRegistry {
 pub struct VaultEntry {
     pub path: String,
     pub last_note: Option<String>,
+    /// Unix timestamp of last time this vault was opened.
+    #[serde(default)]
+    pub last_opened: u64,
 }
 
 impl VaultRegistry {
@@ -76,13 +80,19 @@ impl VaultRegistry {
     pub fn upsert_vault(&mut self, vault_path: &Path, last_note: Option<&Path>) {
         let path_str = vault_path.to_string_lossy().to_string();
         let last_note_str = last_note.map(|p| p.to_string_lossy().to_string());
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
 
         if let Some(entry) = self.vaults.iter_mut().find(|e| e.path == path_str) {
             entry.last_note = last_note_str;
+            entry.last_opened = now;
         } else {
             self.vaults.push(VaultEntry {
                 path: path_str.clone(),
                 last_note: last_note_str,
+                last_opened: now,
             });
         }
         self.last_vault = Some(path_str);
@@ -106,6 +116,25 @@ impl VaultRegistry {
     /// Get all registered vault paths.
     pub fn vault_paths(&self) -> Vec<PathBuf> {
         self.vaults.iter().map(|e| PathBuf::from(&e.path)).collect()
+    }
+
+    /// Get registered vaults sorted by most-recently-used (newest first).
+    /// Excludes the currently active vault if `exclude` is provided.
+    pub fn recent_vaults(&self, exclude: Option<&Path>) -> Vec<&VaultEntry> {
+        let exclude_str = exclude.map(|p| p.to_string_lossy().to_string());
+        let mut vaults: Vec<&VaultEntry> = self
+            .vaults
+            .iter()
+            .filter(|e| {
+                if let Some(ref ex) = exclude_str {
+                    &e.path != ex
+                } else {
+                    true
+                }
+            })
+            .collect();
+        vaults.sort_by(|a, b| b.last_opened.cmp(&a.last_opened));
+        vaults
     }
 
     fn registry_path() -> PathBuf {

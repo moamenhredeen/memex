@@ -1238,8 +1238,11 @@ impl EditorState {
                     cx.emit(EditorEvent::RequestOpen(args.to_string()));
                 }
             }
-            "vault" | "vaults" | "open-vault" | "switch-vault" => {
-                cx.emit(EditorEvent::RequestVaultSearch);
+            "vault" | "vaults" | "vault-switch" | "switch-vault" => {
+                cx.emit(EditorEvent::RequestVaultSwitch);
+            }
+            "vault-open" | "open-vault" => {
+                cx.emit(EditorEvent::RequestVaultOpen);
             }
             "notes" | "find-note" | "find" | "note" => {
                 cx.emit(EditorEvent::RequestNoteSearch);
@@ -1298,7 +1301,8 @@ pub enum EditorEvent {
     RequestSave,
     RequestQuit,
     RequestOpen(String),
-    RequestVaultSearch,
+    RequestVaultSwitch,
+    RequestVaultOpen,
     RequestNoteSearch,
     RequestCommand,
 }

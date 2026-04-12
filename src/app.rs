@@ -81,8 +81,11 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                         let path = std::path::PathBuf::from(path.clone());
                         this.open_note_by_path(path, window, cx);
                     }
-                    EditorEvent::RequestVaultSearch => {
-                        this.activate_vault_search(window, cx);
+                    EditorEvent::RequestVaultSwitch => {
+                        this.activate_vault_switch(window, cx);
+                    }
+                    EditorEvent::RequestVaultOpen => {
+                        this.activate_vault_open(window, cx);
                     }
                     EditorEvent::RequestNoteSearch => {
                         this.activate_note_search(window, cx);
@@ -110,9 +113,21 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         cx.notify();
     }
 
-    fn activate_vault_search(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+    fn activate_vault_switch(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         let vim = self.editor_state.read(cx).keymap.vim_enabled;
-        self.minibuffer.activate(DelegateKind::VaultSearch, "Switch vault:", vim);
+        self.minibuffer.activate(DelegateKind::VaultSwitch, "Switch vault:", vim);
+        cx.notify();
+    }
+
+    fn activate_vault_open(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        let vim = self.editor_state.read(cx).keymap.vim_enabled;
+        self.minibuffer.activate(DelegateKind::VaultOpen, "Open vault:", vim);
+        // Seed with home directory
+        if let Some(home) = dirs::home_dir() {
+            let seed = format!("{}/", home.to_string_lossy());
+            self.minibuffer.input = seed.clone();
+            self.minibuffer.cursor = seed.len();
+        }
         cx.notify();
     }
 
@@ -152,9 +167,16 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             MinibufferAction::Complete => {
                 let candidates = self.get_candidates();
                 if let Some(c) = candidates.get(self.minibuffer.selected) {
-                    // Tab inserts the candidate's primary text (vertico-insert)
-                    self.minibuffer.input = c.label.clone();
-                    self.minibuffer.cursor = self.minibuffer.input.len();
+                    if self.minibuffer.delegate_kind == DelegateKind::VaultOpen {
+                        // Tab descends into the selected directory
+                        let path = format!("{}/", c.data);
+                        self.minibuffer.input = path.clone();
+                        self.minibuffer.cursor = path.len();
+                    } else {
+                        // Default: insert candidate label (vertico-insert)
+                        self.minibuffer.input = c.label.clone();
+                        self.minibuffer.cursor = self.minibuffer.input.len();
+                    }
                     self.minibuffer.selected = 0;
                 }
                 cx.notify();
@@ -174,8 +196,11 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             DelegateKind::NoteSearch => {
                 self.get_note_candidates()
             }
-            DelegateKind::VaultSearch => {
-                self.get_vault_candidates()
+            DelegateKind::VaultSwitch => {
+                self.get_vault_switch_candidates()
+            }
+            DelegateKind::VaultOpen => {
+                self.get_vault_open_candidates()
             }
         }
     }
@@ -223,28 +248,26 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     self.create_note_by_title(&title, window, cx);
                 }
             }
-            DelegateKind::VaultSearch => {
+            DelegateKind::VaultSwitch => {
                 if let Some(candidate) = candidates.get(selected) {
-                    if candidate.is_action {
-                        // "Open directory" action
-                        let path = std::path::PathBuf::from(&candidate.data);
-                        if path.is_dir() {
-                            self.dismiss_minibuffer(window, cx);
-                            self.open_vault_by_path(path, window, cx);
-                            self.activate_note_search(window, cx);
-                        } else {
-                            self.minibuffer.set_message(format!(
-                                "Not a directory: {}",
-                                candidate.data
-                            ));
-                            self.dismiss_minibuffer(window, cx);
-                        }
-                    } else {
-                        let path = std::path::PathBuf::from(&candidate.data);
+                    let path = std::path::PathBuf::from(&candidate.data);
+                    self.dismiss_minibuffer(window, cx);
+                    self.open_vault_by_path(path, window, cx);
+                    self.activate_note_search(window, cx);
+                }
+            }
+            DelegateKind::VaultOpen => {
+                if let Some(candidate) = candidates.get(selected) {
+                    let path = std::path::PathBuf::from(&candidate.data);
+                    if path.is_dir() {
                         self.dismiss_minibuffer(window, cx);
                         self.open_vault_by_path(path, window, cx);
-                        // Auto-chain: open note search after vault switch
                         self.activate_note_search(window, cx);
+                    } else {
+                        self.minibuffer.set_message(format!(
+                            "Not a directory: {}",
+                            candidate.data
+                        ));
                     }
                 } else if !input.is_empty() {
                     let path = std::path::PathBuf::from(&input);
@@ -254,7 +277,6 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                         self.activate_note_search(window, cx);
                     } else {
                         self.minibuffer.set_message(format!("Not a directory: {}", input));
-                        self.dismiss_minibuffer(window, cx);
                     }
                 }
             }
@@ -281,8 +303,11 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 self.save(window, cx);
                 cx.quit();
             }
-            "vault" => {
-                self.activate_vault_search(window, cx);
+            "vault-switch" => {
+                self.activate_vault_switch(window, cx);
+            }
+            "vault-open" => {
+                self.activate_vault_open(window, cx);
             }
             "notes" => {
                 self.activate_note_search(window, cx);
@@ -381,40 +406,151 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         candidates
     }
 
-    /// Build vault candidates from registry + directory listing.
-    fn get_vault_candidates(&self) -> Vec<Candidate> {
-        let results = self.search_vaults(&self.minibuffer.input);
-        let show_new = !self.minibuffer.input.is_empty()
-            && !results
-                .iter()
-                .any(|(_, p)| p.to_string_lossy() == self.minibuffer.input);
+    /// Build candidates for `:vault-switch` — MRU-ordered recent vaults.
+    fn get_vault_switch_candidates(&self) -> Vec<Candidate> {
+        let current_path = self.state.vault.as_ref().map(|v| v.path.as_path());
+        let recent = self.state.registry.recent_vaults(current_path);
+        let query = &self.minibuffer.input;
 
-        let mut candidates: Vec<Candidate> = results
-            .into_iter()
-            .map(|(name, path)| {
-                let is_current = self
-                    .state
-                    .vault
-                    .as_ref()
-                    .map(|v| v.path == path)
-                    .unwrap_or(false);
-                let suffix = if is_current { "  (current)" } else { "" };
-                Candidate {
-                    label: format!("{}{}", name, suffix),
-                    detail: Some(path.to_string_lossy().to_string()),
-                    is_action: false,
-                    data: path.to_string_lossy().to_string(),
-                }
+        let entries: Vec<(&str, &str)> = recent
+            .iter()
+            .map(|entry| {
+                let name = std::path::Path::new(&entry.path)
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("vault");
+                (name, entry.path.as_str())
             })
             .collect();
 
-        if show_new {
-            candidates.push(Candidate {
-                label: format!("⊕ Open directory: {}", self.minibuffer.input),
-                detail: None,
-                is_action: true,
-                data: self.minibuffer.input.clone(),
+        if query.is_empty() {
+            return entries
+                .into_iter()
+                .take(MAX_RESULTS)
+                .map(|(name, path)| Candidate {
+                    label: name.to_string(),
+                    detail: Some(path.to_string()),
+                    is_action: false,
+                    data: path.to_string(),
+                })
+                .collect();
+        }
+
+        let matcher = SkimMatcherV2::default();
+        let mut scored: Vec<(i64, &str, &str)> = entries
+            .into_iter()
+            .filter_map(|(name, path)| {
+                let name_score = matcher.fuzzy_match(name, query);
+                let path_score = matcher.fuzzy_match(path, query);
+                let best = name_score.max(path_score);
+                best.map(|score| (score, name, path))
+            })
+            .collect();
+
+        scored.sort_by(|a, b| b.0.cmp(&a.0));
+        scored
+            .into_iter()
+            .take(MAX_RESULTS)
+            .map(|(_, name, path)| Candidate {
+                label: name.to_string(),
+                detail: Some(path.to_string()),
+                is_action: false,
+                data: path.to_string(),
+            })
+            .collect()
+    }
+
+    /// Build candidates for `:vault-open` — live directory completion.
+    fn get_vault_open_candidates(&self) -> Vec<Candidate> {
+        let input = &self.minibuffer.input;
+        if input.is_empty() {
+            return Vec::new();
+        }
+
+        let expanded = if input.starts_with('~') {
+            let rest = input.get(1..).unwrap_or("");
+            let rest = rest.strip_prefix('/').unwrap_or(rest);
+            dirs::home_dir()
+                .map(|h| if rest.is_empty() { h } else { h.join(rest) })
+                .unwrap_or_else(|| std::path::PathBuf::from(input))
+        } else {
+            std::path::PathBuf::from(input)
+        };
+
+        let (parent, prefix) = if expanded.is_dir() && input.ends_with('/') {
+            (expanded.clone(), String::new())
+        } else {
+            let parent = expanded
+                .parent()
+                .unwrap_or(std::path::Path::new("/"))
+                .to_path_buf();
+            let prefix = expanded
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_lowercase();
+            (parent, prefix)
+        };
+
+        let mut candidates = Vec::new();
+
+        if let Ok(read_dir) = std::fs::read_dir(&parent) {
+            let mut entries: Vec<std::path::PathBuf> = read_dir
+                .flatten()
+                .map(|e| e.path())
+                .filter(|p| {
+                    if !p.is_dir() {
+                        return false;
+                    }
+                    let name = p
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("");
+                    if name.starts_with('.') {
+                        return false;
+                    }
+                    if !prefix.is_empty() {
+                        name.to_lowercase().starts_with(&prefix)
+                    } else {
+                        true
+                    }
+                })
+                .collect();
+
+            entries.sort_by(|a, b| {
+                a.file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_lowercase()
+                    .cmp(
+                        &b.file_name()
+                            .and_then(|s| s.to_str())
+                            .unwrap_or("")
+                            .to_lowercase(),
+                    )
             });
+
+            for path in entries.into_iter().take(MAX_RESULTS) {
+                let name = path
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_string();
+                // Mark registered vaults
+                let is_registered = self
+                    .state
+                    .registry
+                    .vault_paths()
+                    .iter()
+                    .any(|vp| *vp == path);
+                let suffix = if is_registered { "  ★" } else { "" };
+                candidates.push(Candidate {
+                    label: format!("{}/{}",  name, suffix),
+                    detail: Some(path.to_string_lossy().to_string()),
+                    is_action: false,
+                    data: path.to_string_lossy().to_string(),
+                });
+            }
         }
 
         candidates
@@ -502,99 +638,6 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             .into_iter()
             .take(MAX_RESULTS)
             .map(|(_, title, path)| (title, path))
-            .collect()
-    }
-
-    /// Search registered vaults + scan home for directories.
-    fn search_vaults(&self, query: &str) -> Vec<(String, std::path::PathBuf)> {
-        let registered = self.state.registry.vault_paths();
-
-        // Build display entries: (display_name, path)
-        let mut entries: Vec<(String, std::path::PathBuf)> = registered
-            .iter()
-            .map(|p| {
-                let name = p
-                    .file_name()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("vault")
-                    .to_string();
-                (name, p.clone())
-            })
-            .collect();
-
-        // If query looks like a path, try listing that directory's subdirectories
-        if query.starts_with('/') || query.starts_with('~') || query.starts_with('.') {
-            let expanded = if query.starts_with('~') {
-                let rest = query.get(1..).unwrap_or("");
-                let rest = rest.strip_prefix('/').unwrap_or(rest);
-                dirs::home_dir()
-                    .map(|h| if rest.is_empty() { h } else { h.join(rest) })
-                    .unwrap_or_else(|| std::path::PathBuf::from(query))
-            } else {
-                std::path::PathBuf::from(query)
-            };
-
-            // List subdirectories of the parent that match the partial name
-            let (parent, prefix) = if expanded.is_dir() {
-                (expanded.clone(), String::new())
-            } else {
-                let parent = expanded.parent().unwrap_or(std::path::Path::new("/")).to_path_buf();
-                let prefix = expanded
-                    .file_name()
-                    .and_then(|s| s.to_str())
-                    .unwrap_or("")
-                    .to_lowercase();
-                (parent, prefix)
-            };
-
-            if let Ok(read_dir) = std::fs::read_dir(&parent) {
-                for entry in read_dir.flatten() {
-                    let path = entry.path();
-                    if !path.is_dir() {
-                        continue;
-                    }
-                    let name = path
-                        .file_name()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("")
-                        .to_string();
-                    // Skip hidden directories
-                    if name.starts_with('.') {
-                        continue;
-                    }
-                    if !prefix.is_empty() && !name.to_lowercase().starts_with(&prefix) {
-                        continue;
-                    }
-                    // Don't duplicate registered vaults
-                    if !entries.iter().any(|(_, p)| *p == path) {
-                        entries.push((name, path));
-                    }
-                }
-            }
-        }
-
-        if query.is_empty() {
-            return entries.into_iter().take(MAX_RESULTS).collect();
-        }
-
-        // Fuzzy match against query
-        let matcher = SkimMatcherV2::default();
-        let mut scored: Vec<(i64, String, std::path::PathBuf)> = entries
-            .into_iter()
-            .filter_map(|(name, path)| {
-                // Match against both name and full path
-                let name_score = matcher.fuzzy_match(&name, query);
-                let path_score = matcher.fuzzy_match(&path.to_string_lossy(), query);
-                let best = name_score.max(path_score);
-                best.map(|score| (score, name, path))
-            })
-            .collect();
-
-        scored.sort_by(|a, b| b.0.cmp(&a.0));
-        scored
-            .into_iter()
-            .take(MAX_RESULTS)
-            .map(|(_, name, path)| (name, path))
             .collect()
     }
 

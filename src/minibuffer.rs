@@ -54,8 +54,10 @@ pub enum DelegateKind {
     Command,
     /// Note search (Ctrl+P, :notes) — fuzzy-searches vault notes.
     NoteSearch,
-    /// Vault picker (:vault) — lists registered vaults + directory browser.
-    VaultSearch,
+    /// Recent vaults picker (:vault-switch) — MRU-ordered registered vaults.
+    VaultSwitch,
+    /// Directory browser (:vault-open) — navigate filesystem to choose a vault.
+    VaultOpen,
 }
 
 /// Editing mode within the minibuffer input line.
@@ -840,8 +842,11 @@ mod tests {
         mb.activate(DelegateKind::NoteSearch, "Find note:", false);
         assert_eq!(mb.delegate_kind, DelegateKind::NoteSearch);
 
-        mb.activate(DelegateKind::VaultSearch, "Switch vault:", false);
-        assert_eq!(mb.delegate_kind, DelegateKind::VaultSearch);
+        mb.activate(DelegateKind::VaultSwitch, "Switch vault:", false);
+        assert_eq!(mb.delegate_kind, DelegateKind::VaultSwitch);
+
+        mb.activate(DelegateKind::VaultOpen, "Open vault:", false);
+        assert_eq!(mb.delegate_kind, DelegateKind::VaultOpen);
 
         mb.activate(DelegateKind::Command, "M-x", false);
         assert_eq!(mb.delegate_kind, DelegateKind::Command);

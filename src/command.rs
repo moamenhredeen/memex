@@ -121,11 +121,18 @@ impl CommandRegistry {
             binding: Some(":wq"),
         });
         self.register(Command {
-            id: "vault",
+            id: "vault-switch",
             name: "Switch Vault",
-            description: "Open or switch to a vault",
-            aliases: &["vaults", "open-vault", "switch-vault"],
-            binding: Some(":vault"),
+            description: "Switch to a recent vault",
+            aliases: &["vault", "vaults", "switch-vault"],
+            binding: Some(":vault-switch"),
+        });
+        self.register(Command {
+            id: "vault-open",
+            name: "Open Vault",
+            description: "Browse filesystem to open a vault",
+            aliases: &["open-vault"],
+            binding: Some(":vault-open"),
         });
         self.register(Command {
             id: "notes",
