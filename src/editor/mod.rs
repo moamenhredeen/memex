@@ -169,7 +169,30 @@ impl EditorState {
     }
 
     pub fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
-        let offset = self.snap_to_char_boundary(offset);
+        self.move_to_inner(offset, false, cx);
+    }
+
+    /// Move cursor, preferring forward direction when landing on hidden line.
+    pub fn move_to_forward(&mut self, offset: usize, cx: &mut Context<Self>) {
+        self.move_to_inner(offset, true, cx);
+    }
+
+    fn move_to_inner(&mut self, offset: usize, prefer_forward: bool, cx: &mut Context<Self>) {
+        let mut offset = self.snap_to_char_boundary(offset);
+        // If the target is on a hidden line, snap to nearest visible line
+        if self.display_map.is_offset_hidden(offset) {
+            let line = self.display_map.line_for_offset(offset);
+            let (first, second) = if prefer_forward {
+                (true, false)
+            } else {
+                (false, true)
+            };
+            if let Some(vis) = self.display_map.next_visible_line(line, first) {
+                offset = self.display_map.line_offset(vis);
+            } else if let Some(vis) = self.display_map.next_visible_line(line, second) {
+                offset = self.display_map.line_offset(vis);
+            }
+        }
         self.selected_range = offset..offset;
         self.cursor = offset;
         self.blink_cursor.update(cx, |bc, cx| bc.pause(cx));
@@ -301,9 +324,9 @@ impl EditorState {
             }
             MoveRight => {
                 if self.selected_range.is_empty() {
-                    self.move_to(self.next_grapheme(self.cursor_offset()), cx);
+                    self.move_to_forward(self.next_grapheme(self.cursor_offset()), cx);
                 } else {
-                    self.move_to(self.selected_range.end, cx);
+                    self.move_to_forward(self.selected_range.end, cx);
                 }
             }
             MoveUp => {
