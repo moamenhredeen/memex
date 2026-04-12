@@ -1,7 +1,7 @@
 #[allow(dead_code)]
 mod action;
 #[allow(dead_code)]
-mod defaults;
+pub mod defaults;
 #[allow(dead_code)]
 mod grammar;
 #[allow(dead_code)]
@@ -17,6 +17,9 @@ pub struct KeymapSystem {
     pub stack: LayerStack,
     pub grammar: VimGrammar,
     pub vim_enabled: bool,
+    /// When a multi-key sequence is in progress, holds the trie node we're at.
+    /// We store a clone of the Node's map to avoid lifetime issues.
+    pending_trie: Option<std::collections::HashMap<KeyCombo, KeyTrie>>,
 }
 
 impl KeymapSystem {
@@ -26,6 +29,7 @@ impl KeymapSystem {
 
         if vim_enabled {
             stack.activate_layer("vim:normal");
+            stack.activate_layer("leader");
         }
         stack.activate_layer("global");
         stack.activate_layer("markdown");
@@ -34,7 +38,18 @@ impl KeymapSystem {
             stack,
             grammar: VimGrammar::new(),
             vim_enabled,
+            pending_trie: None,
         }
+    }
+
+    /// Check if a multi-key sequence is in progress.
+    pub fn has_pending_keys(&self) -> bool {
+        self.pending_trie.is_some()
+    }
+
+    /// Cancel any pending multi-key sequence.
+    pub fn cancel_pending(&mut self) {
+        self.pending_trie = None;
     }
 
     /// Resolve a key event through the layer stack and grammar engine.
@@ -48,13 +63,35 @@ impl KeymapSystem {
         content: &str,
         cursor: usize,
     ) -> GrammarResult {
-        // 1. Transient capture — if a transient layer (f/t/r/g) is waiting for input
+        // 1. If we're mid-sequence in a trie, continue walking it
+        if let Some(pending_map) = self.pending_trie.take() {
+            let combo = KeyCombo::from_keystroke(key, ctrl, shift, alt);
+            if let Some(trie_node) = pending_map.get(&combo) {
+                match trie_node {
+                    KeyTrie::Leaf(action) => {
+                        let action = action.clone();
+                        return self.grammar.process(action, key, content, cursor, &mut self.stack);
+                    }
+                    KeyTrie::Node(map) => {
+                        // Deeper nesting — keep pending
+                        self.pending_trie = Some(map.clone());
+                        return GrammarResult::Pending;
+                    }
+                }
+            } else {
+                // Key doesn't match any continuation — cancel sequence
+                // (key is consumed/dropped, like vim does with invalid sequences)
+                return GrammarResult::Noop;
+            }
+        }
+
+        // 2. Transient capture — if a transient layer (f/t/r) is waiting for input
         if let Some(transient_id) = self.stack.peek_transient() {
             self.stack.pop_transient();
             return self.handle_transient_capture(transient_id, key, content, cursor);
         }
 
-        // 2. Count digit accumulation in vim normal/visual/op-pending
+        // 3. Count digit accumulation in vim normal/visual/op-pending
         if self.vim_enabled && !ctrl && !alt && key.chars().count() == 1 {
             if let Some(ch) = key.chars().next() {
                 if ch.is_ascii_digit() && !self.is_insert_active() {
@@ -68,21 +105,30 @@ impl KeymapSystem {
             }
         }
 
-        // 3. Normal layer resolution
+        // 4. Normal layer resolution (now returns KeyTrie)
         let combo = KeyCombo::from_keystroke(key, ctrl, shift, alt);
-        let action = self.stack.resolve(&combo);
+        let resolved = self.stack.resolve(&combo);
 
-        // If no action found, check if it's a printable self-insert
-        let action = action.unwrap_or_else(|| {
-            if !ctrl && !alt && key.chars().count() == 1 {
-                Action::SelfInsert
-            } else {
-                Action::Noop
+        match resolved {
+            Some(KeyTrie::Leaf(action)) => {
+                let action = action.clone();
+                self.grammar.process(action, key, content, cursor, &mut self.stack)
             }
-        });
-
-        // 4. Pass through grammar engine
-        self.grammar.process(action, key, content, cursor, &mut self.stack)
+            Some(KeyTrie::Node(map)) => {
+                // Start of a multi-key sequence — enter pending state
+                self.pending_trie = Some(map.clone());
+                GrammarResult::Pending
+            }
+            None => {
+                // No binding — check if it's a printable self-insert
+                let action = if !ctrl && !alt && key.chars().count() == 1 {
+                    Action::SelfInsert
+                } else {
+                    Action::Noop
+                };
+                self.grammar.process(action, key, content, cursor, &mut self.stack)
+            }
+        }
     }
 
     /// Handle a key captured by a transient layer (f/t/r/g prefix).
@@ -130,23 +176,6 @@ impl KeymapSystem {
                 self.grammar.clear_pending();
                 GrammarResult::ReplaceChar { ch, count: c }
             }
-            "transient:g-prefix" => {
-                match ch {
-                    'g' => {
-                        // gg = go to doc start
-                        self.grammar.resolve_with_target(0, content, cursor)
-                    }
-                    '_' => {
-                        // g_ = last non-whitespace on line (treat as line-end for now)
-                        let target = motion_line_end(content, cursor, 1);
-                        self.grammar.resolve_with_target(target, content, cursor)
-                    }
-                    _ => {
-                        self.grammar.clear_pending();
-                        GrammarResult::Noop
-                    }
-                }
-            }
             _ => {
                 self.grammar.clear_pending();
                 GrammarResult::Noop
@@ -159,8 +188,10 @@ impl KeymapSystem {
         self.vim_enabled = enabled;
         if enabled {
             self.stack.activate_layer("vim:normal");
+            self.stack.activate_layer("leader");
         } else {
             self.stack.deactivate_group("vim-state");
+            self.stack.deactivate_layer("leader");
         }
     }
 

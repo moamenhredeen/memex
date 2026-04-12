@@ -1166,15 +1166,33 @@ impl EditorState {
                 self.scroll_offset = (self.scroll_offset - px(200.)).max(px(0.));
                 cx.notify();
             }
+            // Go-to commands (from g prefix trie)
+            "goto-doc-start" => {
+                self.move_to(0, cx);
+            }
+            "goto-last-non-ws" => {
+                let content = self.content();
+                let target = crate::keymap::defaults::motion_line_end(&content, self.cursor, 1);
+                self.move_to(target, cx);
+            }
             // App-level commands (forwarded via events)
             "save" => {
                 cx.emit(EditorEvent::RequestSave);
+            }
+            "quit" => {
+                cx.emit(EditorEvent::RequestQuit);
             }
             "command-palette" => {
                 cx.emit(EditorEvent::RequestCommand);
             }
             "find-note" => {
                 cx.emit(EditorEvent::RequestNoteSearch);
+            }
+            "vault-switch" => {
+                cx.emit(EditorEvent::RequestVaultSwitch);
+            }
+            "vault-open" => {
+                cx.emit(EditorEvent::RequestVaultOpen);
             }
             // Outline commands
             "outline-cycle-fold" => self.dispatch(EditorCommand::OutlineCycleFold, window, cx),

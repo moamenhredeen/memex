@@ -7,6 +7,7 @@ pub fn register_defaults(stack: &mut LayerStack) {
     register_operators(stack);
     register_global_layer(stack);
     register_vim_layers(stack);
+    register_leader_layer(stack);
     register_markdown_layer(stack);
     register_minibuffer_layer(stack);
 }
@@ -540,14 +541,18 @@ fn register_vim_layers(stack: &mut LayerStack) {
         .bind(":", Action::Command("command-palette"))
         .bind(".", Action::Command("dot-repeat"));
 
-    // Transient waits
+    // Multi-key sequences (trie-based)
+    normal = normal
+        .bind_seq("g g", Action::Command("goto-doc-start"))
+        .bind_seq("g _", Action::Command("goto-last-non-ws"));
+
+    // Transient waits (for char capture — f/t/r need arbitrary char input)
     normal = normal
         .bind("f", Action::PushTransient("transient:find-char"))
         .bind("t", Action::PushTransient("transient:til-char"))
         .bind("shift-f", Action::PushTransient("transient:find-char-back"))
         .bind("shift-t", Action::PushTransient("transient:til-char-back"))
-        .bind("r", Action::PushTransient("transient:replace-char"))
-        .bind("g", Action::PushTransient("transient:g-prefix"));
+        .bind("r", Action::PushTransient("transient:replace-char"));
 
     // Scrolling
     normal = normal
@@ -639,7 +644,27 @@ fn register_transient_layers(stack: &mut LayerStack) {
     stack.register_layer(Layer::new("transient:find-char-back").transient());
     stack.register_layer(Layer::new("transient:til-char-back").transient());
     stack.register_layer(Layer::new("transient:replace-char").transient());
-    stack.register_layer(Layer::new("transient:g-prefix").transient());
+}
+
+// ─── Leader key (SPC prefix, spacemacs/doom style) ──────────────────────────
+
+fn register_leader_layer(stack: &mut LayerStack) {
+    let layer = Layer::new("leader")
+        // Files
+        .bind_seq("space f", Action::Command("find-note"))
+        .bind_seq("space s", Action::Command("save"))
+        // Buffers / Notes
+        .bind_seq("space b", Action::Command("find-note"))
+        .bind_seq("space n", Action::Command("find-note"))
+        // Vault
+        .bind_seq("space v s", Action::Command("vault-switch"))
+        .bind_seq("space v o", Action::Command("vault-open"))
+        // Command palette
+        .bind_seq("space space", Action::Command("command-palette"))
+        // Quit
+        .bind_seq("space q q", Action::Command("quit"));
+
+    stack.register_layer(layer);
 }
 
 fn register_markdown_layer(stack: &mut LayerStack) {
@@ -678,6 +703,7 @@ fn register_minibuffer_layer(stack: &mut LayerStack) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use super::super::layer::KeyTrie;
 
     #[test]
     fn test_register_defaults_builds_all_layers() {
@@ -700,7 +726,7 @@ mod tests {
 
         let combo = super::super::action::KeyCombo::parse("h");
         let action = stack.resolve(&combo);
-        assert_eq!(action, Some(Action::Motion("left")));
+        assert!(matches!(action, Some(KeyTrie::Leaf(Action::Motion("left")))));
     }
 
     #[test]
@@ -712,7 +738,7 @@ mod tests {
 
         let combo = super::super::action::KeyCombo::parse("escape");
         let action = stack.resolve(&combo);
-        assert_eq!(action, Some(Action::ActivateLayer("vim:normal")));
+        assert!(matches!(action, Some(KeyTrie::Leaf(Action::ActivateLayer("vim:normal")))));
     }
 
     #[test]
@@ -723,7 +749,7 @@ mod tests {
 
         let combo = super::super::action::KeyCombo::parse("ctrl-z");
         let action = stack.resolve(&combo);
-        assert_eq!(action, Some(Action::Command("undo")));
+        assert!(matches!(action, Some(KeyTrie::Leaf(Action::Command("undo")))));
     }
 
     #[test]
@@ -775,5 +801,58 @@ mod tests {
         assert_eq!(motion_matching_bracket("(hello)", 6, 1), 0);
         // No bracket at cursor
         assert_eq!(motion_matching_bracket("hello", 0, 1), 0);
+    }
+
+    #[test]
+    fn test_g_prefix_trie() {
+        let mut stack = LayerStack::new();
+        register_defaults(&mut stack);
+        stack.activate_layer("global");
+        stack.activate_layer("vim:normal");
+
+        // "g" should resolve to a Node (multi-key prefix)
+        let g = super::super::action::KeyCombo::parse("g");
+        let trie = stack.resolve(&g);
+        assert!(matches!(trie, Some(KeyTrie::Node(_))));
+
+        // "g g" should give goto-doc-start
+        if let Some(node) = trie {
+            let g2 = super::super::action::KeyCombo::parse("g");
+            let result = stack.resolve_in_trie(node, &g2);
+            assert!(matches!(result, Some(KeyTrie::Leaf(Action::Command("goto-doc-start")))));
+        }
+    }
+
+    #[test]
+    fn test_leader_space_bindings() {
+        let mut stack = LayerStack::new();
+        register_defaults(&mut stack);
+        stack.activate_layer("global");
+        stack.activate_layer("vim:normal");
+        stack.activate_layer("leader");
+
+        // "space" should resolve to a Node (leader prefix)
+        let space = super::super::action::KeyCombo::parse("space");
+        let trie = stack.resolve(&space);
+        assert!(matches!(trie, Some(KeyTrie::Node(_))));
+
+        // "space f" should give find-note
+        if let Some(node) = trie {
+            let f = super::super::action::KeyCombo::parse("f");
+            let result = stack.resolve_in_trie(node, &f);
+            assert!(matches!(result, Some(KeyTrie::Leaf(Action::Command("find-note")))));
+
+            // "space v" should give another Node (deeper prefix)
+            let v = super::super::action::KeyCombo::parse("v");
+            let result = stack.resolve_in_trie(node, &v);
+            assert!(matches!(result, Some(KeyTrie::Node(_))));
+
+            // "space v s" should give vault-switch
+            if let Some(v_node) = result {
+                let s = super::super::action::KeyCombo::parse("s");
+                let result = stack.resolve_in_trie(v_node, &s);
+                assert!(matches!(result, Some(KeyTrie::Leaf(Action::Command("vault-switch")))));
+            }
+        }
     }
 }
