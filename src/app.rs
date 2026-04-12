@@ -598,6 +598,118 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             .collect()
     }
 
+    fn render_title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let title = {
+            let t = self.state.current_title();
+            if t.is_empty() { "Memex".to_string() } else { t }
+        };
+        let dirty = self.state.dirty;
+        let title_text = if dirty {
+            format!("{} ●", title)
+        } else {
+            title
+        };
+
+        // Title bar colors (solarized-inspired)
+        let bar_bg = rgb(0xEEE8D5);     // base2 — subtle contrast from editor bg
+        let title_color = rgb(0x657B83); // base00
+        let btn_color = hsla(0.500, 0.069, 0.604, 1.0);   // base1 — dim
+        let btn_hover = hsla(0.544, 0.129, 0.455, 1.0);   // base01 — brighter on hover
+        let close_hover = hsla(0.01, 0.768, 0.524, 1.0);  // red on hover
+
+        h_flex()
+            .id("title-bar")
+            .w_full()
+            .h(px(32.))
+            .bg(bar_bg)
+            .border_b_1()
+            .border_color(rgb(0xD3CBB8))
+            .items_center()
+            .justify_between()
+            // Drag to move window
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|_this, _e: &MouseDownEvent, window, _cx| {
+                    window.start_window_move();
+                }),
+            )
+            // Left: spacer for symmetry
+            .child(div().w(px(72.)))
+            // Center: title
+            .child(
+                div()
+                    .flex_1()
+                    .flex()
+                    .justify_center()
+                    .child(
+                        div()
+                            .text_size(px(12.))
+                            .text_color(title_color)
+                            .child(title_text),
+                    ),
+            )
+            // Right: window controls
+            .child(
+                h_flex()
+                    .gap(px(0.))
+                    .child(self.title_bar_button("minimize-btn", "─", btn_color, btn_hover, cx))
+                    .child(self.title_bar_button("maximize-btn", "□", btn_color, btn_hover, cx))
+                    .child(self.title_bar_close_button(btn_color, close_hover, cx)),
+            )
+    }
+
+    fn title_bar_button(
+        &self,
+        id: &'static str,
+        icon: &'static str,
+        color: Hsla,
+        hover_color: Hsla,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        div()
+            .id(id)
+            .w(px(24.))
+            .h(px(32.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .text_size(px(12.))
+            .text_color(color)
+            .hover(|s| s.text_color(hover_color).bg(rgba(0x00000010)))
+            .on_mouse_down(MouseButton::Left, |_e, _w, _cx| {})  // stop propagation
+            .on_click(cx.listener(move |_this, _e: &ClickEvent, window, _cx| {
+                match id {
+                    "minimize-btn" => window.minimize_window(),
+                    "maximize-btn" => window.zoom_window(),
+                    _ => {}
+                }
+            }))
+            .child(icon)
+    }
+
+    fn title_bar_close_button(
+        &self,
+        color: Hsla,
+        hover_color: Hsla,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement {
+        div()
+            .id("close-btn")
+            .w(px(24.))
+            .h(px(32.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .text_size(px(12.))
+            .text_color(color)
+            .hover(|s| s.text_color(hover_color).bg(rgba(0x00000010)))
+            .on_mouse_down(MouseButton::Left, |_e, _w, _cx| {})  // stop propagation
+            .on_click(cx.listener(|_this, _e: &ClickEvent, window, _cx| {
+                window.remove_window();
+            }))
+            .child("✕")
+    }
+
     fn render_mode_line(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let es = self.editor_state.read(cx);
         let vim_enabled = es.keymap.vim_enabled;
@@ -853,14 +965,8 @@ impl Render for Memex {
                     this.activate_command_palette(window, cx);
                 }
             }))
-            // Transparent drag region (window title bar)
-            .child(
-                div()
-                    .id("title-bar")
-                    .w_full()
-                    .h(px(38.))
-                    .window_control_area(WindowControlArea::Drag)
-            )
+            // Custom title bar with drag + window controls
+            .child(self.render_title_bar(cx))
             // Editor canvas
             .child(div().flex_1().w_full().child(self.editor_view.clone()))
             // Mode line (always visible, like emacs mode-line)
