@@ -1,6 +1,10 @@
+#[allow(dead_code)]
 mod action;
+#[allow(dead_code)]
 mod defaults;
+#[allow(dead_code)]
 mod grammar;
+#[allow(dead_code)]
 mod layer;
 
 pub use action::*;
@@ -192,6 +196,7 @@ impl KeymapSystem {
     }
 
     /// Check if visual-line layer is active.
+    #[allow(dead_code)]
     pub fn is_visual_line_active(&self) -> bool {
         self.stack.active_layers().iter().any(|id| *id == "vim:visual-line")
     }

@@ -58,6 +58,9 @@ impl EditorState {
         let mut plugins = crate::plugin::PluginEngine::new();
         plugins.load_all_plugins(None);
 
+        let mut keymap = crate::keymap::KeymapSystem::new(true);
+        plugins.apply_bindings_to_keymap(&mut keymap);
+
         Self {
             cursor: 0,
             selected_range: 0..0,
@@ -70,7 +73,7 @@ impl EditorState {
             last_line_layouts: Vec::new(),
             last_bounds: None,
             history: undo::UndoHistory::new(),
-            keymap: crate::keymap::KeymapSystem::new(true),
+            keymap,
             display_map: display,
             plugins,
             status_message: None,

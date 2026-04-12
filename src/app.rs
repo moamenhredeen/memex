@@ -604,7 +604,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         let vim_state = es.keymap.active_vim_state().map(|s| s.to_string());
         let cursor = es.cursor;
         let content = es.content();
-        drop(es);
+        let _ = es;
 
         // Compute line:col from cursor
         let before = &content[..cursor.min(content.len())];

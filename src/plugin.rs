@@ -389,6 +389,27 @@ impl PluginEngine {
     pub fn register_hook(&mut self, hook: Hook, ast: AST) {
         self.hooks.entry(hook).or_default().push(ast);
     }
+
+    /// Apply plugin bindings to the keymap system.
+    /// Maps plugin mode strings to keymap layer IDs and registers
+    /// each binding as a Script action in the appropriate layer.
+    pub fn apply_bindings_to_keymap(&self, keymap: &mut crate::keymap::KeymapSystem) {
+        for binding in &self.bindings {
+            let layer_id: crate::keymap::LayerId = match binding.mode.as_str() {
+                "normal" => "vim:normal",
+                "insert" => "vim:insert",
+                "visual" => "vim:visual",
+                "visual-line" => "vim:visual-line",
+                "global" => "global",
+                _ => "global",
+            };
+            keymap.stack.bind(
+                layer_id,
+                &binding.key,
+                crate::keymap::Action::Script(binding.command_name.clone()),
+            );
+        }
+    }
 }
 
 /// Simple date without chrono dependency — uses system time.
