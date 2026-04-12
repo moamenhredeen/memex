@@ -70,6 +70,8 @@ impl Render for EditorView {
                         }
                     }
 
+                    // Keymap handled this key — suppress the OS input that follows.
+                    state.suppress_next_input = true;
                     state.execute_grammar_result(result, window, cx);
                 });
             }))

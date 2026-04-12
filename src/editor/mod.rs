@@ -35,6 +35,8 @@ pub struct EditorState {
     pub plugins: crate::plugin::PluginEngine,
     /// Status message shown briefly after command execution
     pub status_message: Option<String>,
+    /// When true, the next OS text input event is suppressed (keymap already handled the key).
+    pub suppress_next_input: bool,
     _blink_sub: Subscription,
 }
 
@@ -77,6 +79,7 @@ impl EditorState {
             display_map: display,
             plugins,
             status_message: None,
+            suppress_next_input: false,
             _blink_sub,
         }
     }
@@ -116,6 +119,42 @@ impl EditorState {
             self.buffer.insert(char_start, new_text);
         }
         self.display_map.invalidate();
+    }
+
+    /// Internal text mutation — bypasses OS input guard.
+    /// Used by all commands that need to modify buffer content programmatically.
+    pub(crate) fn edit_text(&mut self, new_text: &str, cx: &mut Context<Self>) {
+        let range = self.marked_range.clone().unwrap_or(self.selected_range.clone());
+
+        let old_text = {
+            let char_start = self.buffer.byte_to_char(range.start);
+            let char_end = self.buffer.byte_to_char(range.end);
+            self.buffer.slice(char_start..char_end).to_string()
+        };
+        let cursor_before = self.cursor;
+        let selection_before = self.selected_range.clone();
+
+        self.rope_replace(range.clone(), new_text);
+
+        let new_cursor = range.start + new_text.len();
+
+        self.history.record(
+            undo::EditOp {
+                range: range.clone(),
+                old_text,
+                new_text: new_text.to_string(),
+                cursor_before,
+                cursor_after: new_cursor,
+            },
+            selection_before,
+        );
+
+        self.selected_range = new_cursor..new_cursor;
+        self.cursor = new_cursor;
+        self.marked_range.take();
+        self.blink_cursor.update(cx, |bc, cx| bc.pause(cx));
+        cx.emit(EditorEvent::Changed);
+        cx.notify();
     }
 
     pub fn cursor_offset(&self) -> usize {
@@ -326,7 +365,7 @@ impl EditorState {
             }
             DeleteSelection => {
                 if !self.selected_range.is_empty() {
-                    self.replace_text_in_range(None, "", window, cx);
+                    self.edit_text("", cx);
                 }
             }
             YankSelection => {
@@ -347,33 +386,33 @@ impl EditorState {
                 if self.selected_range.is_empty() {
                     self.select_to(self.prev_grapheme(self.cursor_offset()), cx);
                 }
-                self.replace_text_in_range(None, "", window, cx);
+                self.edit_text("", cx);
             }
             DeleteForward => {
                 if self.selected_range.is_empty() {
                     self.select_to(self.next_grapheme(self.cursor_offset()), cx);
                 }
-                self.replace_text_in_range(None, "", window, cx);
+                self.edit_text("", cx);
             }
             DeleteRange(range) => {
                 self.selected_range = range;
-                self.replace_text_in_range(None, "", window, cx);
+                self.edit_text("", cx);
             }
             InsertNewline => {
-                self.replace_text_in_range(None, "\n", window, cx);
+                self.edit_text("\n", cx);
             }
             InsertTab => {
                 if !self.handle_table_tab(true, cx) {
-                    self.replace_text_in_range(None, "    ", window, cx);
+                    self.edit_text("    ", cx);
                 }
             }
             InsertChar(ch) => {
                 let mut buf = [0u8; 4];
                 let s = ch.encode_utf8(&mut buf);
-                self.replace_text_in_range(None, s, window, cx);
+                self.edit_text(s, cx);
             }
             InsertText(text) => {
-                self.replace_text_in_range(None, &text, window, cx);
+                self.edit_text(&text, cx);
             }
             Undo => self.undo(cx),
             Redo => self.redo(cx),
@@ -412,7 +451,7 @@ impl EditorState {
                     while pos <= line_end {
                         let insert_at = pos + offset;
                         self.selected_range = insert_at..insert_at;
-                        self.replace_text_in_range(None, "    ", window, cx);
+                        self.edit_text("    ", cx);
                         offset += 4;
                         if let Some(nl) = content[pos..].find('\n') {
                             pos = pos + nl + 1;
@@ -435,7 +474,7 @@ impl EditorState {
                         let spaces = current[actual..].chars().take_while(|c| *c == ' ').count().min(4);
                         if spaces > 0 {
                             self.selected_range = actual..actual + spaces;
-                            self.replace_text_in_range(None, "", window, cx);
+                            self.edit_text("", cx);
                             offset -= spaces as isize;
                         }
                         if let Some(nl) = content[pos..].find('\n') {
@@ -453,7 +492,7 @@ impl EditorState {
                 let selected = &content[start..end];
                 let joined = selected.replace('\n', " ");
                 self.selected_range = start..end;
-                self.replace_text_in_range(None, &joined, window, cx);
+                self.edit_text(&joined, cx);
             }
             ToggleCaseSelection => {
                 let (start, end) = self.ordered_selection();
@@ -464,21 +503,21 @@ impl EditorState {
                     else { c.to_uppercase().next().unwrap_or(c) }
                 }).collect();
                 self.selected_range = start..end;
-                self.replace_text_in_range(None, &toggled, window, cx);
+                self.edit_text(&toggled, cx);
             }
             UppercaseSelection => {
                 let (start, end) = self.ordered_selection();
                 let content = self.content();
                 let upper = content[start..end].to_uppercase();
                 self.selected_range = start..end;
-                self.replace_text_in_range(None, &upper, window, cx);
+                self.edit_text(&upper, cx);
             }
             LowercaseSelection => {
                 let (start, end) = self.ordered_selection();
                 let content = self.content();
                 let lower = content[start..end].to_lowercase();
                 self.selected_range = start..end;
-                self.replace_text_in_range(None, &lower, window, cx);
+                self.edit_text(&lower, cx);
             }
         }
     }
@@ -506,7 +545,7 @@ impl EditorState {
                 self.keymap.grammar.register_content = yanked;
                 let target = range.start;
                 self.selected_range = range;
-                self.replace_text_in_range(None, "", window, cx);
+                self.edit_text("", cx);
                 self.move_to(target.min(self.content_len()), cx);
                 if enter_insert {
                     self.keymap.stack.activate_layer("vim:insert");
@@ -520,11 +559,11 @@ impl EditorState {
             GrammarResult::IndentRange { line_start, text } => {
                 let at = line_start;
                 self.selected_range = at..at;
-                self.replace_text_in_range(None, &text, window, cx);
+                self.edit_text(&text, cx);
             }
             GrammarResult::DedentRange { range } => {
                 self.selected_range = range;
-                self.replace_text_in_range(None, "", window, cx);
+                self.edit_text("", cx);
             }
             GrammarResult::ExecuteCommand(cmd_id) => {
                 self.execute_command_by_id(cmd_id, window, cx);
@@ -581,7 +620,7 @@ impl EditorState {
                 if end > pos {
                     let replacement: String = std::iter::repeat(ch).take(count).collect();
                     self.selected_range = pos..end;
-                    self.replace_text_in_range(None, &replacement, window, cx);
+                    self.edit_text(&replacement, cx);
                 }
             }
             GrammarResult::RunScript(name) => {
@@ -696,7 +735,7 @@ impl EditorState {
                     };
                     self.keymap.grammar.register_content = content[pos..end].to_string();
                     self.selected_range = pos..end;
-                    self.replace_text_in_range(None, "", window, cx);
+                    self.edit_text("", cx);
                 }
             }
             "delete-char-backward" => {
@@ -711,7 +750,7 @@ impl EditorState {
                     };
                     self.keymap.grammar.register_content = content[start..pos].to_string();
                     self.selected_range = start..pos;
-                    self.replace_text_in_range(None, "", window, cx);
+                    self.edit_text("", cx);
                 }
             }
             "append-after" => {
@@ -746,7 +785,7 @@ impl EditorState {
                 let pos = self.cursor.min(content.len());
                 let line_end = content[pos..].find('\n').map(|p| pos + p).unwrap_or(content.len());
                 self.move_to(line_end, cx);
-                self.replace_text_in_range(None, "\n", window, cx);
+                self.edit_text("\n", cx);
                 self.keymap.stack.activate_layer("vim:insert");
                 self.history.break_coalescing();
                 cx.notify();
@@ -757,7 +796,7 @@ impl EditorState {
                 let pos = self.cursor.min(content.len());
                 let line_start = content[..pos].rfind('\n').map(|i| i + 1).unwrap_or(0);
                 self.move_to(line_start, cx);
-                self.replace_text_in_range(None, "\n", window, cx);
+                self.edit_text("\n", cx);
                 // Move cursor up to the new empty line
                 let new_pos = line_start;
                 self.move_to(new_pos, cx);
@@ -775,12 +814,12 @@ impl EditorState {
                         let pos = self.cursor.min(content.len());
                         let line_end = content[pos..].find('\n').map(|p| pos + p + 1).unwrap_or(content.len());
                         self.move_to(line_end, cx);
-                        self.replace_text_in_range(None, &text, window, cx);
+                        self.edit_text(&text, cx);
                         self.move_to(line_end, cx);
                     } else {
                         let pos = self.next_grapheme(self.cursor);
                         self.move_to(pos, cx);
-                        self.replace_text_in_range(None, &text, window, cx);
+                        self.edit_text(&text, cx);
                         // Move cursor to end of pasted text - 1
                         let end = pos + text.len();
                         self.move_to(end.saturating_sub(1).min(self.content_len()), cx);
@@ -796,11 +835,11 @@ impl EditorState {
                         let pos = self.cursor.min(content.len());
                         let line_start = content[..pos].rfind('\n').map(|i| i + 1).unwrap_or(0);
                         self.move_to(line_start, cx);
-                        self.replace_text_in_range(None, &text, window, cx);
+                        self.edit_text(&text, cx);
                         self.move_to(line_start, cx);
                     } else {
                         let pos = self.cursor;
-                        self.replace_text_in_range(None, &text, window, cx);
+                        self.edit_text(&text, cx);
                         self.move_to(pos, cx);
                     }
                 }
@@ -816,7 +855,7 @@ impl EditorState {
                     let ws = after.len() - after.trim_start().len();
                     let range = nl_pos..nl_pos + 1 + ws;
                     self.selected_range = range;
-                    self.replace_text_in_range(None, " ", window, cx);
+                    self.edit_text(" ", cx);
                     self.move_to(nl_pos, cx);
                 }
             }
@@ -828,7 +867,7 @@ impl EditorState {
                 if pos < line_end {
                     self.keymap.grammar.register_content = content[pos..line_end].to_string();
                     self.selected_range = pos..line_end;
-                    self.replace_text_in_range(None, "", window, cx);
+                    self.edit_text("", cx);
                 }
             }
             "change-to-end" => {
@@ -839,7 +878,7 @@ impl EditorState {
                 if pos < line_end {
                     self.keymap.grammar.register_content = content[pos..line_end].to_string();
                     self.selected_range = pos..line_end;
-                    self.replace_text_in_range(None, "", window, cx);
+                    self.edit_text("", cx);
                 }
                 self.keymap.stack.activate_layer("vim:insert");
                 self.history.break_coalescing();
@@ -853,7 +892,7 @@ impl EditorState {
                 let line_end = content[pos..].find('\n').map(|p| pos + p).unwrap_or(content.len());
                 self.keymap.grammar.register_content = content[line_start..line_end].to_string();
                 self.selected_range = line_start..line_end;
-                self.replace_text_in_range(None, "", window, cx);
+                self.edit_text("", cx);
                 self.keymap.stack.activate_layer("vim:insert");
                 self.history.break_coalescing();
                 cx.notify();
@@ -871,7 +910,7 @@ impl EditorState {
                         };
                         let end = pos + ch.len_utf8();
                         self.selected_range = pos..end;
-                        self.replace_text_in_range(None, &toggled, window, cx);
+                        self.edit_text(&toggled, cx);
                         let new_pos = pos + toggled.len();
                         self.move_to(new_pos.min(self.content_len()), cx);
                     }
