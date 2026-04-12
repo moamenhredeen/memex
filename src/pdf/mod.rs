@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use gpui::*;
-use pdfium_render::prelude::*;
+use mupdf::{Colorspace, Document, Matrix as MuMatrix};
 
 /// Cached rendered page: PNG-encoded bytes ready for gpui.
 pub struct RenderedPage {
@@ -25,19 +25,16 @@ pub struct PdfState {
     pub zoom: f32,
     pub focus_handle: FocusHandle,
     page_cache: HashMap<usize, RenderedPage>,
-    pdfium: Pdfium,
     raw_bytes: Vec<u8>,
 }
 
 impl PdfState {
-    pub fn new(path: impl AsRef<Path>, cx: &mut Context<Self>) -> Result<Self, PdfiumError> {
+    pub fn new(path: impl AsRef<Path>, cx: &mut Context<Self>) -> Result<Self, mupdf::Error> {
         let path = path.as_ref().to_path_buf();
-        let pdfium = Pdfium::default();
-        let raw_bytes = std::fs::read(&path).map_err(PdfiumError::IoError)?;
-        let page_count = {
-            let doc = pdfium.load_pdf_from_byte_slice(&raw_bytes, None)?;
-            doc.pages().len() as usize
-        };
+        let raw_bytes = std::fs::read(&path)
+            .map_err(mupdf::Error::Io)?;
+        let doc = Document::from_bytes(&raw_bytes, "")?;
+        let page_count = doc.page_count()? as usize;
 
         Ok(Self {
             path,
@@ -46,7 +43,6 @@ impl PdfState {
             zoom: 1.0,
             focus_handle: cx.focus_handle(),
             page_cache: HashMap::new(),
-            pdfium,
             raw_bytes,
         })
     }
@@ -66,35 +62,29 @@ impl PdfState {
         self.page_cache.get(&page_index)
     }
 
-    fn render_page_inner(&self, page_index: usize) -> Result<RenderedPage, PdfiumError> {
-        let doc = self.pdfium.load_pdf_from_byte_slice(&self.raw_bytes, None)?;
-        let page = doc.pages().get(page_index as u16)?;
+    fn render_page_inner(&self, page_index: usize) -> Result<RenderedPage, mupdf::Error> {
+        let doc = Document::from_bytes(&self.raw_bytes, "")?;
+        let page = doc.load_page(page_index as i32)?;
+        let bounds = page.bounds()?;
 
         let base_width = 800.0;
-        let scale = (base_width * self.zoom) / page.width().value;
-        let width = (page.width().value * scale) as u32;
-        let height = (page.height().value * scale) as u32;
+        let scale = (base_width * self.zoom) / bounds.width();
+        let ctm = MuMatrix::new_scale(scale, scale);
 
-        let config = PdfRenderConfig::new()
-            .set_target_width(width as i32)
-            .set_maximum_height(height as i32);
+        let pixmap = page.to_pixmap(&ctm, &Colorspace::device_rgb(), false, true)?;
+        let width = pixmap.width();
+        let height = pixmap.height();
 
-        let bitmap = page.render_with_config(&config)?;
-        let dyn_image = bitmap.as_image();
-
-        // Encode to PNG for gpui
         let mut png_buf = Cursor::new(Vec::new());
-        dyn_image
-            .write_to(&mut png_buf, image::ImageFormat::Png)
-            .map_err(|_| PdfiumError::ImageError)?;
+        pixmap.write_to(&mut png_buf, mupdf::ImageFormat::PNG)?;
 
         Ok(RenderedPage {
             image: Arc::new(gpui::Image::from_bytes(
                 gpui::ImageFormat::Png,
                 png_buf.into_inner(),
             )),
-            width: dyn_image.width(),
-            height: dyn_image.height(),
+            width,
+            height,
         })
     }
 

@@ -622,7 +622,6 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         cx: &mut Context<Self>,
     ) {
         // Validate the PDF can be loaded before creating the entity
-        let pdfium = pdfium_render::prelude::Pdfium::default();
         let raw_bytes = match std::fs::read(&path) {
             Ok(b) => b,
             Err(e) => {
@@ -631,7 +630,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 return;
             }
         };
-        if let Err(e) = pdfium.load_pdf_from_byte_slice(&raw_bytes, None) {
+        if let Err(e) = mupdf::Document::from_bytes(&raw_bytes, "") {
             self.minibuffer.set_message(format!("Invalid PDF: {:?}", e));
             cx.notify();
             return;
