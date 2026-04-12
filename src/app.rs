@@ -110,12 +110,14 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
     fn activate_note_search(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         let vim = self.editor_state.read(cx).keymap.vim_enabled;
         self.minibuffer.activate(DelegateKind::NoteSearch, "Find note:", vim);
+        self.editor_state.update(cx, |s, _| s.input_suspended = true);
         cx.notify();
     }
 
     fn activate_vault_switch(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         let vim = self.editor_state.read(cx).keymap.vim_enabled;
         self.minibuffer.activate(DelegateKind::VaultSwitch, "Switch vault:", vim);
+        self.editor_state.update(cx, |s, _| s.input_suspended = true);
         cx.notify();
     }
 
@@ -128,6 +130,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             self.minibuffer.input = seed.clone();
             self.minibuffer.cursor = seed.len();
         }
+        self.editor_state.update(cx, |s, _| s.input_suspended = true);
         cx.notify();
     }
 
@@ -135,11 +138,13 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         let vim = self.editor_state.read(cx).keymap.vim_enabled;
         let prompt = if vim { ":" } else { "M-x" };
         self.minibuffer.activate(DelegateKind::Command, prompt, vim);
+        self.editor_state.update(cx, |s, _| s.input_suspended = true);
         cx.notify();
     }
 
     fn dismiss_minibuffer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.minibuffer.dismiss();
+        self.editor_state.update(cx, |s, _| s.input_suspended = false);
         self.editor_state.read(cx).focus(window);
         cx.notify();
     }
@@ -954,12 +959,14 @@ impl Render for Memex {
             .bg(rgb(0xFDF6E3))  // solarized base3
             .font_family("FiraCode Nerd Font")
             .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
-                // If minibuffer is active, route keys there
+                // If minibuffer is active, route keys there and stop propagation
+                // to prevent the editor from also processing the key.
                 if this.minibuffer.active {
                     let key = e.keystroke.key.as_str();
                     let ctrl = e.keystroke.modifiers.control;
                     let shift = e.keystroke.modifiers.shift;
                     this.handle_minibuffer_key(key, ctrl, shift, window, cx);
+                    cx.stop_propagation();
                     return;
                 }
 
