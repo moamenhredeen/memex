@@ -27,7 +27,6 @@ pub struct PrepaintState {
     lines: Vec<PrepaintLine>,
     cursor: Option<PaintQuad>,
     selection_quads: Vec<PaintQuad>,
-    fold_indicators: Vec<FoldIndicator>,
 }
 
 struct PrepaintLine {
@@ -35,12 +34,6 @@ struct PrepaintLine {
     origin: Point<Pixels>,
     line_height: Pixels,
     content_offset: usize,
-}
-
-struct FoldIndicator {
-    shaped: ShapedLine,
-    origin: Point<Pixels>,
-    line_height: Pixels,
 }
 
 impl Element for EditorElement {
@@ -111,17 +104,12 @@ impl Element for EditorElement {
         let mut prepaint_lines = Vec::new();
         let mut cursor_quad: Option<PaintQuad> = None;
         let mut selection_quads = Vec::new();
-        let mut fold_indicators: Vec<FoldIndicator> = Vec::new();
-
         // Solarized Light palette (hsla for text shaping API)
         let base_color = hsla(0.544, 0.129, 0.455, 1.0);  // base00 — body text
         let dim_color = hsla(0.500, 0.069, 0.604, 1.0);   // base1 — comments
         let code_color = hsla(0.487, 0.586, 0.398, 1.0);  // cyan — inline code
         let heading_color = hsla(0.534, 0.808, 0.143, 1.0); // base03 — headings
         let hr_color = hsla(0.117, 0.235, 0.775, 1.0);    // subtle rule
-
-        // Fold indicator glyph width
-        let _indicator_margin = px(14.);
 
         for i in vis_first..vis_last {
             // Skip lines hidden by outline folding
@@ -135,40 +123,10 @@ impl Element for EditorElement {
             let font_size = info.kind.display_font_size();
             let y = bounds.origin.y + padding - scroll + dm.line_y(i);
 
-            // Fold indicator for heading lines
-            if let LineKind::Heading(_) = &info.kind {
-                let has_section = i + 1 < dm.line_count();
-                if has_section {
-                    let is_folded = dm.is_line_hidden(i + 1);
-                    let glyph: SharedString = if is_folded { "▶".into() } else { "▼".into() };
-                    let indicator_run = vec![TextRun {
-                        len: glyph.len(),
-                        font: Font {
-                            family: font_family.clone(),
-                            weight: FontWeight::NORMAL,
-                            style: FontStyle::Normal,
-                            features: FontFeatures::default(),
-                            fallbacks: None,
-                        },
-                        color: dim_color,
-                        background_color: None,
-                        underline: None,
-                        strikethrough: None,
-                    }];
-                    let indicator_shaped = text_system.shape_line(
-                        glyph,
-                        px(12.),
-                        &indicator_run,
-                        None,
-                    );
-                    let indicator_y = y + (line_height - px(12.)) / 2.0;
-                    fold_indicators.push(FoldIndicator {
-                        shaped: indicator_shaped,
-                        origin: point(bounds.origin.x + px(4.), indicator_y),
-                        line_height,
-                    });
-                }
-            }
+            // Check if this heading is folded (next line hidden)
+            let heading_is_folded = matches!(&info.kind, LineKind::Heading(_))
+                && i + 1 < dm.line_count()
+                && dm.is_line_hidden(i + 1);
 
             let line_text_end = content[line_start..]
                 .find('\n')
@@ -177,8 +135,12 @@ impl Element for EditorElement {
             let line_byte_end = line_text_end;
             let line_text = &content[line_start..line_text_end];
 
+            // Append "..." ellipsis for folded headings (org-mode style)
+            let ellipsis_suffix = "...";
             let display_text: SharedString = if line_text.is_empty() {
                 " ".into()
+            } else if heading_is_folded {
+                SharedString::from(format!("{}{}", line_text, ellipsis_suffix))
             } else {
                 SharedString::from(line_text.to_string())
             };
@@ -364,6 +326,24 @@ impl Element for EditorElement {
                 }
             }
 
+            // Add ellipsis run for folded headings
+            if heading_is_folded && !line_text.is_empty() {
+                runs.push(TextRun {
+                    len: ellipsis_suffix.len(),
+                    font: Font {
+                        family: font_family.clone(),
+                        weight: FontWeight::NORMAL,
+                        style: FontStyle::Normal,
+                        features: FontFeatures::default(),
+                        fallbacks: None,
+                    },
+                    color: dim_color,
+                    background_color: None,
+                    underline: None,
+                    strikethrough: None,
+                });
+            }
+
             // Validate total run length matches display text
             let total_run_len: usize = runs.iter().map(|r| r.len).sum();
             if total_run_len != display_text.len() {
@@ -463,7 +443,6 @@ impl Element for EditorElement {
             lines: prepaint_lines,
             cursor: cursor_quad,
             selection_quads,
-            fold_indicators,
         }
     }
 
@@ -490,11 +469,6 @@ impl Element for EditorElement {
         // Selections
         for sel in &prepaint.selection_quads {
             window.paint_quad(sel.clone());
-        }
-
-        // Fold indicators (▶/▼ in left margin)
-        for fi in &prepaint.fold_indicators {
-            let _ = fi.shaped.paint(fi.origin, fi.line_height, window, cx);
         }
 
         // Lines
