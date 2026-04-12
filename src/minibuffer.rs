@@ -103,6 +103,8 @@ pub struct Minibuffer {
     pub cursor: usize,
     /// Index of the currently selected candidate in the completion list.
     pub selected: usize,
+    /// Whether vim keybindings are enabled.
+    pub vim_enabled: bool,
     /// Vim editing mode within the minibuffer.
     pub vim_mode: MinibufferVimMode,
     /// Message shown when the minibuffer is idle (echo area).
@@ -118,19 +120,21 @@ impl Minibuffer {
             input: String::new(),
             cursor: 0,
             selected: 0,
+            vim_enabled: false,
             vim_mode: MinibufferVimMode::Insert,
             message: None,
         }
     }
 
     /// Activate the minibuffer with a given delegate and prompt.
-    pub fn activate(&mut self, kind: DelegateKind, prompt: &str, _vim_enabled: bool) {
+    pub fn activate(&mut self, kind: DelegateKind, prompt: &str, vim_enabled: bool) {
         self.active = true;
         self.delegate_kind = kind;
         self.prompt = prompt.to_string();
         self.input.clear();
         self.cursor = 0;
         self.selected = 0;
+        self.vim_enabled = vim_enabled;
         // Minibuffer always starts in insert mode (like vim cmdline).
         self.vim_mode = MinibufferVimMode::Insert;
     }
@@ -164,8 +168,13 @@ impl Minibuffer {
         _shift: bool,
         candidate_count: usize,
     ) -> MinibufferAction {
-        // Escape always dismisses (both insert and normal mode)
         if key == "escape" {
+            if self.vim_enabled && self.vim_mode == MinibufferVimMode::Insert {
+                // Escape in insert mode → switch to normal mode
+                self.vim_mode = MinibufferVimMode::Normal;
+                return MinibufferAction::Updated;
+            }
+            // Escape in normal mode (or vim disabled) → dismiss
             return MinibufferAction::Dismiss;
         }
 
