@@ -415,10 +415,10 @@ pub(super) fn handle_normal_key(
             VimAction::None
         }
 
-        // === Command mode ===
+        // === Command mode (opens minibuffer) ===
         ":" => {
             state.clear_pending();
-            VimAction::ChangeMode(EditorMode::Command)
+            VimAction::RequestCommand
         }
 
         _ => {

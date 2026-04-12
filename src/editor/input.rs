@@ -58,13 +58,12 @@ impl EntityInputHandler for EditorState {
             return;
         }
 
-        // In vim Normal/Visual/Command modes, suppress OS text input
+        // In vim Normal/Visual modes, suppress OS text input
         if self.vim.enabled {
             match self.mode {
                 super::keymap::EditorMode::Normal
                 | super::keymap::EditorMode::Visual
-                | super::keymap::EditorMode::VisualLine
-                | super::keymap::EditorMode::Command => return,
+                | super::keymap::EditorMode::VisualLine => return,
                 _ => {}
             }
         }
@@ -122,13 +121,12 @@ impl EntityInputHandler for EditorState {
             return;
         }
 
-        // In vim Normal/Visual/Command modes, suppress OS text input
+        // In vim Normal/Visual modes, suppress OS text input
         if self.vim.enabled {
             match self.mode {
                 super::keymap::EditorMode::Normal
                 | super::keymap::EditorMode::Visual
-                | super::keymap::EditorMode::VisualLine
-                | super::keymap::EditorMode::Command => return,
+                | super::keymap::EditorMode::VisualLine => return,
                 _ => {}
             }
         }

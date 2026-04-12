@@ -60,11 +60,6 @@ impl Render for EditorView {
 
                     if state.vim.enabled {
                         match mode {
-                            EditorMode::Command => {
-                                state.suppress_next_input = true;
-                                state.handle_command_key(key, ctrl, window, cx);
-                                return;
-                            }
                             EditorMode::Normal
                             | EditorMode::Visual
                             | EditorMode::VisualLine => {
@@ -104,7 +99,6 @@ impl Render for EditorView {
                                     cx.notify();
                                     return;
                                 }
-                                // Ctrl+R in insert mode → redo (not a standard vim binding but useful)
                             }
                         }
                     }

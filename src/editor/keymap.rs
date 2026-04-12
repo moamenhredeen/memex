@@ -13,8 +13,6 @@ pub enum EditorMode {
     Visual,
     /// Vim visual line mode — line-wise selection.
     VisualLine,
-    /// Vim command-line mode (`:` commands).
-    Command,
 }
 
 impl EditorMode {
@@ -24,7 +22,6 @@ impl EditorMode {
             EditorMode::Normal => "NORMAL",
             EditorMode::Visual => "VISUAL",
             EditorMode::VisualLine => "V-LINE",
-            EditorMode::Command => "COMMAND",
         }
     }
 }

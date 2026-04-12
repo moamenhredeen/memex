@@ -1,8 +1,10 @@
 mod app;
+mod command;
 mod config;
 mod editor;
 mod fs;
 mod markdown;
+mod minibuffer;
 mod plugin;
 mod state;
 mod vault;

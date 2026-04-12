@@ -250,4 +250,6 @@ pub enum VimAction {
         yank_text: String,
         enter_insert: bool,
     },
+    /// Request the command palette (vim ":" key).
+    RequestCommand,
 }

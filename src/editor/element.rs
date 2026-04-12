@@ -350,10 +350,6 @@ impl Element for EditorElement {
                             let block_w = (next_x - cursor_x).max(px(8.));
                             size(block_w, line_height)
                         }
-                        EditorMode::Command => {
-                            // Underline cursor
-                            size(px(8.), px(2.))
-                        }
                         EditorMode::Insert => {
                             size(px(2.), line_height)
                         }
@@ -362,11 +358,7 @@ impl Element for EditorElement {
                     size(px(2.), line_height)
                 };
 
-                let cursor_y = if vim_enabled && editor_mode == EditorMode::Command {
-                    y + line_height - px(2.) // underline at bottom
-                } else {
-                    y
-                };
+                let cursor_y = y;
 
                 cursor_quad = Some(fill(
                     Bounds::new(point(origin.x + cursor_x, cursor_y), cursor_shape),

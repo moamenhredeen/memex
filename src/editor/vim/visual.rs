@@ -159,7 +159,7 @@ pub(super) fn handle_visual_key(
         // Escape already handled above
         ":" => {
             state.clear_pending();
-            VimAction::ChangeMode(EditorMode::Command)
+            VimAction::RequestCommand
         }
 
         _ => VimAction::None,

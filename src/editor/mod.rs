@@ -37,8 +37,6 @@ pub struct EditorState {
     pub vim: vim::VimState,
     pub display_map: display_map::DisplayMap,
     pub plugins: crate::plugin::PluginEngine,
-    /// Vim command-line input (the text after `:`)
-    pub command_line: String,
     /// Status message shown briefly after command execution
     pub status_message: Option<String>,
     /// Suppress the next OS text input (set after vim consumes a key that
@@ -84,7 +82,6 @@ impl EditorState {
             vim: vim::VimState::new(),
             display_map: display,
             plugins,
-            command_line: String::new(),
             status_message: None,
             suppress_next_input: false,
             _blink_sub,
@@ -585,58 +582,15 @@ impl EditorState {
                     cx.notify();
                 }
             }
-        }
-    }
-
-    /// Handle key input while in Command mode (`:` bar).
-    pub fn handle_command_key(
-        &mut self,
-        key: &str,
-        ctrl: bool,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        match key {
-            "escape" => {
-                self.command_line.clear();
-                self.mode = keymap::EditorMode::Normal;
-                cx.notify();
-            }
-            "enter" => {
-                let cmd = self.command_line.clone();
-                self.command_line.clear();
-                self.mode = keymap::EditorMode::Normal;
-                self.execute_ex_command(&cmd, window, cx);
-                cx.notify();
-            }
-            "backspace" => {
-                if self.command_line.is_empty() {
-                    self.mode = keymap::EditorMode::Normal;
-                } else {
-                    self.command_line.pop();
-                }
-                cx.notify();
-            }
-            _ if ctrl => {
-                // Ctrl+U clears the command line (like bash/vim)
-                if key == "u" {
-                    self.command_line.clear();
-                    cx.notify();
-                }
-            }
-            _ => {
-                // Append printable characters
-                if key.len() == 1 {
-                    self.command_line.push_str(key);
-                    cx.notify();
-                }
+            VimAction::RequestCommand => {
+                cx.emit(EditorEvent::RequestCommand);
             }
         }
     }
 
     /// Execute an ex-style command (`:w`, `:q`, `:set`, etc.).
     /// Returns a status message string.
-    fn execute_ex_command(
+    pub fn execute_ex_command(
         &mut self,
         input: &str,
         window: &mut Window,
@@ -700,7 +654,7 @@ impl EditorState {
         }
     }
 
-    fn handle_set_command(&mut self, args: &str) -> String {
+    pub fn handle_set_command(&mut self, args: &str) -> String {
         if args.is_empty() {
             return format!(
                 "vim={} mode={}",
@@ -736,6 +690,7 @@ pub enum EditorEvent {
     RequestOpen(String),
     RequestVaultSearch,
     RequestNoteSearch,
+    RequestCommand,
 }
 
 impl EventEmitter<EditorEvent> for EditorState {}
