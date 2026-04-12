@@ -99,11 +99,12 @@ impl Element for EditorElement {
         let mut cursor_quad: Option<PaintQuad> = None;
         let mut selection_quads = Vec::new();
 
-        let base_color = hsla(0.0, 0.0, 0.16, 1.0);
-        let dim_color = hsla(0.0, 0.0, 0.6, 1.0);
-        let code_color = hsla(0.58, 0.6, 0.45, 1.0);
-        let heading_color = hsla(0.0, 0.0, 0.08, 1.0);
-        let hr_color = hsla(0.0, 0.0, 0.7, 1.0);
+        // Solarized Light palette (hsla for text shaping API)
+        let base_color = hsla(0.544, 0.129, 0.455, 1.0);  // base00 — body text
+        let dim_color = hsla(0.500, 0.069, 0.604, 1.0);   // base1 — comments
+        let code_color = hsla(0.487, 0.586, 0.398, 1.0);  // cyan — inline code
+        let heading_color = hsla(0.534, 0.808, 0.143, 1.0); // base03 — headings
+        let hr_color = hsla(0.117, 0.235, 0.775, 1.0);    // subtle rule
 
         for i in vis_first..vis_last {
             let info = dm.line_info(i);
@@ -197,7 +198,7 @@ impl Element for EditorElement {
                                 FontWeight::NORMAL,
                                 FontStyle::Normal,
                                 code_color,
-                                Some(hsla(0.0, 0.0, 0.93, 1.0)),
+                                Some(hsla(0.127, 0.424, 0.884, 1.0)),  // base2 — code bg
                                 None,
                                 None,
                                 true,
@@ -271,11 +272,11 @@ impl Element for EditorElement {
                             StyleKind::Wikilink => (
                                 FontWeight::NORMAL,
                                 FontStyle::Normal,
-                                hsla(0.58, 0.7, 0.45, 1.0),
+                                hsla(0.569, 0.694, 0.486, 1.0),  // blue — links
                                 None,
                                 Some(UnderlineStyle {
                                     thickness: px(1.),
-                                    color: Some(hsla(0.58, 0.7, 0.45, 1.0)),
+                                    color: Some(hsla(0.569, 0.694, 0.486, 1.0)),
                                     wavy: false,
                                 }),
                                 None,
@@ -335,7 +336,7 @@ impl Element for EditorElement {
                 let cursor_x = shaped.x_for_index(idx_in_line);
 
                 // Determine cursor shape based on vim mode
-                let cursor_color = hsla(0.6, 0.8, 0.5, 1.0);
+                let cursor_color = rgb(0x268BD2); // solarized blue
                 use super::keymap::EditorMode;
                 let cursor_shape = if vim_enabled {
                     match editor_mode {
@@ -385,7 +386,7 @@ impl Element for EditorElement {
                             point(origin.x + x1, y),
                             point(origin.x + x2, y + line_height),
                         ),
-                        rgba(0x3366ff30),
+                        rgba(0x268BD230), // solarized blue selection
                     ));
                 }
             }
@@ -413,7 +414,7 @@ impl Element for EditorElement {
                     ),
                     size(cw, px(24.)),
                 ),
-                hsla(0.6, 0.8, 0.5, 1.0),
+                rgb(0x268BD2), // solarized blue cursor fallback
             ));
         }
 
@@ -442,7 +443,7 @@ impl Element for EditorElement {
         );
 
         // Background
-        window.paint_quad(fill(bounds, hsla(0.0, 0.0, 0.98, 1.0)));
+        window.paint_quad(fill(bounds, rgb(0xFDF6E3))); // solarized base3 bg
 
         // Selections
         for sel in &prepaint.selection_quads {

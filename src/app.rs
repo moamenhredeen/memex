@@ -311,11 +311,11 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         // Mode badge (left)
         let mode_badge = if vim_enabled {
             let (label, bg) = match mode {
-                EditorMode::Normal => ("NOR", rgb(0x89B4FA)),
-                EditorMode::Insert => ("INS", rgb(0xA6E3A1)),
-                EditorMode::Visual => ("VIS", rgb(0xCBA6F7)),
-                EditorMode::VisualLine => ("V-L", rgb(0xCBA6F7)),
-                EditorMode::Command => ("CMD", rgb(0xF9E2AF)),
+                EditorMode::Normal => ("NOR", rgb(0x268BD2)),   // blue
+                EditorMode::Insert => ("INS", rgb(0x859900)),   // green
+                EditorMode::Visual => ("VIS", rgb(0x6C71C4)),   // violet
+                EditorMode::VisualLine => ("V-L", rgb(0x6C71C4)),
+                EditorMode::Command => ("CMD", rgb(0xB58900)),  // yellow
             };
             div()
                 .px(px(6.))
@@ -325,19 +325,19 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     div()
                         .text_size(px(11.))
                         .font_weight(FontWeight::BOLD)
-                        .text_color(rgb(0x1E1E2E))
+                        .text_color(rgb(0xFDF6E3))  // base3 on badge
                         .child(label),
                 )
         } else {
             div()
                 .px(px(6.))
                 .py(px(1.))
-                .bg(rgb(0xA6E3A1))
+                .bg(rgb(0x859900))  // green for EDT badge
                 .child(
                     div()
                         .text_size(px(11.))
                         .font_weight(FontWeight::BOLD)
-                        .text_color(rgb(0x1E1E2E))
+                        .text_color(rgb(0xFDF6E3))  // base3 on badge
                         .child("EDT"),
                 )
         };
@@ -345,7 +345,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         h_flex()
             .w_full()
             .h(px(24.))
-            .bg(rgb(0x313244))
+            .bg(rgb(0xEEE8D5))  // solarized base2
             .items_center()
             .gap(px(0.))
             .child(mode_badge)
@@ -356,7 +356,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     .child(
                         div()
                             .text_size(px(11.))
-                            .text_color(rgb(0xBAC2DE))
+                            .text_color(rgb(0x586E75))  // base01
                             .child(format!(
                                 " {} › {}{}",
                                 vault_name, note_title, dirty_indicator
@@ -372,7 +372,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     .child(
                         div()
                             .text_size(px(11.))
-                            .text_color(rgb(0x6C7086))
+                            .text_color(rgb(0x93A1A1))  // base1
                             .child(format!("L{} C{}", line_num, col_num)),
                     ),
             )
@@ -389,7 +389,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
 
         let base = v_flex()
             .w_full()
-            .bg(rgb(0x1E1E2E));
+            .bg(rgb(0xFDF6E3));  // solarized base3
 
         match &self.minibuffer_mode {
             MinibufferMode::NoteSearch => {
@@ -405,9 +405,9 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 for (i, (title, _path)) in results.iter().enumerate() {
                     let is_selected = i == selected;
                     let bg_color = if is_selected {
-                        rgb(0x45475A)
+                        rgb(0xEEE8D5)  // base2 — selected
                     } else {
-                        rgb(0x1E1E2E)
+                        rgb(0xFDF6E3)  // base3 — default
                     };
                     items = items.child(
                         div()
@@ -420,9 +420,9 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                                 div()
                                     .text_size(px(13.))
                                     .text_color(if is_selected {
-                                        rgb(0xCDD6F4)
+                                        rgb(0x073642)  // base03 — selected text
                                     } else {
-                                        rgb(0xA6ADC8)
+                                        rgb(0x657B83)  // base00 — normal text
                                     })
                                     .child(title.clone()),
                             ),
@@ -432,9 +432,9 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 if show_create {
                     let is_selected = selected == results.len();
                     let bg_color = if is_selected {
-                        rgb(0x45475A)
+                        rgb(0xEEE8D5)
                     } else {
-                        rgb(0x1E1E2E)
+                        rgb(0xFDF6E3)
                     };
                     items = items.child(
                         div()
@@ -446,7 +446,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                             .child(
                                 div()
                                     .text_size(px(13.))
-                                    .text_color(rgb(0xA6E3A1))
+                                    .text_color(rgb(0x859900))  // green — create action
                                     .child(format!(
                                         "+ Create \"{}\"",
                                         self.minibuffer_input
@@ -457,7 +457,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
 
                 base
                     .border_t_1()
-                    .border_color(rgb(0x45475A))
+                    .border_color(rgb(0xD3CBB8))  // subtle border
                     // Prompt line
                     .child(
                         h_flex()
@@ -468,13 +468,13 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                             .child(
                                 div()
                                     .text_size(px(13.))
-                                    .text_color(rgb(0x89B4FA))
+                                    .text_color(rgb(0x268BD2))  // blue — prompt label
                                     .child("Find note:"),
                             )
                             .child(
                                 div()
                                     .text_size(px(13.))
-                                    .text_color(rgb(0xCDD6F4))
+                                    .text_color(rgb(0x073642))  // base03 — input text
                                     .child(format!("{}█", self.minibuffer_input)),
                             ),
                     )
@@ -494,7 +494,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                                 div()
                                     .text_size(px(13.))
                                     .font_family("FiraCode Nerd Font Mono")
-                                    .text_color(rgb(0xCDD6F4))
+                                    .text_color(rgb(0x073642))  // base03
                                     .child(format!(":{}█", command_line)),
                             ),
                     )
@@ -512,7 +512,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                             .child(
                                 div()
                                     .text_size(px(13.))
-                                    .text_color(rgb(0x6C7086))
+                                    .text_color(rgb(0x93A1A1))  // base1 — idle message
                                     .child(msg),
                             ),
                     )
@@ -528,11 +528,11 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             .bottom(px(40.))
             .left(px(12.))
             .w(px(250.))
-            .bg(rgb(0x313244))
+            .bg(rgb(0xEEE8D5))  // base2
             .rounded(px(6.))
             .p(px(4.))
             .border_1()
-            .border_color(rgb(0x45475A))
+            .border_color(rgb(0xD3CBB8))  // subtle border
             .shadow_md();
 
         for (i, vault_path) in vault_paths.into_iter().enumerate() {
@@ -551,7 +551,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     .py(px(6.))
                     .rounded(px(4.))
                     .cursor_pointer()
-                    .hover(|s| s.bg(rgb(0x45475A)))
+                    .hover(|s| s.bg(rgb(0xFDF6E3)))  // base3 on hover
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _e: &MouseDownEvent, window, cx| {
@@ -561,7 +561,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     .child(
                         div()
                             .text_size(px(13.))
-                            .text_color(rgb(0xBAC2DE))
+                            .text_color(rgb(0x586E75))  // base01
                             .child(name),
                     ),
             );
@@ -578,7 +578,7 @@ impl Render for Memex {
         let mut root = v_flex()
             .id("memex-root")
             .size_full()
-            .bg(rgb(0xF8F8F8))
+            .bg(rgb(0xFDF6E3))  // solarized base3
             .font_family("FiraCode Nerd Font")
             .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
                 // If minibuffer is active, route keys there
