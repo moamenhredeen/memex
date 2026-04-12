@@ -36,8 +36,10 @@ fn main() {
                 gpui::WindowOptions {
                     titlebar: Some(gpui::TitlebarOptions {
                         title: Some("Memex".into()),
+                        appears_transparent: true,
                         ..Default::default()
                     }),
+                    window_decorations: Some(gpui::WindowDecorations::Client),
                     ..Default::default()
                 },
                 |window, cx| {

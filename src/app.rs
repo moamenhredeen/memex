@@ -853,6 +853,14 @@ impl Render for Memex {
                     this.activate_command_palette(window, cx);
                 }
             }))
+            // Transparent drag region (window title bar)
+            .child(
+                div()
+                    .id("title-bar")
+                    .w_full()
+                    .h(px(38.))
+                    .window_control_area(WindowControlArea::Drag)
+            )
             // Editor canvas
             .child(div().flex_1().w_full().child(self.editor_view.clone()))
             // Mode line (always visible, like emacs mode-line)
