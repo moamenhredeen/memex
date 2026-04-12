@@ -115,6 +115,16 @@ impl KeymapSystem {
                 self.grammar.process(action, key, content, cursor, &mut self.stack)
             }
             Some(KeyTrie::Node(map)) => {
+                // In insert mode, trie prefixes (leader keys) should not activate —
+                // let the key self-insert instead.
+                if self.is_insert_active() {
+                    let action = if !ctrl && !alt && key.chars().count() == 1 {
+                        Action::SelfInsert
+                    } else {
+                        Action::Noop
+                    };
+                    return self.grammar.process(action, key, content, cursor, &mut self.stack);
+                }
                 // Start of a multi-key sequence — enter pending state
                 self.pending_trie = Some(map.clone());
                 GrammarResult::Pending
