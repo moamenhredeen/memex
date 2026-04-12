@@ -1,4 +1,4 @@
-use super::{Motion, Operator, VimAction, VimState};
+use super::{Motion, Operator, VimAction};
 use crate::editor::commands::EditorCommand;
 
 /// Compute the byte range for a motion (used by operators).

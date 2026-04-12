@@ -83,6 +83,8 @@ impl Element for EditorElement {
         let selected_range = state.selected_range.clone();
         let content = state.content();
         let dm = &state.display_map;
+        let vim_enabled = state.vim.enabled;
+        let editor_mode = state.mode;
 
         let text_system = window.text_system().clone();
         let text_style = window.text_style();
@@ -114,6 +116,7 @@ impl Element for EditorElement {
                 .find('\n')
                 .map(|p| line_start + p)
                 .unwrap_or(content.len());
+            let line_byte_end = line_text_end;
             let line_text = &content[line_start..line_text_end];
 
             let display_text: SharedString = if line_text.is_empty() {
@@ -326,31 +329,47 @@ impl Element for EditorElement {
 
             let origin = point(bounds.origin.x + padding, y);
 
-            // Cursor
-            let line_byte_end = line_text_end;
+            // Cursor — render on the line where the cursor logically belongs
             if cursor_pos >= line_start && cursor_pos <= line_byte_end {
-                let at_newline = cursor_pos == line_byte_end
-                    && cursor_pos < content.len()
-                    && content.as_bytes()[cursor_pos] == b'\n';
+                let idx_in_line = cursor_pos - line_start;
+                let cursor_x = shaped.x_for_index(idx_in_line);
 
-                if !at_newline {
-                    let idx_in_line = cursor_pos - line_start;
-                    let cursor_x = shaped.x_for_index(idx_in_line);
-                    cursor_quad = Some(fill(
-                        Bounds::new(point(origin.x + cursor_x, y), size(px(2.), line_height)),
-                        hsla(0.6, 0.8, 0.5, 1.0),
-                    ));
-                }
-            }
-            // Cursor at start of this line (right after a \n on prev line)
-            if cursor_quad.is_none()
-                && cursor_pos == line_start
-                && line_start > 0
-                && content.as_bytes()[line_start - 1] == b'\n'
-            {
+                // Determine cursor shape based on vim mode
+                let cursor_color = hsla(0.6, 0.8, 0.5, 1.0);
+                use super::keymap::EditorMode;
+                let cursor_shape = if vim_enabled {
+                    match editor_mode {
+                        EditorMode::Normal | EditorMode::Visual | EditorMode::VisualLine => {
+                            // Block cursor: width of one character (or fallback)
+                            let next_x = if idx_in_line < line_text.len() {
+                                shaped.x_for_index(idx_in_line + 1)
+                            } else {
+                                cursor_x + px(8.) // fallback width at end of line
+                            };
+                            let block_w = (next_x - cursor_x).max(px(8.));
+                            size(block_w, line_height)
+                        }
+                        EditorMode::Command => {
+                            // Underline cursor
+                            size(px(8.), px(2.))
+                        }
+                        EditorMode::Insert => {
+                            size(px(2.), line_height)
+                        }
+                    }
+                } else {
+                    size(px(2.), line_height)
+                };
+
+                let cursor_y = if vim_enabled && editor_mode == EditorMode::Command {
+                    y + line_height - px(2.) // underline at bottom
+                } else {
+                    y
+                };
+
                 cursor_quad = Some(fill(
-                    Bounds::new(point(origin.x, y), size(px(2.), line_height)),
-                    hsla(0.6, 0.8, 0.5, 1.0),
+                    Bounds::new(point(origin.x + cursor_x, cursor_y), cursor_shape),
+                    cursor_color,
                 ));
             }
 
@@ -379,15 +398,20 @@ impl Element for EditorElement {
             });
         }
 
-        // Default cursor if none set
+        // Default cursor if none set (e.g. cursor at very end of document beyond visible lines)
         if cursor_quad.is_none() {
+            let cw = if vim_enabled && !matches!(editor_mode, super::keymap::EditorMode::Insert) {
+                px(8.)
+            } else {
+                px(2.)
+            };
             cursor_quad = Some(fill(
                 Bounds::new(
                     point(
                         bounds.origin.x + padding,
                         bounds.origin.y + padding - scroll,
                     ),
-                    size(px(2.), px(24.)),
+                    size(cw, px(24.)),
                 ),
                 hsla(0.6, 0.8, 0.5, 1.0),
             ));

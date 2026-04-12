@@ -1,20 +1,32 @@
 use fuzzy_matcher::FuzzyMatcher;
 use fuzzy_matcher::skim::SkimMatcherV2;
 use gpui::*;
-use gpui_component::input::{Input, InputState};
 use gpui_component::{h_flex, v_flex};
 
+use crate::editor::keymap::EditorMode;
 use crate::editor::{EditorEvent, EditorState, EditorView};
 use crate::state::AppState;
 
 const MAX_RESULTS: usize = 15;
 
+/// What the minibuffer is currently being used for.
+#[derive(Clone, PartialEq)]
+enum MinibufferMode {
+    /// Inactive — shows status line only
+    Idle,
+    /// Note search (Ctrl+P) — vertico-style vertical completion
+    NoteSearch,
+    /// Vim command line (:) — handled by EditorState, we just display it
+    VimCommand,
+}
+
 pub struct Memex {
     state: AppState,
     editor_state: Entity<EditorState>,
     editor_view: Entity<EditorView>,
-    command_bar_input: Entity<InputState>,
-    command_bar_visible: bool,
+    minibuffer_mode: MinibufferMode,
+    minibuffer_input: String,
+    minibuffer_selected: usize,
     vault_dropdown_visible: bool,
     _subscriptions: Vec<Subscription>,
 }
@@ -57,11 +69,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         };
 
         let editor_state = cx.new(|cx| EditorState::new(initial_content, window, cx));
-
         let editor_view = cx.new(|cx| EditorView::new(editor_state.clone(), cx));
-
-        let command_bar_input =
-            cx.new(|cx| InputState::new(window, cx).placeholder("Search notes..."));
 
         let editor_sub = cx.subscribe_in(
             &editor_state,
@@ -93,25 +101,107 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             state,
             editor_state,
             editor_view,
-            command_bar_input,
-            command_bar_visible: false,
+            minibuffer_mode: MinibufferMode::Idle,
+            minibuffer_input: String::new(),
+            minibuffer_selected: 0,
             vault_dropdown_visible: false,
             _subscriptions: vec![editor_sub],
         }
     }
 
-    fn toggle_command_bar(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.command_bar_visible {
-            self.command_bar_input.update(cx, |input, cx| {
-                input.set_value("", window, cx);
-            });
-            self.command_bar_input.update(cx, |input, cx| {
-                input.focus(window, cx);
-            });
-        } else {
-            self.editor_state.read(cx).focus(window);
-        }
+    fn activate_note_search(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        self.minibuffer_mode = MinibufferMode::NoteSearch;
+        self.minibuffer_input.clear();
+        self.minibuffer_selected = 0;
         cx.notify();
+    }
+
+    fn dismiss_minibuffer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.minibuffer_mode = MinibufferMode::Idle;
+        self.minibuffer_input.clear();
+        self.minibuffer_selected = 0;
+        self.editor_state.read(cx).focus(window);
+        cx.notify();
+    }
+
+    fn handle_minibuffer_key(
+        &mut self,
+        key: &str,
+        ctrl: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match key {
+            "escape" => {
+                self.dismiss_minibuffer(window, cx);
+            }
+            "enter" => {
+                let results = self.search_notes(&self.minibuffer_input);
+                let idx = self.minibuffer_selected;
+                if let Some((_, path)) = results.get(idx) {
+                    let p = path.clone();
+                    self.open_note_by_path(p, window, cx);
+                } else if !self.minibuffer_input.is_empty() {
+                    // Create new note
+                    let title = self.minibuffer_input.clone();
+                    self.create_note_by_title(&title, window, cx);
+                }
+                self.dismiss_minibuffer(window, cx);
+            }
+            "backspace" => {
+                self.minibuffer_input.pop();
+                self.minibuffer_selected = 0;
+                cx.notify();
+            }
+            "up" => {
+                if self.minibuffer_selected > 0 {
+                    self.minibuffer_selected -= 1;
+                }
+                cx.notify();
+            }
+            "down" => {
+                let results = self.search_notes(&self.minibuffer_input);
+                if self.minibuffer_selected + 1 < results.len() {
+                    self.minibuffer_selected += 1;
+                }
+                cx.notify();
+            }
+            "tab" => {
+                // Insert selected candidate text into minibuffer (like vertico-insert)
+                let results = self.search_notes(&self.minibuffer_input);
+                if let Some((title, _)) = results.get(self.minibuffer_selected) {
+                    self.minibuffer_input = title.clone();
+                }
+                cx.notify();
+            }
+            _ if ctrl => {
+                if key == "u" {
+                    self.minibuffer_input.clear();
+                    self.minibuffer_selected = 0;
+                    cx.notify();
+                } else if key == "n" {
+                    // Ctrl+N = next (like Emacs)
+                    let results = self.search_notes(&self.minibuffer_input);
+                    if self.minibuffer_selected + 1 < results.len() {
+                        self.minibuffer_selected += 1;
+                    }
+                    cx.notify();
+                } else if key == "p" {
+                    // Ctrl+P in minibuffer = previous
+                    if self.minibuffer_selected > 0 {
+                        self.minibuffer_selected -= 1;
+                    }
+                    cx.notify();
+                }
+            }
+            _ => {
+                if key.len() == 1 {
+                    self.minibuffer_input.push_str(key);
+                    self.minibuffer_selected = 0;
+                    cx.notify();
+                }
+            }
+        }
     }
 
     fn save(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
@@ -200,49 +290,224 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             .collect()
     }
 
-    fn render_status_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render_mode_line(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let es = self.editor_state.read(cx);
+        let vim_enabled = es.vim.enabled;
+        let mode = es.mode;
+        let status_msg = es.status_message.clone();
+        let cursor = es.cursor;
+        let content = es.content();
+        drop(es);
+
+        // Compute line:col from cursor
+        let before = &content[..cursor.min(content.len())];
+        let line_num = before.matches('\n').count() + 1;
+        let col_num = before.len() - before.rfind('\n').map(|i| i + 1).unwrap_or(0) + 1;
+
         let vault_name = self.state.vault_name();
         let note_title = self.state.current_title();
         let dirty = self.state.dirty;
         let dirty_indicator = if dirty { " ●" } else { "" };
 
+        // Mode badge (left)
+        let mode_badge = if vim_enabled {
+            let (label, bg) = match mode {
+                EditorMode::Normal => ("NOR", rgb(0x89B4FA)),
+                EditorMode::Insert => ("INS", rgb(0xA6E3A1)),
+                EditorMode::Visual => ("VIS", rgb(0xCBA6F7)),
+                EditorMode::VisualLine => ("V-L", rgb(0xCBA6F7)),
+                EditorMode::Command => ("CMD", rgb(0xF9E2AF)),
+            };
+            div()
+                .px(px(6.))
+                .py(px(1.))
+                .bg(bg)
+                .child(
+                    div()
+                        .text_size(px(11.))
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(rgb(0x1E1E2E))
+                        .child(label),
+                )
+        } else {
+            div()
+                .px(px(6.))
+                .py(px(1.))
+                .bg(rgb(0xA6E3A1))
+                .child(
+                    div()
+                        .text_size(px(11.))
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(rgb(0x1E1E2E))
+                        .child("EDT"),
+                )
+        };
+
         h_flex()
             .w_full()
-            .h(px(32.))
-            .bg(rgb(0xEBEBF0))
+            .h(px(24.))
+            .bg(rgb(0x313244))
             .items_center()
-            .px(px(12.))
-            .gap(px(12.))
-            .border_t_1()
-            .border_color(rgb(0xD0D0D8))
+            .gap(px(0.))
+            .child(mode_badge)
+            // Vault + file
             .child(
                 div()
-                    .id("vault-switcher")
                     .px(px(8.))
-                    .py(px(4.))
-                    .bg(rgb(0xF5F5FA))
-                    .rounded(px(4.))
-                    .cursor_pointer()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|this, _e: &MouseDownEvent, _window, cx| {
-                            this.vault_dropdown_visible = !this.vault_dropdown_visible;
-                            cx.notify();
-                        }),
-                    )
                     .child(
                         div()
-                            .text_size(px(13.))
-                            .text_color(rgb(0x2864C8))
-                            .child(format!("⌂ {}", vault_name)),
+                            .text_size(px(11.))
+                            .text_color(rgb(0xBAC2DE))
+                            .child(format!(
+                                " {} › {}{}",
+                                vault_name, note_title, dirty_indicator
+                            )),
                     ),
             )
+            // Spacer
+            .child(div().flex_1())
+            // Status message or position
             .child(
                 div()
-                    .text_size(px(13.))
-                    .text_color(rgb(0x50505A))
-                    .child(format!("{}{}", note_title, dirty_indicator)),
+                    .px(px(8.))
+                    .child(
+                        div()
+                            .text_size(px(11.))
+                            .text_color(rgb(0x6C7086))
+                            .child(
+                                status_msg.unwrap_or_else(|| {
+                                    format!("L{} C{}", line_num, col_num)
+                                }),
+                            ),
+                    ),
             )
+    }
+
+    /// Render the minibuffer area. When idle: empty. When active: prompt + vertico candidates.
+    fn render_minibuffer(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let es = self.editor_state.read(cx);
+        let vim_command_mode = es.vim.enabled && es.mode == EditorMode::Command;
+        let command_line = es.command_line.clone();
+        drop(es);
+
+        match &self.minibuffer_mode {
+            MinibufferMode::NoteSearch => {
+                let results = self.search_notes(&self.minibuffer_input);
+                let has_exact = results
+                    .iter()
+                    .any(|(t, _)| t.to_lowercase() == self.minibuffer_input.to_lowercase());
+                let show_create = !self.minibuffer_input.is_empty() && !has_exact;
+                let selected = self.minibuffer_selected;
+
+                let mut items = v_flex().w_full();
+
+                for (i, (title, _path)) in results.iter().enumerate() {
+                    let is_selected = i == selected;
+                    let bg_color = if is_selected {
+                        rgb(0x45475A)
+                    } else {
+                        rgb(0x1E1E2E)
+                    };
+                    items = items.child(
+                        div()
+                            .id(ElementId::Name(format!("mb-result-{}", i).into()))
+                            .w_full()
+                            .px(px(8.))
+                            .py(px(2.))
+                            .bg(bg_color)
+                            .child(
+                                div()
+                                    .text_size(px(13.))
+                                    .text_color(if is_selected {
+                                        rgb(0xCDD6F4)
+                                    } else {
+                                        rgb(0xA6ADC8)
+                                    })
+                                    .child(title.clone()),
+                            ),
+                    );
+                }
+
+                if show_create {
+                    let is_selected = selected == results.len();
+                    let bg_color = if is_selected {
+                        rgb(0x45475A)
+                    } else {
+                        rgb(0x1E1E2E)
+                    };
+                    items = items.child(
+                        div()
+                            .id("mb-create")
+                            .w_full()
+                            .px(px(8.))
+                            .py(px(2.))
+                            .bg(bg_color)
+                            .child(
+                                div()
+                                    .text_size(px(13.))
+                                    .text_color(rgb(0xA6E3A1))
+                                    .child(format!(
+                                        "+ Create \"{}\"",
+                                        self.minibuffer_input
+                                    )),
+                            ),
+                    );
+                }
+
+                v_flex()
+                    .w_full()
+                    .bg(rgb(0x1E1E2E))
+                    .border_t_1()
+                    .border_color(rgb(0x45475A))
+                    // Prompt line
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .px(px(8.))
+                            .py(px(3.))
+                            .gap(px(4.))
+                            .child(
+                                div()
+                                    .text_size(px(13.))
+                                    .text_color(rgb(0x89B4FA))
+                                    .child("Find note:"),
+                            )
+                            .child(
+                                div()
+                                    .text_size(px(13.))
+                                    .text_color(rgb(0xCDD6F4))
+                                    .child(format!("{}█", self.minibuffer_input)),
+                            ),
+                    )
+                    // Candidates (vertico-style vertical list)
+                    .child(items)
+            }
+            MinibufferMode::VimCommand | MinibufferMode::Idle if vim_command_mode => {
+                // Vim command line
+                v_flex()
+                    .w_full()
+                    .bg(rgb(0x1E1E2E))
+                    .border_t_1()
+                    .border_color(rgb(0x45475A))
+                    .child(
+                        h_flex()
+                            .w_full()
+                            .px(px(8.))
+                            .py(px(3.))
+                            .child(
+                                div()
+                                    .text_size(px(13.))
+                                    .font_family("FiraCode Nerd Font Mono")
+                                    .text_color(rgb(0xCDD6F4))
+                                    .child(format!(":{}█", command_line)),
+                            ),
+                    )
+            }
+            _ => {
+                // Idle — no minibuffer shown
+                v_flex().w_full()
+            }
+        }
     }
 
     fn render_vault_dropdown(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -253,11 +518,11 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             .bottom(px(40.))
             .left(px(12.))
             .w(px(250.))
-            .bg(rgb(0xF5F5FA))
+            .bg(rgb(0x313244))
             .rounded(px(6.))
             .p(px(4.))
             .border_1()
-            .border_color(rgb(0xD0D0D8))
+            .border_color(rgb(0x45475A))
             .shadow_md();
 
         for (i, vault_path) in vault_paths.into_iter().enumerate() {
@@ -276,7 +541,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     .py(px(6.))
                     .rounded(px(4.))
                     .cursor_pointer()
-                    .hover(|s| s.bg(rgb(0xE1E6F5)))
+                    .hover(|s| s.bg(rgb(0x45475A)))
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |this, _e: &MouseDownEvent, window, cx| {
@@ -286,7 +551,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     .child(
                         div()
                             .text_size(px(13.))
-                            .text_color(rgb(0x50505A))
+                            .text_color(rgb(0xBAC2DE))
                             .child(name),
                     ),
             );
@@ -294,142 +559,62 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
 
         dropdown
     }
-
-    fn render_command_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let query = self.command_bar_input.read(cx).value().to_string();
-        let results = self.search_notes(&query);
-        let has_exact = results
-            .iter()
-            .any(|(t, _)| t.to_lowercase() == query.to_lowercase());
-        let show_create = !query.is_empty() && !has_exact;
-
-        let mut results_list = v_flex().id("results-list").w_full().overflow_y_scroll();
-
-        for (i, (title, path)) in results.into_iter().enumerate() {
-            let p = path.clone();
-            results_list = results_list.child(
-                div()
-                    .id(ElementId::Name(format!("result-{}", i).into()))
-                    .w_full()
-                    .px(px(12.))
-                    .py(px(6.))
-                    .rounded(px(4.))
-                    .cursor_pointer()
-                    .hover(|s| s.bg(rgb(0xE1E6F5)))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _e: &MouseDownEvent, window, cx| {
-                            this.open_note_by_path(p.clone(), window, cx);
-                            this.command_bar_visible = false;
-                            cx.notify();
-                        }),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(14.))
-                            .text_color(rgb(0x3C3C46))
-                            .child(title),
-                    ),
-            );
-        }
-
-        if show_create {
-            let title_for_create = query.clone();
-            results_list = results_list.child(
-                div()
-                    .id("create-note")
-                    .w_full()
-                    .px(px(12.))
-                    .py(px(6.))
-                    .rounded(px(4.))
-                    .cursor_pointer()
-                    .hover(|s| s.bg(rgb(0xE1E6F5)))
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _e: &MouseDownEvent, window, cx| {
-                            this.create_note_by_title(&title_for_create, window, cx);
-                            this.command_bar_visible = false;
-                            cx.notify();
-                        }),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(14.))
-                            .text_color(rgb(0x1E8C32))
-                            .child(format!("+ Create \"{}\"", query)),
-                    ),
-            );
-        }
-
-        // Full-screen overlay
-        div()
-            .id("command-bar-overlay")
-            .absolute()
-            .top(px(0.))
-            .left(px(0.))
-            .size_full()
-            .bg(rgba(0x00000040))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _e: &MouseDownEvent, _window, cx| {
-                    this.command_bar_visible = false;
-                    cx.notify();
-                }),
-            )
-            .child(
-                div()
-                    .id("command-bar-panel")
-                    .w(px(500.))
-                    .max_h(px(400.))
-                    .mt(px(80.))
-                    .mx_auto()
-                    .bg(rgb(0xFAFAFC))
-                    .rounded(px(8.))
-                    .p(px(8.))
-                    .border_1()
-                    .border_color(rgb(0xD0D0D8))
-                    .shadow_lg()
-                    .on_mouse_down(MouseButton::Left, |_e: &MouseDownEvent, _window, _cx| {
-                        // Stop propagation — don't close on inner click
-                    })
-                    .child(
-                        div()
-                            .w_full()
-                            .mb(px(8.))
-                            .child(Input::new(&self.command_bar_input).w_full()),
-                    )
-                    .child(results_list),
-            )
-    }
 }
 
 impl Render for Memex {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let minibuffer_active = self.minibuffer_mode == MinibufferMode::NoteSearch;
+
         let mut root = v_flex()
             .id("memex-root")
             .size_full()
             .bg(rgb(0xF8F8F8))
             .font_family("FiraCode Nerd Font")
             .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
+                // If minibuffer is active, route keys there
+                if this.minibuffer_mode == MinibufferMode::NoteSearch {
+                    let key = e.keystroke.key.as_str();
+                    let ctrl = e.keystroke.modifiers.control;
+                    this.handle_minibuffer_key(key, ctrl, window, cx);
+                    return;
+                }
+
                 if e.keystroke.modifiers.control && e.keystroke.key == "p" {
-                    this.toggle_command_bar(window, cx);
+                    this.activate_note_search(window, cx);
                 } else if e.keystroke.modifiers.control && e.keystroke.key == "s" {
                     this.save(window, cx);
                 }
             }))
-            // WYSIWYG Editor — takes full space
+            // Editor canvas
             .child(div().flex_1().w_full().child(self.editor_view.clone()))
-            // Status bar
-            .child(self.render_status_bar(cx));
+            // Mode line (always visible, like emacs mode-line)
+            .child(self.render_mode_line(cx))
+            // Minibuffer area (below mode line, like emacs)
+            .child(self.render_minibuffer(cx));
 
         // Vault dropdown overlay
         if self.vault_dropdown_visible {
             root = root.child(self.render_vault_dropdown(cx));
         }
 
-        // Command bar overlay
-        if self.command_bar_visible {
-            root = root.child(self.render_command_bar(cx));
+        // Dim overlay when minibuffer is active (optional)
+        if minibuffer_active {
+            root = root.child(
+                div()
+                    .id("minibuffer-overlay")
+                    .absolute()
+                    .top(px(0.))
+                    .left(px(0.))
+                    .w_full()
+                    .h_full()
+                    .bg(rgba(0x00000020))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(|this, _e: &MouseDownEvent, window, cx| {
+                            this.dismiss_minibuffer(window, cx);
+                        }),
+                    ),
+            );
         }
 
         root

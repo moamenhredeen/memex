@@ -1,4 +1,4 @@
-use super::{Motion, Operator, VimAction, VimState};
+use super::{Motion, VimAction, VimState};
 use crate::editor::commands::EditorCommand;
 use crate::editor::keymap::EditorMode;
 
