@@ -169,11 +169,21 @@ impl EditorState {
     }
 
     pub fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
-        let offset = offset.min(self.content_len());
+        let offset = self.snap_to_char_boundary(offset);
         self.selected_range = offset..offset;
         self.cursor = offset;
         self.blink_cursor.update(cx, |bc, cx| bc.pause(cx));
         cx.notify();
+    }
+
+    /// Snap a byte offset to the nearest valid UTF-8 char boundary (rounding down).
+    fn snap_to_char_boundary(&self, offset: usize) -> usize {
+        let content = self.content();
+        let mut p = offset.min(content.len());
+        while p > 0 && !content.is_char_boundary(p) {
+            p -= 1;
+        }
+        p
     }
 
     /// Return the selection range in (start, end) order.
@@ -184,7 +194,7 @@ impl EditorState {
     }
 
     pub fn select_to(&mut self, offset: usize, cx: &mut Context<Self>) {
-        let offset = offset.min(self.content_len());
+        let offset = self.snap_to_char_boundary(offset);
         if self.selection_reversed {
             self.selected_range.start = offset;
         } else {
@@ -298,8 +308,8 @@ impl EditorState {
             }
             MoveUp => {
                 let content = self.content();
-                let pos = self.cursor;
-                let before = &content[..pos.min(content.len())];
+                let pos = self.snap_to_char_boundary(self.cursor);
+                let before = &content[..pos];
                 let line_start = before.rfind('\n').map(|i| i + 1).unwrap_or(0);
                 let col = pos - line_start;
                 if line_start == 0 {
@@ -323,8 +333,8 @@ impl EditorState {
             }
             MoveDown => {
                 let content = self.content();
-                let pos = self.cursor;
-                let before = &content[..pos.min(content.len())];
+                let pos = self.snap_to_char_boundary(self.cursor);
+                let before = &content[..pos];
                 let line_start = before.rfind('\n').map(|i| i + 1).unwrap_or(0);
                 let col = pos - line_start;
                 // Find target line, skipping hidden lines
@@ -341,13 +351,13 @@ impl EditorState {
             }
             MoveLineStart => {
                 let content = self.content();
-                let pos = self.cursor.min(content.len());
+                let pos = self.snap_to_char_boundary(self.cursor);
                 let line_start = content[..pos].rfind('\n').map(|i| i + 1).unwrap_or(0);
                 self.move_to(line_start, cx);
             }
             MoveLineEnd => {
                 let content = self.content();
-                let pos = self.cursor.min(content.len());
+                let pos = self.snap_to_char_boundary(self.cursor);
                 let line_end = content[pos..]
                     .find('\n')
                     .map(|p| pos + p)
@@ -366,8 +376,8 @@ impl EditorState {
             SelectUp => {
                 // Extend selection upward (same logic as MoveUp but with select_to)
                 let content = self.content();
-                let pos = self.cursor_offset();
-                let before = &content[..pos.min(content.len())];
+                let pos = self.snap_to_char_boundary(self.cursor_offset());
+                let before = &content[..pos];
                 let line_start = before.rfind('\n').map(|i| i + 1).unwrap_or(0);
                 let col = pos - line_start;
                 if line_start == 0 {
@@ -382,8 +392,8 @@ impl EditorState {
             }
             SelectDown => {
                 let content = self.content();
-                let pos = self.cursor_offset();
-                let before = &content[..pos.min(content.len())];
+                let pos = self.snap_to_char_boundary(self.cursor_offset());
+                let before = &content[..pos];
                 let line_start = before.rfind('\n').map(|i| i + 1).unwrap_or(0);
                 let col = pos - line_start;
                 let after = &content[pos..];
@@ -970,7 +980,7 @@ impl EditorState {
             "open-line-below" => {
                 // o — open line below and enter insert
                 let content = self.content();
-                let pos = self.cursor.min(content.len());
+                let pos = self.snap_to_char_boundary(self.cursor);
                 let line_end = content[pos..].find('\n').map(|p| pos + p).unwrap_or(content.len());
                 self.move_to(line_end, cx);
                 self.edit_text("\n", cx);
@@ -981,7 +991,7 @@ impl EditorState {
             "open-line-above" => {
                 // O — open line above and enter insert
                 let content = self.content();
-                let pos = self.cursor.min(content.len());
+                let pos = self.snap_to_char_boundary(self.cursor);
                 let line_start = content[..pos].rfind('\n').map(|i| i + 1).unwrap_or(0);
                 self.move_to(line_start, cx);
                 self.edit_text("\n", cx);
@@ -999,7 +1009,7 @@ impl EditorState {
                     if text.ends_with('\n') {
                         // Line-wise paste: insert after current line
                         let content = self.content();
-                        let pos = self.cursor.min(content.len());
+                        let pos = self.snap_to_char_boundary(self.cursor);
                         let line_end = content[pos..].find('\n').map(|p| pos + p + 1).unwrap_or(content.len());
                         self.move_to(line_end, cx);
                         self.edit_text(&text, cx);
@@ -1020,7 +1030,7 @@ impl EditorState {
                 if !text.is_empty() {
                     if text.ends_with('\n') {
                         let content = self.content();
-                        let pos = self.cursor.min(content.len());
+                        let pos = self.snap_to_char_boundary(self.cursor);
                         let line_start = content[..pos].rfind('\n').map(|i| i + 1).unwrap_or(0);
                         self.move_to(line_start, cx);
                         self.edit_text(&text, cx);
@@ -1035,7 +1045,7 @@ impl EditorState {
             "join-lines" => {
                 // J — join current line with next
                 let content = self.content();
-                let pos = self.cursor.min(content.len());
+                let pos = self.snap_to_char_boundary(self.cursor);
                 if let Some(nl) = content[pos..].find('\n') {
                     let nl_pos = pos + nl;
                     // Remove newline and leading whitespace on next line
@@ -1050,7 +1060,7 @@ impl EditorState {
             "delete-to-end" => {
                 // D — delete from cursor to end of line
                 let content = self.content();
-                let pos = self.cursor;
+                let pos = self.snap_to_char_boundary(self.cursor);
                 let line_end = content[pos..].find('\n').map(|p| pos + p).unwrap_or(content.len());
                 if pos < line_end {
                     self.keymap.grammar.register_content = content[pos..line_end].to_string();
@@ -1061,7 +1071,7 @@ impl EditorState {
             "change-to-end" => {
                 // C — change from cursor to end of line
                 let content = self.content();
-                let pos = self.cursor;
+                let pos = self.snap_to_char_boundary(self.cursor);
                 let line_end = content[pos..].find('\n').map(|p| pos + p).unwrap_or(content.len());
                 if pos < line_end {
                     self.keymap.grammar.register_content = content[pos..line_end].to_string();
@@ -1075,7 +1085,7 @@ impl EditorState {
             "change-line" => {
                 // S — change entire line
                 let content = self.content();
-                let pos = self.cursor.min(content.len());
+                let pos = self.snap_to_char_boundary(self.cursor);
                 let line_start = content[..pos].rfind('\n').map(|i| i + 1).unwrap_or(0);
                 let line_end = content[pos..].find('\n').map(|p| pos + p).unwrap_or(content.len());
                 self.keymap.grammar.register_content = content[line_start..line_end].to_string();

@@ -607,7 +607,11 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         let _ = es;
 
         // Compute line:col from cursor
-        let before = &content[..cursor.min(content.len())];
+        let mut pos = cursor.min(content.len());
+        while pos > 0 && !content.is_char_boundary(pos) {
+            pos -= 1;
+        }
+        let before = &content[..pos];
         let line_num = before.matches('\n').count() + 1;
         let col_num = before.len() - before.rfind('\n').map(|i| i + 1).unwrap_or(0) + 1;
 

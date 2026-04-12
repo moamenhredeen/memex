@@ -205,14 +205,16 @@ impl KeymapSystem {
 // ─── Find/Til char helper functions ──────────────────────────────────────────
 
 fn find_char_forward(content: &str, cursor: usize, ch: char, count: usize) -> usize {
-    let after = &content[cursor..];
+    let mut cur = cursor.min(content.len());
+    while cur > 0 && !content.is_char_boundary(cur) { cur -= 1; }
+    let after = &content[cur..];
     let mut found = 0usize;
-    let mut pos = cursor;
+    let mut pos = cur;
     for (i, c) in after.char_indices().skip(1) {
         if c == ch {
             found += 1;
             if found == count {
-                pos = cursor + i;
+                pos = cur + i;
                 break;
             }
         }
@@ -238,7 +240,9 @@ fn til_char_forward(content: &str, cursor: usize, ch: char, count: usize) -> usi
 }
 
 fn find_char_backward(content: &str, cursor: usize, ch: char, count: usize) -> usize {
-    let before = &content[..cursor];
+    let mut c = cursor.min(content.len());
+    while c > 0 && !content.is_char_boundary(c) { c -= 1; }
+    let before = &content[..c];
     let mut found = 0usize;
     let mut pos = cursor;
     for (i, c) in before.char_indices().rev() {
