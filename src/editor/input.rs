@@ -52,20 +52,11 @@ impl EntityInputHandler for EditorState {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // Suppress OS text input that follows a vim-consumed key
-        if self.suppress_next_input {
-            self.suppress_next_input = false;
+        // In vim non-insert modes, suppress OS text input entirely.
+        // The keymap system handles all key→action routing, so OS text
+        // input should only come through in insert mode (or non-vim mode).
+        if !self.keymap.is_insert_active() {
             return;
-        }
-
-        // In vim Normal/Visual modes, suppress OS text input
-        if self.vim.enabled {
-            match self.mode {
-                super::keymap::EditorMode::Normal
-                | super::keymap::EditorMode::Visual
-                | super::keymap::EditorMode::VisualLine => return,
-                _ => {}
-            }
         }
 
         let range = range_utf16
@@ -115,20 +106,9 @@ impl EntityInputHandler for EditorState {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // Suppress OS text input that follows a vim-consumed key
-        if self.suppress_next_input {
-            self.suppress_next_input = false;
+        // In vim non-insert modes, suppress OS text input entirely.
+        if !self.keymap.is_insert_active() {
             return;
-        }
-
-        // In vim Normal/Visual modes, suppress OS text input
-        if self.vim.enabled {
-            match self.mode {
-                super::keymap::EditorMode::Normal
-                | super::keymap::EditorMode::Visual
-                | super::keymap::EditorMode::VisualLine => return,
-                _ => {}
-            }
         }
 
         let range = range_utf16

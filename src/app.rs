@@ -4,7 +4,6 @@ use gpui::*;
 use gpui_component::{h_flex, v_flex};
 
 use crate::command::CommandRegistry;
-use crate::editor::keymap::EditorMode;
 use crate::editor::{EditorEvent, EditorState, EditorView};
 use crate::minibuffer::{Candidate, DelegateKind, Minibuffer, MinibufferAction, MinibufferVimMode};
 use crate::state::AppState;
@@ -106,19 +105,19 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
     }
 
     fn activate_note_search(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        let vim = self.editor_state.read(cx).vim.enabled;
+        let vim = self.editor_state.read(cx).keymap.vim_enabled;
         self.minibuffer.activate(DelegateKind::NoteSearch, "Find note:", vim);
         cx.notify();
     }
 
     fn activate_vault_search(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        let vim = self.editor_state.read(cx).vim.enabled;
+        let vim = self.editor_state.read(cx).keymap.vim_enabled;
         self.minibuffer.activate(DelegateKind::VaultSearch, "Switch vault:", vim);
         cx.notify();
     }
 
     fn activate_command_palette(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        let vim = self.editor_state.read(cx).vim.enabled;
+        let vim = self.editor_state.read(cx).keymap.vim_enabled;
         let prompt = if vim { ":" } else { "M-x" };
         self.minibuffer.activate(DelegateKind::Command, prompt, vim);
         cx.notify();
@@ -310,16 +309,14 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             }
             "set-vim" => {
                 self.editor_state.update(cx, |state, cx| {
-                    state.vim.enabled = true;
-                    state.mode = EditorMode::Normal;
+                    state.keymap.set_vim_enabled(true);
                     cx.notify();
                 });
                 self.minibuffer.set_message("Vim mode enabled");
             }
             "set-novim" => {
                 self.editor_state.update(cx, |state, cx| {
-                    state.vim.enabled = false;
-                    state.mode = EditorMode::Insert;
+                    state.keymap.set_vim_enabled(false);
                     cx.notify();
                 });
                 self.minibuffer.set_message("Vim mode disabled");
@@ -329,15 +326,10 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             }
             "toggle-vim" => {
                 let enabled = self.editor_state.update(cx, |state, cx| {
-                    if state.vim.enabled {
-                        state.vim.enabled = false;
-                        state.mode = EditorMode::Insert;
-                    } else {
-                        state.vim.enabled = true;
-                        state.mode = EditorMode::Normal;
-                    }
+                    let new_state = !state.keymap.vim_enabled;
+                    state.keymap.set_vim_enabled(new_state);
                     cx.notify();
-                    state.vim.enabled
+                    new_state
                 });
                 if enabled {
                     self.minibuffer.set_message("Vim mode enabled");
@@ -608,8 +600,8 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
 
     fn render_mode_line(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let es = self.editor_state.read(cx);
-        let vim_enabled = es.vim.enabled;
-        let mode = es.mode;
+        let vim_enabled = es.keymap.vim_enabled;
+        let vim_state = es.keymap.active_vim_state().map(|s| s.to_string());
         let cursor = es.cursor;
         let content = es.content();
         drop(es);
@@ -626,11 +618,12 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
 
         // Mode badge (left)
         let mode_badge = if vim_enabled {
-            let (label, bg) = match mode {
-                EditorMode::Normal => ("NOR", rgb(0x268BD2)),   // blue
-                EditorMode::Insert => ("INS", rgb(0x859900)),   // green
-                EditorMode::Visual => ("VIS", rgb(0x6C71C4)),   // violet
-                EditorMode::VisualLine => ("V-L", rgb(0x6C71C4)),
+            let (label, bg) = match vim_state.as_deref() {
+                Some("NORMAL") => ("NOR", rgb(0x268BD2)),   // blue
+                Some("INSERT") => ("INS", rgb(0x859900)),   // green
+                Some("VISUAL") => ("VIS", rgb(0x6C71C4)),   // violet
+                Some("V-LINE") => ("V-L", rgb(0x6C71C4)),
+                _ => ("NOR", rgb(0x268BD2)),
             };
             div()
                 .px(px(6.))

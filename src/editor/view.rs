@@ -2,7 +2,6 @@ use gpui::*;
 
 use super::commands::EditorCommand;
 use super::element::EditorElement;
-use super::keymap::{EditorMode, KeyCombo};
 use super::{EditorState, TabAction, ShiftTabAction};
 
 pub struct EditorView {
@@ -56,57 +55,11 @@ impl Render for EditorView {
                 let alt = e.keystroke.modifiers.alt;
 
                 this.state.update(cx, |state, cx| {
-                    let mode = state.mode;
+                    let content = state.content();
+                    let cursor = state.cursor;
 
-                    if state.vim.enabled {
-                        match mode {
-                            EditorMode::Normal
-                            | EditorMode::Visual
-                            | EditorMode::VisualLine => {
-                                // Handle Ctrl-key combos that vim needs
-                                if ctrl {
-                                    match key {
-                                        "r" => {
-                                            state.suppress_next_input = true;
-                                            state.dispatch(EditorCommand::Redo, window, cx);
-                                            return;
-                                        }
-                                        "d" => {
-                                            // Ctrl+D — half page down
-                                            state.suppress_next_input = true;
-                                            state.scroll_offset = (state.scroll_offset + px(200.)).max(px(0.));
-                                            cx.notify();
-                                            return;
-                                        }
-                                        "u" => {
-                                            // Ctrl+U — half page up
-                                            state.suppress_next_input = true;
-                                            state.scroll_offset = (state.scroll_offset - px(200.)).max(px(0.));
-                                            cx.notify();
-                                            return;
-                                        }
-                                        _ => {}
-                                    }
-                                }
-                                state.suppress_next_input = true;
-                                state.handle_vim_key(key, window, cx);
-                                return;
-                            }
-                            EditorMode::Insert => {
-                                if key == "escape" {
-                                    state.mode = EditorMode::Normal;
-                                    state.history.break_coalescing();
-                                    cx.notify();
-                                    return;
-                                }
-                            }
-                        }
-                    }
-
-                    let combo = KeyCombo::from_keystroke(key, ctrl, shift, alt);
-                    if let Some(cmd) = state.keymap.resolve(mode, &combo) {
-                        state.dispatch(cmd, window, cx);
-                    }
+                    let result = state.keymap.process_key(key, ctrl, shift, alt, &content, cursor);
+                    state.execute_grammar_result(result, window, cx);
                 });
             }))
             .on_mouse_down(

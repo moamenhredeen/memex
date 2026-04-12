@@ -6,7 +6,6 @@ use std::rc::Rc;
 use rhai::{Engine, Scope, AST};
 
 use crate::editor::commands::EditorCommand;
-use crate::editor::keymap::EditorMode;
 
 /// Events that plugins can hook into.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -36,7 +35,7 @@ impl Hook {
 /// A registered keybinding from a plugin.
 #[derive(Clone, Debug)]
 pub struct PluginBinding {
-    pub mode: EditorMode,
+    pub mode: String,
     pub key: String,
     pub command_name: String,
 }
@@ -212,12 +211,12 @@ impl PluginEngine {
         let q = queue.clone();
         engine.register_fn("enter_insert_mode", move || {
             q.borrow_mut()
-                .push(EditorCommand::EnterMode(EditorMode::Insert));
+                .push(EditorCommand::EnterMode("insert".to_string()));
         });
         let q = queue.clone();
         engine.register_fn("enter_normal_mode", move || {
             q.borrow_mut()
-                .push(EditorCommand::EnterMode(EditorMode::Normal));
+                .push(EditorCommand::EnterMode("normal".to_string()));
         });
 
         // Utility functions
@@ -239,14 +238,8 @@ impl PluginEngine {
         // bind(mode, key, command_name)
         let b = bindings.clone();
         engine.register_fn("bind", move |mode: String, key: String, command: String| {
-            let editor_mode = match mode.as_str() {
-                "insert" => EditorMode::Insert,
-                "normal" => EditorMode::Normal,
-                "visual" => EditorMode::Visual,
-                _ => EditorMode::Insert,
-            };
             b.borrow_mut().push(PluginBinding {
-                mode: editor_mode,
+                mode,
                 key,
                 command_name: command,
             });

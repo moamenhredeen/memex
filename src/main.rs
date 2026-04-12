@@ -3,6 +3,7 @@ mod command;
 mod config;
 mod editor;
 mod fs;
+mod keymap;
 mod markdown;
 mod minibuffer;
 mod plugin;

@@ -83,8 +83,8 @@ impl Element for EditorElement {
         let selected_range = state.selected_range.clone();
         let content = state.content();
         let dm = &state.display_map;
-        let vim_enabled = state.vim.enabled;
-        let editor_mode = state.mode;
+        let vim_enabled = state.keymap.vim_enabled;
+        let is_insert = state.keymap.is_insert_active();
 
         let text_system = window.text_system().clone();
         let text_style = window.text_style();
@@ -337,23 +337,15 @@ impl Element for EditorElement {
 
                 // Determine cursor shape based on vim mode
                 let cursor_color = rgb(0x268BD2); // solarized blue
-                use super::keymap::EditorMode;
-                let cursor_shape = if vim_enabled {
-                    match editor_mode {
-                        EditorMode::Normal | EditorMode::Visual | EditorMode::VisualLine => {
-                            // Block cursor: width of one character (or fallback)
-                            let next_x = if idx_in_line < line_text.len() {
-                                shaped.x_for_index(idx_in_line + 1)
-                            } else {
-                                cursor_x + px(8.) // fallback width at end of line
-                            };
-                            let block_w = (next_x - cursor_x).max(px(8.));
-                            size(block_w, line_height)
-                        }
-                        EditorMode::Insert => {
-                            size(px(2.), line_height)
-                        }
-                    }
+                let cursor_shape = if vim_enabled && !is_insert {
+                    // Block cursor for normal/visual modes
+                    let next_x = if idx_in_line < line_text.len() {
+                        shaped.x_for_index(idx_in_line + 1)
+                    } else {
+                        cursor_x + px(8.) // fallback width at end of line
+                    };
+                    let block_w = (next_x - cursor_x).max(px(8.));
+                    size(block_w, line_height)
                 } else {
                     size(px(2.), line_height)
                 };
@@ -393,7 +385,7 @@ impl Element for EditorElement {
 
         // Default cursor if none set (e.g. cursor at very end of document beyond visible lines)
         if cursor_quad.is_none() {
-            let cw = if vim_enabled && !matches!(editor_mode, super::keymap::EditorMode::Insert) {
+            let cw = if vim_enabled && !is_insert {
                 px(8.)
             } else {
                 px(2.)

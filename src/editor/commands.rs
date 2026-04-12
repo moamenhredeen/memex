@@ -41,7 +41,7 @@ pub enum EditorCommand {
     TablePrevCell,
 
     // Mode
-    EnterMode(super::keymap::EditorMode),
+    EnterMode(String),
     ToggleVimMode,
 
     // Visual mode operations
