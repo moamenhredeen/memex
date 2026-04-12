@@ -62,22 +62,31 @@ pub fn title_from_path(path: &Path) -> String {
 
 /// List all .md files in a directory (non-recursive for now).
 pub fn list_notes(dir: &Path) -> Result<Vec<PathBuf>, std::io::Error> {
-    let mut notes = Vec::new();
+    list_files_by_ext(dir, &["md"])
+}
+
+/// List all vault files (.md and .pdf) in a directory.
+pub fn list_vault_files(dir: &Path) -> Result<Vec<PathBuf>, std::io::Error> {
+    list_files_by_ext(dir, &["md", "pdf"])
+}
+
+fn list_files_by_ext(dir: &Path, extensions: &[&str]) -> Result<Vec<PathBuf>, std::io::Error> {
+    let mut files = Vec::new();
     if dir.is_dir() {
         for entry in std::fs::read_dir(dir)? {
             let entry = entry?;
             let path = entry.path();
             if path.is_file() {
-                if let Some(ext) = path.extension() {
-                    if ext == "md" {
-                        notes.push(path);
+                if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                    if extensions.contains(&ext) {
+                        files.push(path);
                     }
                 }
             }
         }
     }
-    notes.sort();
-    Ok(notes)
+    files.sort();
+    Ok(files)
 }
 
 #[cfg(test)]

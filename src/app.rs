@@ -6,14 +6,24 @@ use gpui_component::{h_flex, v_flex};
 use crate::command::CommandRegistry;
 use crate::editor::{EditorEvent, EditorState, EditorView};
 use crate::minibuffer::{Candidate, DelegateKind, Minibuffer, MinibufferAction, MinibufferVimMode};
+use crate::pdf::{PdfState, PdfView};
 use crate::state::AppState;
 
 const MAX_RESULTS: usize = 15;
 
+/// Which view is currently active in the main content area.
+#[derive(Clone, Copy, PartialEq)]
+enum ViewMode {
+    Editor,
+    Pdf,
+}
+
 pub struct Memex {
     state: AppState,
+    view_mode: ViewMode,
     editor_state: Entity<EditorState>,
     editor_view: Entity<EditorView>,
+    pdf_view: Option<Entity<PdfView>>,
     minibuffer: Minibuffer,
     minibuffer_focus: FocusHandle,
     command_registry: CommandRegistry,
@@ -100,8 +110,10 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
 
         Self {
             state,
+            view_mode: ViewMode::Editor,
             editor_state,
             editor_view,
+            pdf_view: None,
             minibuffer: Minibuffer::new(),
             minibuffer_focus: cx.focus_handle(),
             command_registry: CommandRegistry::new(),
@@ -392,11 +404,19 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
 
         let mut candidates: Vec<Candidate> = results
             .into_iter()
-            .map(|(title, path)| Candidate {
-                label: title,
-                detail: None,
-                is_action: false,
-                data: path.to_string_lossy().to_string(),
+            .map(|(title, path)| {
+                let is_pdf = path.extension().and_then(|e| e.to_str()) == Some("pdf");
+                let label = if is_pdf {
+                    format!("📄 {}", title)
+                } else {
+                    title
+                };
+                Candidate {
+                    label,
+                    detail: None,
+                    is_action: false,
+                    data: path.to_string_lossy().to_string(),
+                }
             })
             .collect();
 
@@ -577,6 +597,12 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Check if this is a PDF
+        if path.extension().and_then(|e| e.to_str()) == Some("pdf") {
+            self.open_pdf(path, window, cx);
+            return;
+        }
+
         if let Err(e) = self.state.open_note(path) {
             eprintln!("failed to open note: {}", e);
             return;
@@ -585,6 +611,38 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         self.editor_state.update(cx, |state, cx| {
             state.set_content(content, window, cx);
         });
+        self.view_mode = ViewMode::Editor;
+        cx.notify();
+    }
+
+    fn open_pdf(
+        &mut self,
+        path: std::path::PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Validate the PDF can be loaded before creating the entity
+        let pdfium = pdfium_render::prelude::Pdfium::default();
+        let raw_bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(e) => {
+                self.minibuffer.set_message(format!("Failed to read PDF: {}", e));
+                cx.notify();
+                return;
+            }
+        };
+        if let Err(e) = pdfium.load_pdf_from_byte_slice(&raw_bytes, None) {
+            self.minibuffer.set_message(format!("Invalid PDF: {:?}", e));
+            cx.notify();
+            return;
+        }
+
+        self.state.current_note = Some(path.clone());
+        let pdf_state = cx.new(|cx| PdfState::new(&path, cx).expect("PDF already validated"));
+        let pdf_view = cx.new(|cx| PdfView::new(pdf_state.clone(), cx));
+        pdf_state.read(cx).focus(window);
+        self.pdf_view = Some(pdf_view);
+        self.view_mode = ViewMode::Pdf;
         cx.notify();
     }
 
@@ -731,22 +789,49 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         let content = es.content();
         let _ = es;
 
-        // Compute line:col from cursor
-        let mut pos = cursor.min(content.len());
-        while pos > 0 && !content.is_char_boundary(pos) {
-            pos -= 1;
-        }
-        let before = &content[..pos];
-        let line_num = before.matches('\n').count() + 1;
-        let col_num = before.len() - before.rfind('\n').map(|i| i + 1).unwrap_or(0) + 1;
-
         let vault_name = self.state.vault_name();
         let note_title = self.state.current_title();
         let dirty = self.state.dirty;
         let dirty_indicator = if dirty { " ●" } else { "" };
 
+        // Position info depends on view mode
+        let position_text = match self.view_mode {
+            ViewMode::Pdf => {
+                if let Some(ref pv) = self.pdf_view {
+                    let ps = pv.read(cx).state.read(cx);
+                    let page_count = ps.page_count;
+                    let zoom_pct = (ps.zoom * 100.0) as u32;
+                    format!("PDF {}/{} {}%", 1, page_count, zoom_pct)
+                } else {
+                    String::new()
+                }
+            }
+            ViewMode::Editor => {
+                let mut pos = cursor.min(content.len());
+                while pos > 0 && !content.is_char_boundary(pos) {
+                    pos -= 1;
+                }
+                let before = &content[..pos];
+                let line_num = before.matches('\n').count() + 1;
+                let col_num = before.len() - before.rfind('\n').map(|i| i + 1).unwrap_or(0) + 1;
+                format!("L{} C{}", line_num, col_num)
+            }
+        };
+
         // Mode badge (left)
-        let mode_badge = if vim_enabled {
+        let mode_badge = if self.view_mode == ViewMode::Pdf {
+            div()
+                .px(px(6.))
+                .py(px(1.))
+                .bg(rgb(0xCB4B16))  // solarized orange for PDF
+                .child(
+                    div()
+                        .text_size(px(11.))
+                        .font_weight(FontWeight::BOLD)
+                        .text_color(rgb(0xFDF6E3))
+                        .child("PDF"),
+                )
+        } else if vim_enabled {
             let (label, bg) = match vim_state.as_deref() {
                 Some("NORMAL") => ("NOR", rgb(0x268BD2)),   // blue
                 Some("INSERT") => ("INS", rgb(0x859900)),   // green
@@ -810,7 +895,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                         div()
                             .text_size(px(11.))
                             .text_color(rgb(0x93A1A1))  // base1
-                            .child(format!("L{} C{}", line_num, col_num)),
+                            .child(position_text),
                     ),
             )
     }
@@ -980,8 +1065,20 @@ impl Render for Memex {
             }))
             // Custom title bar with drag + window controls
             .child(self.render_title_bar(cx))
-            // Editor canvas
-            .child(div().flex_1().w_full().child(self.editor_view.clone()))
+            // Main content area: editor or PDF viewer
+            .child({
+                let content = div().flex_1().w_full();
+                match self.view_mode {
+                    ViewMode::Editor => content.child(self.editor_view.clone()),
+                    ViewMode::Pdf => {
+                        if let Some(ref pdf_view) = self.pdf_view {
+                            content.child(pdf_view.clone())
+                        } else {
+                            content.child(self.editor_view.clone())
+                        }
+                    }
+                }
+            })
             // Mode line (always visible, like emacs mode-line)
             .child(self.render_mode_line(cx))
             // Minibuffer area (below mode line, like emacs)

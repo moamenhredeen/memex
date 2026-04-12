@@ -21,13 +21,13 @@ impl Vault {
             .and_then(|s| s.to_str())
             .unwrap_or("vault")
             .to_string();
-        let notes = fs::list_notes(&path)?;
+        let notes = fs::list_vault_files(&path)?;
         Ok(Self { path, name, notes })
     }
 
     /// Refresh the note list by re-scanning the directory.
     pub fn refresh(&mut self) -> Result<(), std::io::Error> {
-        self.notes = fs::list_notes(&self.path)?;
+        self.notes = fs::list_vault_files(&self.path)?;
         Ok(())
     }
 
