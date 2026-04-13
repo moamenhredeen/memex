@@ -3,32 +3,24 @@ use fuzzy_matcher::skim::SkimMatcherV2;
 use gpui::*;
 use gpui_component::{h_flex, v_flex};
 
-use crate::command::CommandRegistry;
 use crate::editor::{EditorEvent, EditorState, EditorView};
 use crate::keymap::{self, KeymapSystem, ResolvedKey, Action};
 use crate::minibuffer::{Candidate, DelegateKind, Minibuffer, MinibufferAction, MinibufferVimMode};
+use crate::mode::ModeRegistry;
 use crate::pdf::{PdfState, PdfView, TocEntry};
 use crate::state::AppState;
 
 const MAX_RESULTS: usize = 15;
 
-/// Which view is currently active in the main content area.
-#[derive(Clone, Copy, PartialEq)]
-enum ViewMode {
-    Editor,
-    Pdf,
-}
-
 pub struct Memex {
     state: AppState,
-    view_mode: ViewMode,
     editor_state: Entity<EditorState>,
     editor_view: Entity<EditorView>,
     pdf_view: Option<Entity<PdfView>>,
     keymap: KeymapSystem,
     minibuffer: Minibuffer,
     minibuffer_focus: FocusHandle,
-    command_registry: CommandRegistry,
+    mode_registry: ModeRegistry,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -114,14 +106,13 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
 
         Self {
             state,
-            view_mode: ViewMode::Editor,
             editor_state,
             editor_view,
             pdf_view: None,
             keymap,
             minibuffer: Minibuffer::new(),
             minibuffer_focus: cx.focus_handle(),
-            command_registry: CommandRegistry::new(),
+            mode_registry: ModeRegistry::new(),
             _subscriptions: vec![editor_sub],
         }
     }
@@ -134,6 +125,16 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             state.vim_enabled = vim;
             state.insert_mode = insert;
         });
+    }
+
+    /// Whether we are currently in editor mode.
+    fn is_editor_mode(&self) -> bool {
+        self.mode_registry.active_mode == "editor"
+    }
+
+    /// Whether we are currently in PDF mode.
+    fn is_pdf_mode(&self) -> bool {
+        self.mode_registry.active_mode == "pdf"
     }
 
     fn activate_note_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -172,7 +173,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
     }
 
     fn activate_pdf_toc(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.view_mode != ViewMode::Pdf {
+        if !self.is_pdf_mode() {
             self.minibuffer.set_message("Not in PDF view");
             cx.notify();
             return;
@@ -184,7 +185,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
     }
 
     fn activate_pdf_goto_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.view_mode != ViewMode::Pdf {
+        if !self.is_pdf_mode() {
             self.minibuffer.set_message("Not in PDF view");
             cx.notify();
             return;
@@ -201,17 +202,14 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
 
     fn dismiss_minibuffer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.minibuffer.dismiss();
-        match self.view_mode {
-            ViewMode::Pdf => {
-                if let Some(ref pv) = self.pdf_view {
-                    pv.read(cx).state.read(cx).focus(window);
-                } else {
-                    self.editor_state.read(cx).focus(window);
-                }
-            }
-            ViewMode::Editor => {
+        if self.is_pdf_mode() {
+            if let Some(ref pv) = self.pdf_view {
+                pv.read(cx).state.read(cx).focus(window);
+            } else {
                 self.editor_state.read(cx).focus(window);
             }
+        } else {
+            self.editor_state.read(cx).focus(window);
         }
         cx.notify();
     }
@@ -263,7 +261,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
     fn get_candidates(&self, cx: &App) -> Vec<Candidate> {
         match self.minibuffer.delegate_kind {
             DelegateKind::Command => {
-                self.command_registry.fuzzy_filter(&self.minibuffer.input)
+                self.mode_registry.fuzzy_filter(&self.minibuffer.input)
             }
             DelegateKind::NoteSearch => {
                 self.get_note_candidates()
@@ -627,7 +625,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             }
             _ => {
                 // Try as editor command first (open-line-below, append-after, etc.)
-                if self.view_mode == ViewMode::Editor {
+                if self.is_editor_mode() {
                     let keymap = &mut self.keymap;
                     let editor = self.editor_state.clone();
                     editor.update(cx, |state, ecx| {
@@ -911,7 +909,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         f: impl FnOnce(&mut PdfState, f32, f32, &mut Context<PdfState>),
         window: &mut Window,
     ) {
-        if self.view_mode != ViewMode::Pdf {
+        if !self.is_pdf_mode() {
             self.minibuffer.set_message("Not in PDF view");
             cx.notify();
             return;
@@ -953,9 +951,10 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         self.editor_state.update(cx, |state, cx| {
             state.set_content(content, window, cx);
         });
-        self.view_mode = ViewMode::Editor;
-        // Deactivate PDF layer, reactivate vim layers
-        self.keymap.stack.deactivate_layer("pdf");
+        // Switch to editor mode via mode registry
+        let plan = self.mode_registry.switch_mode("editor");
+        plan.apply(&mut self.keymap.stack);
+        // Re-activate vim layers if vim is enabled
         if self.keymap.vim_enabled {
             self.keymap.stack.activate_layer("vim:normal");
             self.keymap.stack.activate_layer("vim:motion");
@@ -989,14 +988,9 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         let pdf_view = cx.new(|cx| PdfView::new(pdf_state.clone(), cx));
         pdf_state.read(cx).focus(window);
         self.pdf_view = Some(pdf_view);
-        self.view_mode = ViewMode::Pdf;
-        // Activate PDF layer, deactivate vim layers (motions don't apply to PDF)
-        self.keymap.stack.activate_layer("pdf");
-        self.keymap.stack.deactivate_layer("vim:normal");
-        self.keymap.stack.deactivate_layer("vim:motion");
-        self.keymap.stack.deactivate_layer("vim:insert");
-        self.keymap.stack.deactivate_layer("vim:visual");
-        self.keymap.stack.deactivate_layer("vim:operator-pending");
+        // Switch to PDF mode via mode registry
+        let plan = self.mode_registry.switch_mode("pdf");
+        plan.apply(&mut self.keymap.stack);
         cx.notify();
     }
 
@@ -1149,33 +1143,30 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         let dirty_indicator = if dirty { " ●" } else { "" };
 
         // Position info depends on view mode
-        let position_text = match self.view_mode {
-            ViewMode::Pdf => {
-                if let Some(ref pv) = self.pdf_view {
-                    let ps = pv.read(cx).state.read(cx);
-                    let page_count = ps.page_count;
-                    let zoom_pct = (ps.zoom * 100.0) as u32;
-                    let (first, _) = ps.visible_range(600.0);
-                    let current = first + 1;
-                    format!("PDF {}/{} {}%", current, page_count, zoom_pct)
-                } else {
-                    String::new()
-                }
+        let position_text = if self.is_pdf_mode() {
+            if let Some(ref pv) = self.pdf_view {
+                let ps = pv.read(cx).state.read(cx);
+                let page_count = ps.page_count;
+                let zoom_pct = (ps.zoom * 100.0) as u32;
+                let (first, _) = ps.visible_range(600.0);
+                let current = first + 1;
+                format!("PDF {}/{} {}%", current, page_count, zoom_pct)
+            } else {
+                String::new()
             }
-            ViewMode::Editor => {
-                let mut pos = cursor.min(content.len());
-                while pos > 0 && !content.is_char_boundary(pos) {
-                    pos -= 1;
-                }
-                let before = &content[..pos];
-                let line_num = before.matches('\n').count() + 1;
-                let col_num = before.len() - before.rfind('\n').map(|i| i + 1).unwrap_or(0) + 1;
-                format!("L{} C{}", line_num, col_num)
+        } else {
+            let mut pos = cursor.min(content.len());
+            while pos > 0 && !content.is_char_boundary(pos) {
+                pos -= 1;
             }
+            let before = &content[..pos];
+            let line_num = before.matches('\n').count() + 1;
+            let col_num = before.len() - before.rfind('\n').map(|i| i + 1).unwrap_or(0) + 1;
+            format!("L{} C{}", line_num, col_num)
         };
 
         // Mode badge (left)
-        let mode_badge = if self.view_mode == ViewMode::Pdf {
+        let mode_badge = if self.is_pdf_mode() {
             div()
                 .px(px(6.))
                 .py(px(1.))
@@ -1447,7 +1438,7 @@ impl Render for Memex {
                                 // Sync mode flags to editor
                                 this.sync_editor_mode_flags(cx);
                                 // Suppress OS input (don't insert the key character)
-                                if this.view_mode == ViewMode::Editor {
+                                if this.is_editor_mode() {
                                     this.editor_state.update(cx, |state, _cx| {
                                         state.suppress_next_input = true;
                                         // Handle side effects of mode changes
@@ -1479,7 +1470,7 @@ impl Render for Memex {
                             }
                             _ => {
                                 // Motion, Operator, SelfInsert, etc. — editor-specific
-                                if this.view_mode == ViewMode::Editor {
+                                if this.is_editor_mode() {
                                     let keymap = &mut this.keymap;
                                     let editor = this.editor_state.clone();
                                     editor.update(cx, |state, ecx| {
@@ -1503,7 +1494,7 @@ impl Render for Memex {
                     }
                     ResolvedKey::TransientCapture { transient_id, ch, count } => {
                         // f/t/r char captures — editor-only
-                        if this.view_mode == ViewMode::Editor {
+                        if this.is_editor_mode() {
                             let editor = this.editor_state.clone();
                             editor.update(cx, |state, ecx| {
                                 let content = state.content();
@@ -1542,7 +1533,7 @@ impl Render for Memex {
                     }
                     ResolvedKey::Pending => {
                         // Multi-key sequence or count digit — suppress OS input
-                        if this.view_mode == ViewMode::Editor {
+                        if this.is_editor_mode() {
                             this.editor_state.update(cx, |state, _cx| {
                                 state.suppress_next_input = true;
                             });
@@ -1559,15 +1550,14 @@ impl Render for Memex {
             // Main content area: editor or PDF viewer
             .child({
                 let content = div().flex_1().w_full().overflow_hidden();
-                match self.view_mode {
-                    ViewMode::Editor => content.child(self.editor_view.clone()),
-                    ViewMode::Pdf => {
-                        if let Some(ref pdf_view) = self.pdf_view {
-                            content.child(pdf_view.clone())
-                        } else {
-                            content.child(self.editor_view.clone())
-                        }
+                if self.is_pdf_mode() {
+                    if let Some(ref pdf_view) = self.pdf_view {
+                        content.child(pdf_view.clone())
+                    } else {
+                        content.child(self.editor_view.clone())
                     }
+                } else {
+                    content.child(self.editor_view.clone())
                 }
             })
             // Mode line (always visible, like emacs mode-line)

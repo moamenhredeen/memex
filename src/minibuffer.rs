@@ -50,7 +50,7 @@ pub enum MinibufferResult {
 /// and confirm handling in app.rs's match arms.
 #[derive(Clone, Debug, PartialEq)]
 pub enum DelegateKind {
-    /// Command palette (M-x, vim :) — fuzzy-searches CommandRegistry.
+    /// Command palette (M-x, vim :) — fuzzy-searches mode-scoped commands via ModeRegistry.
     Command,
     /// Note search (Ctrl+P, :notes) — fuzzy-searches vault notes.
     NoteSearch,
