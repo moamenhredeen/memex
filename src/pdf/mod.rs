@@ -98,6 +98,8 @@ pub struct PdfState {
     pub search_preview: Vec<(usize, String)>,
     /// Whether a background search is running.
     pub search_pending: bool,
+    /// Monotonic generation counter for debouncing — only the latest search applies.
+    search_generation: u64,
 }
 
 impl PdfState {
@@ -132,6 +134,7 @@ impl PdfState {
             search_current: 0,
             search_preview: Vec::new(),
             search_pending: false,
+            search_generation: 0,
         })
     }
 
@@ -406,14 +409,17 @@ impl PdfState {
         }
     }
 
-    /// Launch an async search across all pages. Results arrive via cx.notify().
+    /// Launch a debounced async search across all pages.
+    /// Old results stay visible until the new search completes.
     pub fn request_search(&mut self, query: &str, cx: &mut Context<Self>) {
         self.search_query = query.to_string();
-        self.search_hits.clear();
-        self.search_preview.clear();
-        self.search_current = 0;
+        self.search_generation += 1;
+        let search_gen = self.search_generation;
 
         if query.is_empty() {
+            self.search_hits.clear();
+            self.search_preview.clear();
+            self.search_current = 0;
             self.search_pending = false;
             cx.notify();
             return;
@@ -425,7 +431,19 @@ impl PdfState {
         let needle = query.to_string();
 
         cx.spawn(async move |this, cx| {
-            let needle_check = needle.clone();
+            // Debounce: wait 150ms, then check if query is still current
+            cx.background_executor()
+                .timer(std::time::Duration::from_millis(150))
+                .await;
+
+            // Check if a newer search was requested while we waited
+            let still_current = this
+                .update(cx, |state, _| state.search_generation == search_gen)
+                .unwrap_or(false);
+            if !still_current {
+                return;
+            }
+
             let (hits, previews) = cx
                 .background_executor()
                 .spawn(async move {
@@ -434,7 +452,8 @@ impl PdfState {
                 .await;
 
             this.update(cx, |state, cx| {
-                if state.search_query == needle_check {
+                // Only apply if this is still the latest search
+                if state.search_generation == search_gen {
                     state.search_hits = hits;
                     state.search_preview = previews;
                     state.search_current = 0;
@@ -480,6 +499,7 @@ impl PdfState {
         self.search_preview.clear();
         self.search_current = 0;
         self.search_pending = false;
+        self.search_generation += 1;
     }
 
     /// Get search hits for a specific page (for rendering highlights).
