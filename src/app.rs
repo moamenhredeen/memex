@@ -1459,16 +1459,6 @@ impl Render for Memex {
 
                 if has_right {
                     let right_view = self.right_pane.as_ref().unwrap().view_element();
-                    let left_border = if focused == PaneSide::Left {
-                        rgb(0x268BD2) // solarized blue — focused
-                    } else {
-                        rgb(0xEEE8D5) // solarized base2 — unfocused
-                    };
-                    let right_border = if focused == PaneSide::Right {
-                        rgb(0x268BD2)
-                    } else {
-                        rgb(0xEEE8D5)
-                    };
 
                     h_flex()
                         .flex_1()
@@ -1480,8 +1470,6 @@ impl Render for Memex {
                                 .flex_1()
                                 .h_full()
                                 .overflow_hidden()
-                                .border_t_2()
-                                .border_color(left_border)
                                 .child(left_view),
                         )
                         // Divider
@@ -1489,7 +1477,7 @@ impl Render for Memex {
                             div()
                                 .w(px(1.))
                                 .h_full()
-                                .bg(rgb(0x93A1A1)), // solarized base1
+                                .bg(rgba(0x00000010)), // solarized base1
                         )
                         // Right pane
                         .child(
@@ -1497,8 +1485,6 @@ impl Render for Memex {
                                 .flex_1()
                                 .h_full()
                                 .overflow_hidden()
-                                .border_t_2()
-                                .border_color(right_border)
                                 .child(right_view),
                         )
                         .into_any_element()
