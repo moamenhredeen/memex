@@ -173,6 +173,16 @@ impl KeymapSystem {
                 ResolvedKey::Pending
             }
             None => {
+                // In vim non-insert modes, unbound single-char keys become SelfInsert
+                // so the grammar can handle them (e.g. i→insert, a→append, o→open-line)
+                if self.vim_enabled && !self.is_insert_active() && !ctrl && !alt {
+                    if let Some(_ch) = key.chars().next() {
+                        if key.chars().count() == 1 {
+                            let count = self.take_count();
+                            return ResolvedKey::Action(Action::SelfInsert, count);
+                        }
+                    }
+                }
                 self.count = None;
                 ResolvedKey::Unhandled
             }
@@ -330,4 +340,30 @@ pub fn repeat_char_search_reverse(
         _ => return None,
     };
     Some(target)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_resolve_i_enters_insert() {
+        let mut ks = KeymapSystem::new(true);
+        let result = ks.resolve_key("i", false, false, false);
+        match result {
+            ResolvedKey::Action(Action::ActivateLayer("vim:insert"), _) => {}
+            other => panic!("Expected ActivateLayer(vim:insert), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_resolve_unbound_key_falls_to_self_insert() {
+        let mut ks = KeymapSystem::new(true);
+        // 'z' is not bound as a leaf in any active layer, should become SelfInsert
+        let result = ks.resolve_key("z", false, false, false);
+        match result {
+            ResolvedKey::Action(Action::SelfInsert, _) => {}
+            other => panic!("Expected SelfInsert fallback, got {:?}", other),
+        }
+    }
 }

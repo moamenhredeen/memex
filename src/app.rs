@@ -1431,6 +1431,37 @@ impl Render for Memex {
                             Action::ActivateLayer(layer_id) => {
                                 let lid = layer_id.clone();
                                 this.keymap.stack.activate_layer(&lid);
+                                // Sync mode flags to editor
+                                this.sync_editor_mode_flags(cx);
+                                // Suppress OS input (don't insert the key character)
+                                if this.view_mode == ViewMode::Editor {
+                                    this.editor_state.update(cx, |state, _cx| {
+                                        state.suppress_next_input = true;
+                                        // Handle side effects of mode changes
+                                        match lid {
+                                            "vim:insert" => {
+                                                state.history.break_coalescing();
+                                            }
+                                            "vim:normal" => {
+                                                if !state.selected_range.is_empty() {
+                                                    let pos = state.selected_range.start;
+                                                    state.selected_range = pos..pos;
+                                                    state.cursor = pos;
+                                                }
+                                                state.history.break_coalescing();
+                                            }
+                                            "vim:visual" | "vim:visual-line" => {
+                                                if state.selected_range.is_empty() {
+                                                    let pos = state.cursor;
+                                                    let end = state.cursor + 1; // approximate next grapheme
+                                                    state.selected_range = pos..end;
+                                                    state.selection_reversed = false;
+                                                }
+                                            }
+                                            _ => {}
+                                        }
+                                    });
+                                }
                                 cx.notify();
                             }
                             _ => {
