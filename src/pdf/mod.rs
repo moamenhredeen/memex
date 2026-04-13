@@ -1,3 +1,4 @@
+mod scrollbar;
 mod view;
 
 pub use view::PdfView;
@@ -42,6 +43,8 @@ pub struct PageLink {
     pub target_page: usize,
 }
 
+use crate::pdf::scrollbar::DragState;
+
 /// State for an open PDF document.
 pub struct PdfState {
     pub path: PathBuf,
@@ -57,6 +60,8 @@ pub struct PdfState {
     page_links: HashMap<usize, Vec<PageLink>>,
     /// Pages currently being rendered on background threads
     pending_renders: HashSet<usize>,
+    /// Scrollbar drag state (survives across frames)
+    pub drag_state: Option<DragState>,
 }
 
 impl PdfState {
@@ -80,6 +85,7 @@ impl PdfState {
             total_height,
             page_links,
             pending_renders: HashSet::new(),
+            drag_state: None,
         })
     }
 
