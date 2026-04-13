@@ -781,8 +781,33 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
     /// Build candidates for `:vault-open` — live directory completion.
     fn get_vault_open_candidates(&self) -> Vec<Candidate> {
         let input = &self.minibuffer.input;
+
+        // When input is empty, show recent vaults for quick switching
         if input.is_empty() {
-            return Vec::new();
+            let recent = self.state.registry.recent_vaults(None);
+            return recent
+                .into_iter()
+                .take(MAX_RESULTS)
+                .map(|entry| {
+                    let name = std::path::Path::new(&entry.path)
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("vault");
+                    let is_current = self
+                        .state
+                        .vault
+                        .as_ref()
+                        .map(|v| v.path.to_string_lossy().to_string() == entry.path)
+                        .unwrap_or(false);
+                    let suffix = if is_current { "  (current)" } else { "" };
+                    Candidate {
+                        label: format!("{}{}", name, suffix),
+                        detail: Some(entry.path.clone()),
+                        is_action: false,
+                        data: entry.path.clone(),
+                    }
+                })
+                .collect();
         }
 
         let expanded = if input.starts_with('~') {
