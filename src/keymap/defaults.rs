@@ -11,6 +11,7 @@ pub fn register_defaults(stack: &mut LayerStack) {
     register_markdown_layer(stack);
     register_minibuffer_layer(stack);
     register_pdf_layer(stack);
+    register_graph_layer(stack);
 }
 
 // ─── Motions ────────────────────────────────────────────────────────────────
@@ -729,6 +730,19 @@ fn register_pdf_layer(stack: &mut LayerStack) {
         .bind("/", Action::Command("pdf-search"))
         .bind("n", Action::Command("pdf-search-next"))
         .bind("N", Action::Command("pdf-search-prev"));
+
+    stack.register_layer(layer);
+}
+
+fn register_graph_layer(stack: &mut LayerStack) {
+    let layer = Layer::new("graph")
+        .bind("+", Action::Command("zoom-in"))
+        .bind("=", Action::Command("zoom-in"))
+        .bind("-", Action::Command("zoom-out"))
+        .bind("0", Action::Command("reset-zoom"))
+        .bind("c", Action::Command("center-graph"))
+        .bind("l", Action::Command("toggle-local-graph"))
+        .bind("q", Action::Command("close-graph"));
 
     stack.register_layer(layer);
 }

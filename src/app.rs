@@ -5,6 +5,7 @@ use gpui_component::{h_flex, v_flex};
 
 use crate::command::Command;
 use crate::editor::{EditorEvent, EditorState, EditorView};
+use crate::graph::{GraphEvent, GraphState, GraphView};
 use crate::keymap::{KeymapSystem, ResolvedKey, Action};
 use crate::minibuffer::{Candidate, DelegateKind, Minibuffer, MinibufferAction, MinibufferVimMode};
 use crate::pane::{ActiveItem, ItemAction, VimSnapshot};
@@ -18,11 +19,21 @@ pub struct Memex {
     editor_state: Entity<EditorState>,
     editor_view: Entity<EditorView>,
     active_item: ActiveItem,
+    /// Optional right split pane (e.g., graph view).
+    right_pane: Option<ActiveItem>,
+    /// Which pane has focus — Left is the main pane, Right is the split.
+    focused_pane: PaneSide,
     keymap: KeymapSystem,
     minibuffer: Minibuffer,
     minibuffer_focus: FocusHandle,
     global_commands: Vec<Command>,
     _subscriptions: Vec<Subscription>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PaneSide {
+    Left,
+    Right,
 }
 
 impl Memex {
@@ -113,6 +124,8 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 state: editor_state,
                 view: editor_view,
             },
+            right_pane: None,
+            focused_pane: PaneSide::Left,
             keymap,
             minibuffer: Minibuffer::new(),
             minibuffer_focus: cx.focus_handle(),
@@ -346,7 +359,11 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         for action in actions {
             match action {
                 ItemAction::SetMessage(msg) => {
-                    self.minibuffer.set_message(msg);
+                    if msg == "__close_split__" {
+                        self.close_split(window, cx);
+                    } else {
+                        self.minibuffer.set_message(msg);
+                    }
                 }
                 ItemAction::ActivateDelegate { id, prompt, highlight_input: _ } => {
                     let vim = self.keymap.vim_enabled;
@@ -409,6 +426,12 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             "vault-open" => {
                 self.activate_vault_open(window, cx);
             }
+            "open-graph" => {
+                self.open_graph(window, cx);
+            }
+            "close-split" | "close-graph" => {
+                self.close_split(window, cx);
+            }
             "notes" => {
                 self.activate_note_search(window, cx);
             }
@@ -427,14 +450,27 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 }
             }
             _ => {
-                // Dispatch to active item (PDF commands, editor commands, etc.)
+                // Dispatch to focused pane's item
                 let vw: f32 = window.viewport_size().width.into();
                 let vh: f32 = window.viewport_size().height.into();
                 let vim = self.vim_snapshot();
+
+                // Try right pane first if it's focused
+                if self.focused_pane == PaneSide::Right {
+                    if let Some(ref right) = self.right_pane {
+                        let actions = right.execute_command(cmd_id, (vw, vh), vim, cx);
+                        if !actions.is_empty() {
+                            self.process_item_actions(actions, window, cx);
+                            cx.notify();
+                            return;
+                        }
+                    }
+                }
+
                 let actions = self.active_item.execute_command(cmd_id, (vw, vh), vim, cx);
                 if !actions.is_empty() {
                     self.process_item_actions(actions, window, cx);
-                } else if self.active_item.is_editor() {
+                } else if self.active_item.is_editor() && self.focused_pane == PaneSide::Left {
                     // Editor commands that need window access (editing, motions, etc.)
                     let vim = self.vim_snapshot();
                     let editor = self.editor_state.clone();
@@ -654,6 +690,8 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             Command { id: "set-novim", name: "Disable Vim Mode", description: "Disable vim keybindings", aliases: &[], binding: None },
             Command { id: "nohlsearch", name: "Clear Search Highlighting", description: "Remove search result highlighting", aliases: &["noh"], binding: Some(":noh") },
             Command { id: "toggle-vim", name: "Toggle Vim Mode", description: "Toggle vim mode on/off", aliases: &[], binding: None },
+            Command { id: "open-graph", name: "Open Graph", description: "Open the vault graph in a split panel", aliases: &["graph"], binding: None },
+            Command { id: "close-split", name: "Close Split", description: "Close the right split panel", aliases: &[], binding: None },
         ]
     }
 
@@ -770,6 +808,131 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             state: pdf_state,
             view: pdf_view,
         });
+        cx.notify();
+    }
+
+    fn open_graph(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Build graph from vault
+        let graph_state = cx.new(|cx| {
+            let mut gs = GraphState::new(cx);
+            if let Some(vault) = &self.state.vault {
+                gs.build_from_vault(&vault.path, &vault.notes);
+            }
+            // Set local root to current note if one is open
+            if let Some(ref current) = self.state.current_note {
+                gs.set_local_root_by_path(current);
+            }
+            gs
+        });
+        let graph_view = cx.new(|cx| GraphView::new(graph_state.clone(), cx));
+
+        // Subscribe to graph events (node clicks)
+        let graph_sub = cx.subscribe_in(
+            &graph_state,
+            window,
+            |this, _entity, ev: &GraphEvent, window, cx| {
+                match ev {
+                    GraphEvent::OpenNote(path) => {
+                        this.open_note_by_path(path.clone(), window, cx);
+                    }
+                }
+            },
+        );
+        self._subscriptions.push(graph_sub);
+
+        // Observe so we re-render on physics ticks
+        let obs = cx.observe(&graph_state, |_, _, cx| cx.notify());
+        self._subscriptions.push(obs);
+
+        let graph_item = ActiveItem::Graph {
+            state: graph_state,
+            view: graph_view,
+        };
+
+        // Open in right split
+        // Deactivate right pane's old layers if it had one
+        if let Some(ref old) = self.right_pane {
+            for layer in old.keymap_layers() {
+                self.keymap.stack.deactivate_layer(layer);
+            }
+        }
+        self.right_pane = Some(graph_item);
+        self.focused_pane = PaneSide::Right;
+
+        // Activate graph layers
+        // Deactivate left pane layers first
+        for layer in self.active_item.keymap_layers() {
+            self.keymap.stack.deactivate_layer(layer);
+        }
+        self.right_pane.as_ref().unwrap().focus(window, cx);
+        for layer in self.right_pane.as_ref().unwrap().keymap_layers() {
+            self.keymap.stack.activate_layer(layer);
+        }
+
+        cx.notify();
+    }
+
+    fn close_split(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(ref right) = self.right_pane {
+            // Deactivate right pane layers
+            for layer in right.keymap_layers() {
+                self.keymap.stack.deactivate_layer(layer);
+            }
+        }
+        self.right_pane = None;
+        self.focused_pane = PaneSide::Left;
+
+        // Re-activate left pane layers
+        for layer in self.active_item.keymap_layers() {
+            self.keymap.stack.activate_layer(layer);
+        }
+        self.active_item.focus(window, cx);
+        self.sync_editor_vim_flags(cx);
+        cx.notify();
+    }
+
+    fn focus_pane(
+        &mut self,
+        side: PaneSide,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if side == self.focused_pane {
+            return;
+        }
+        // Deactivate old focused pane layers
+        let old_item = match self.focused_pane {
+            PaneSide::Left => Some(&self.active_item),
+            PaneSide::Right => self.right_pane.as_ref(),
+        };
+        if let Some(item) = old_item {
+            for layer in item.keymap_layers() {
+                self.keymap.stack.deactivate_layer(layer);
+            }
+        }
+        self.focused_pane = side;
+        // Activate new focused pane layers and focus
+        let new_item = match side {
+            PaneSide::Left => Some(&self.active_item),
+            PaneSide::Right => self.right_pane.as_ref(),
+        };
+        if let Some(item) = new_item {
+            for layer in item.keymap_layers() {
+                self.keymap.stack.activate_layer(layer);
+            }
+            item.focus(window, cx);
+        }
+        if side == PaneSide::Left {
+            self.sync_editor_vim_flags(cx);
+        }
         cx.notify();
     }
 
@@ -936,12 +1099,17 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         let dirty = self.state.dirty;
         let dirty_indicator = if dirty { " ●" } else { "" };
 
-        // Position info depends on active item
-        let position_text = self.active_item.position_text(600.0, cx);
+        // Position info depends on focused pane
+        let focused_item = match self.focused_pane {
+            PaneSide::Left => &self.active_item,
+            PaneSide::Right => self.right_pane.as_ref().unwrap_or(&self.active_item),
+        };
+        let position_text = focused_item.position_text(600.0, cx);
 
-        // Mode badge (left)
-        let mode_badge = if self.active_item.is_pdf() {
-            let (label, color) = self.active_item.mode_badge();
+        // Mode badge (left) — show focused item's badge
+        let show_non_editor = focused_item.is_pdf() || focused_item.is_graph();
+        let mode_badge = if show_non_editor {
+            let (label, color) = focused_item.mode_badge();
             div()
                 .px(px(6.))
                 .py(px(1.))
@@ -1208,6 +1376,23 @@ impl Render for Memex {
                     this.activate_command_palette(window, cx);
                     return;
                 }
+                // Split focus switching: Ctrl+W h/l
+                if ctrl && key == "w" {
+                    // Ctrl+W prefix — mark pending, next key will be h or l
+                    this.editor_state.update(cx, |state, _cx| {
+                        state.suppress_next_input = true;
+                    });
+                    // We use the keymap system for ctrl-w bindings, so fall through
+                }
+                // Quick split navigation: Ctrl+H / Ctrl+L to switch panes
+                if ctrl && key == "h" && this.right_pane.is_some() {
+                    this.focus_pane(PaneSide::Left, window, cx);
+                    return;
+                }
+                if ctrl && key == "l" && this.right_pane.is_some() {
+                    this.focus_pane(PaneSide::Right, window, cx);
+                    return;
+                }
 
                 // Central key dispatch through the keymap system
                 let resolved = this.keymap.resolve_key(key, ctrl, shift, alt);
@@ -1266,10 +1451,65 @@ impl Render for Memex {
             }))
             // Custom title bar with drag + window controls
             .child(self.render_title_bar(cx))
-            // Main content area: active item's view
+            // Main content area: active item's view + optional right split
             .child({
-                div().flex_1().w_full().overflow_hidden()
-                    .child(self.active_item.view_element())
+                let left_view = self.active_item.view_element();
+                let has_right = self.right_pane.is_some();
+                let focused = self.focused_pane;
+
+                if has_right {
+                    let right_view = self.right_pane.as_ref().unwrap().view_element();
+                    let left_border = if focused == PaneSide::Left {
+                        rgb(0x268BD2) // solarized blue — focused
+                    } else {
+                        rgb(0xEEE8D5) // solarized base2 — unfocused
+                    };
+                    let right_border = if focused == PaneSide::Right {
+                        rgb(0x268BD2)
+                    } else {
+                        rgb(0xEEE8D5)
+                    };
+
+                    h_flex()
+                        .flex_1()
+                        .w_full()
+                        .overflow_hidden()
+                        // Left pane
+                        .child(
+                            div()
+                                .flex_1()
+                                .h_full()
+                                .overflow_hidden()
+                                .border_t_2()
+                                .border_color(left_border)
+                                .child(left_view),
+                        )
+                        // Divider
+                        .child(
+                            div()
+                                .w(px(1.))
+                                .h_full()
+                                .bg(rgb(0x93A1A1)), // solarized base1
+                        )
+                        // Right pane
+                        .child(
+                            div()
+                                .flex_1()
+                                .h_full()
+                                .overflow_hidden()
+                                .border_t_2()
+                                .border_color(right_border)
+                                .child(right_view),
+                        )
+                        .into_any_element()
+                } else {
+                    div()
+                        .flex_1()
+                        .w_full()
+                        .overflow_hidden()
+                        .child(left_view)
+                        .into_any_element()
+                }
             })
             // Mode line (always visible, like emacs mode-line)
             .child(self.render_mode_line(cx))

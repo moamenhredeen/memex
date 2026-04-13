@@ -14,6 +14,7 @@ use gpui::*;
 
 use crate::command::Command;
 use crate::editor::{EditorState, EditorView};
+use crate::graph::{GraphState, GraphView};
 use crate::minibuffer::Candidate;
 use crate::pdf::{PdfState, PdfView};
 
@@ -70,6 +71,10 @@ pub enum ActiveItem {
         state: Entity<PdfState>,
         view: Entity<PdfView>,
     },
+    Graph {
+        state: Entity<GraphState>,
+        view: Entity<GraphView>,
+    },
 }
 
 impl ActiveItem {
@@ -79,6 +84,7 @@ impl ActiveItem {
         match self {
             Self::Editor { .. } => "Markdown",
             Self::Pdf { .. } => "PDF",
+            Self::Graph { .. } => "Graph",
         }
     }
 
@@ -87,16 +93,21 @@ impl ActiveItem {
         match self {
             Self::Editor { .. } => vec!["vim:normal", "vim:motion", "leader", "markdown"],
             Self::Pdf { .. } => vec!["pdf"],
+            Self::Graph { .. } => vec!["graph"],
         }
     }
 
     /// Keymap layers to deactivate when this item gains focus.
     pub fn deactivate_layers(&self) -> Vec<&'static str> {
         match self {
-            Self::Editor { .. } => vec!["pdf"],
+            Self::Editor { .. } => vec!["pdf", "graph"],
             Self::Pdf { .. } => vec![
                 "vim:normal", "vim:motion", "vim:insert", "vim:visual",
-                "vim:operator-pending", "leader", "markdown",
+                "vim:operator-pending", "leader", "markdown", "graph",
+            ],
+            Self::Graph { .. } => vec![
+                "vim:normal", "vim:motion", "vim:insert", "vim:visual",
+                "vim:operator-pending", "leader", "markdown", "pdf",
             ],
         }
     }
@@ -106,6 +117,7 @@ impl ActiveItem {
         match self {
             Self::Editor { .. } => EditorState::commands(),
             Self::Pdf { .. } => PdfState::commands(),
+            Self::Graph { .. } => GraphState::commands(),
         }
     }
 
@@ -126,6 +138,10 @@ impl ActiveItem {
                 let state = state.clone();
                 state.update(cx, |s, cx| s.execute_command(cmd_id, viewport, vim.vim_enabled, cx))
             }
+            Self::Graph { state, .. } => {
+                let state = state.clone();
+                state.update(cx, |s, cx| s.execute_command(cmd_id, viewport, vim.vim_enabled, cx))
+            }
         }
     }
 
@@ -136,6 +152,9 @@ impl ActiveItem {
                 state.read(cx).item_get_candidates(delegate_id, input)
             }
             Self::Pdf { state, .. } => {
+                state.read(cx).get_candidates(delegate_id, input)
+            }
+            Self::Graph { state, .. } => {
                 state.read(cx).get_candidates(delegate_id, input)
             }
         }
@@ -158,6 +177,10 @@ impl ActiveItem {
                 let state = state.clone();
                 state.update(cx, |s, cx| s.handle_confirm(delegate_id, input, candidate, cx))
             }
+            Self::Graph { state, .. } => {
+                let state = state.clone();
+                state.update(cx, |s, cx| s.handle_confirm(delegate_id, input, candidate, cx))
+            }
         }
     }
 
@@ -174,6 +197,10 @@ impl ActiveItem {
                 let state = state.clone();
                 state.update(cx, |s, cx| s.on_input_changed(delegate_id, input, cx));
             }
+            Self::Graph { state, .. } => {
+                let state = state.clone();
+                state.update(cx, |s, cx| s.on_input_changed(delegate_id, input, cx));
+            }
         }
     }
 
@@ -182,6 +209,7 @@ impl ActiveItem {
         match self {
             Self::Editor { .. } => false,
             Self::Pdf { .. } => delegate_id == "pdf-search",
+            Self::Graph { .. } => false,
         }
     }
 
@@ -195,11 +223,16 @@ impl ActiveItem {
         matches!(self, Self::Editor { .. })
     }
 
+    pub fn is_graph(&self) -> bool {
+        matches!(self, Self::Graph { .. })
+    }
+
     /// Get the view element for rendering.
     pub fn view_element(&self) -> AnyView {
         match self {
             Self::Editor { view, .. } => view.clone().into(),
             Self::Pdf { view, .. } => view.clone().into(),
+            Self::Graph { view, .. } => view.clone().into(),
         }
     }
 
@@ -208,6 +241,7 @@ impl ActiveItem {
         match self {
             Self::Editor { state, .. } => state.read(cx).focus(window),
             Self::Pdf { state, .. } => state.read(cx).focus(window),
+            Self::Graph { state, .. } => state.read(cx).focus(window),
         }
     }
 
@@ -234,6 +268,14 @@ impl ActiveItem {
                 let zoom_pct = (ps.zoom * 100.0) as u32;
                 format!("PDF {}/{} {}%", current, ps.page_count, zoom_pct)
             }
+            Self::Graph { state, .. } => {
+                let gs = state.read(cx);
+                let n = gs.nodes.len();
+                let e = gs.edges.len();
+                let zoom_pct = (gs.zoom * 100.0) as u32;
+                let mode = if gs.local_mode { "local" } else { "global" };
+                format!("Graph {} nodes {} edges {}% {}", n, e, zoom_pct, mode)
+            }
         }
     }
 
@@ -242,6 +284,7 @@ impl ActiveItem {
         match self {
             Self::Editor { .. } => ("EDI", 0x268BD2),  // solarized blue (overridden by vim state)
             Self::Pdf { .. } => ("PDF", 0xCB4B16),      // solarized orange
+            Self::Graph { .. } => ("GRP", 0x6C71C4),    // solarized violet
         }
     }
 }
