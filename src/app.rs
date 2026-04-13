@@ -422,27 +422,20 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 }
                 if let Some(ref pv) = self.pdf_view {
                     let state = pv.read(cx).state.clone();
-                    // Results are already populated by the async search triggered on input.
-                    // Jump to the selected candidate's page if one was chosen.
                     state.update(cx, |s, cx| {
-                        if let Some(target_page) = selected_page {
-                            if let Some(idx) = s.search_hits.iter()
-                                .position(|h| h.page == target_page)
-                            {
-                                s.search_current = idx;
-                            }
+                        // Jump directly to the selected page — don't wait for quads
+                        if let Some(page) = selected_page {
+                            s.goto_page(page);
+                        } else if !s.search_hits.is_empty() {
+                            s.scroll_to_current_match();
                         }
-                        s.scroll_to_current_match();
                         cx.notify();
                     });
-                    let hits = state.read(cx).search_hits.len();
-                    let cur = state.read(cx).search_current;
-                    if hits > 0 {
+                    let total = state.read(cx).search_preview.len();
+                    if total > 0 {
                         self.minibuffer.set_message(
-                            format!("Match {}/{}", cur + 1, hits)
+                            format!("{} matches", total)
                         );
-                    } else if state.read(cx).search_pending {
-                        self.minibuffer.set_message("Searching…");
                     } else {
                         self.minibuffer.set_message(
                             format!("No matches for '{}'", query)
