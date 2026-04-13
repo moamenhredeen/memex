@@ -103,6 +103,38 @@ impl EditorState {
         self.buffer.len_bytes()
     }
 
+    /// Check if a byte offset falls within a [[wikilink]] span.
+    /// Returns the wikilink target title if found.
+    pub fn wikilink_at_offset(&self, offset: usize) -> Option<String> {
+        let content = self.content();
+        let line_idx = self.display_map.line_for_offset(offset);
+        let line_offset = self.display_map.line_offset(line_idx);
+        let info = self.display_map.line_info(line_idx);
+        let pos_in_line = offset - line_offset;
+
+        for span in &info.spans {
+            if span.kind == crate::markdown::StyleKind::Wikilink
+                && pos_in_line >= span.range.start
+                && pos_in_line < span.range.end
+            {
+                let line_end = content[line_offset..]
+                    .find('\n')
+                    .map(|i| line_offset + i)
+                    .unwrap_or(content.len());
+                let line_text = &content[line_offset..line_end];
+                if let Some(raw) = line_text.get(span.range.clone()) {
+                    if let Some(inner) = raw.strip_prefix("[[").and_then(|s| s.strip_suffix("]]")) {
+                        let target = inner.split('|').next().unwrap_or(inner).trim();
+                        if !target.is_empty() {
+                            return Some(target.to_string());
+                        }
+                    }
+                }
+            }
+        }
+        None
+    }
+
     pub fn set_content(&mut self, content: String, _window: &mut Window, cx: &mut Context<Self>) {
         self.buffer = Rope::from_str(&content);
         self.cursor = 0;
@@ -1578,6 +1610,10 @@ pub enum EditorEvent {
     RequestVaultOpen,
     RequestNoteSearch,
     RequestCommand,
+    /// User clicked a [[wikilink]] — title is the link target.
+    WikilinkClicked(String),
+    /// User typed [[ — request autocomplete from the app via minibuffer.
+    WikilinkAutocomplete,
 }
 
 impl EventEmitter<EditorEvent> for EditorState {}

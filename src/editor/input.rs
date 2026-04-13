@@ -99,6 +99,15 @@ impl EntityInputHandler for EditorState {
         self.marked_range.take();
         self.blink_cursor.update(cx, |bc, cx| bc.pause(cx));
         cx.emit(EditorEvent::Changed);
+
+        // Detect [[ typed — trigger wikilink autocomplete
+        if new_text == "[" && self.cursor >= 2 {
+            let content = self.content();
+            if content.get(self.cursor - 2..self.cursor) == Some("[[") {
+                cx.emit(EditorEvent::WikilinkAutocomplete);
+            }
+        }
+
         cx.notify();
     }
 

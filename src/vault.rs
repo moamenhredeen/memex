@@ -38,6 +38,40 @@ impl Vault {
             .map(|p| (fs::title_from_path(p), p.clone()))
             .collect()
     }
+
+    /// Find notes that contain [[target]] wikilinks pointing to the given note title.
+    pub fn find_backlinks(&self, target_title: &str) -> Vec<(String, PathBuf)> {
+        let target_lower = target_title.to_lowercase();
+        let mut results = Vec::new();
+
+        for note_path in &self.notes {
+            let note_title = fs::title_from_path(note_path);
+            // Skip self-references
+            if note_title.to_lowercase() == target_lower {
+                continue;
+            }
+
+            let full_path = if note_path.is_absolute() {
+                note_path.clone()
+            } else {
+                self.path.join(note_path)
+            };
+
+            if let Ok(content) = std::fs::read_to_string(&full_path) {
+                // Check for [[target_title]] (case-insensitive)
+                let content_lower = content.to_lowercase();
+                let patterns = [
+                    format!("[[{}]]", target_lower),
+                    format!("[[{}|", target_lower), // [[target|display text]]
+                ];
+                if patterns.iter().any(|p| content_lower.contains(p)) {
+                    results.push((note_title, note_path.clone()));
+                }
+            }
+        }
+
+        results
+    }
 }
 
 /// Persisted registry of known vaults.

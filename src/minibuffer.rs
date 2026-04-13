@@ -53,6 +53,10 @@ pub enum DelegateKind {
     NoteSearch,
     /// Note search that opens result in the right split panel.
     SplitNoteSearch,
+    /// Wikilink autocomplete — inserts [[selected-title]] at cursor.
+    WikilinkAutocomplete,
+    /// Backlinks — shows notes that link to the current note.
+    Backlinks,
     /// Recent vaults picker (:vault-switch) — MRU-ordered registered vaults.
     VaultSwitch,
     /// Directory browser (:vault-open) — navigate filesystem to choose a vault.

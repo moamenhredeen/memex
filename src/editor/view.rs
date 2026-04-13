@@ -2,7 +2,7 @@ use gpui::*;
 
 use super::commands::EditorCommand;
 use super::element::EditorElement;
-use super::{EditorState, TabAction, ShiftTabAction};
+use super::{EditorEvent, EditorState, TabAction, ShiftTabAction};
 
 pub struct EditorView {
     pub state: Entity<EditorState>,
@@ -53,6 +53,17 @@ impl Render for EditorView {
                 cx.listener(|this, e: &MouseDownEvent, window, cx| {
                     this.is_selecting = true;
                     let pos = this.state.read(cx).index_for_mouse_position(e.position);
+
+                    // Check for wikilink click (Ctrl+click or plain click)
+                    if let Some(title) = this.state.read(cx).wikilink_at_offset(pos) {
+                        this.is_selecting = false;
+                        this.state.update(cx, |state, cx| {
+                            cx.emit(EditorEvent::WikilinkClicked(title));
+                            let _ = state;
+                        });
+                        return;
+                    }
+
                     this.state.update(cx, |state, cx| {
                         if e.modifiers.shift {
                             state.select_to(pos, cx);

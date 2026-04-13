@@ -110,6 +110,12 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     EditorEvent::RequestCommand => {
                         this.activate_command_palette(window, cx);
                     }
+                    EditorEvent::WikilinkClicked(title) => {
+                        this.follow_wikilink(title.clone(), window, cx);
+                    }
+                    EditorEvent::WikilinkAutocomplete => {
+                        this.activate_wikilink_autocomplete(window, cx);
+                    }
                 }
             },
         );
@@ -194,6 +200,43 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         cx.notify();
     }
 
+    fn activate_wikilink_autocomplete(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let vim = self.keymap.vim_enabled;
+        self.minibuffer.activate(DelegateKind::WikilinkAutocomplete, "Link to:", vim);
+        self.minibuffer_focus.focus(window);
+        cx.notify();
+    }
+
+    fn activate_backlinks(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let vim = self.keymap.vim_enabled;
+        self.minibuffer.activate(DelegateKind::Backlinks, "Backlinks:", vim);
+        self.minibuffer_focus.focus(window);
+        cx.notify();
+    }
+
+    /// Follow a [[wikilink]]: open the note if it exists, create it otherwise.
+    fn follow_wikilink(
+        &mut self,
+        title: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Search for a matching note in the vault
+        if let Some(vault) = &self.state.vault {
+            let titles = vault.note_titles();
+            let target_lower = title.to_lowercase();
+            if let Some((_, path)) = titles.iter().find(|(t, _)| t.to_lowercase() == target_lower)
+            {
+                let path = path.clone();
+                self.open_note_by_path(path, window, cx);
+                return;
+            }
+        }
+        // No match — create the note
+        self.create_note_by_title(&title, window, cx);
+        self.minibuffer.set_message(format!("Created \"{}\"", title));
+    }
+
     fn dismiss_minibuffer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.minibuffer.dismiss();
         self.active_item.focus(window, cx);
@@ -260,6 +303,12 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             DelegateKind::SplitNoteSearch => {
                 self.get_note_candidates()
             }
+            DelegateKind::WikilinkAutocomplete => {
+                self.get_wikilink_candidates()
+            }
+            DelegateKind::Backlinks => {
+                self.get_backlink_candidates()
+            }
             DelegateKind::VaultSwitch => {
                 self.get_vault_switch_candidates()
             }
@@ -324,6 +373,25 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                         self.dismiss_minibuffer(window, cx);
                         self.open_in_split_by_path(path, window, cx);
                     }
+                }
+            }
+            DelegateKind::WikilinkAutocomplete => {
+                if let Some(candidate) = candidates.get(selected) {
+                    let title = candidate.data.clone();
+                    self.dismiss_minibuffer(window, cx);
+                    self.insert_wikilink_completion(&title, window, cx);
+                } else if !input.is_empty() {
+                    // Use typed text as-is
+                    let title = input.clone();
+                    self.dismiss_minibuffer(window, cx);
+                    self.insert_wikilink_completion(&title, window, cx);
+                }
+            }
+            DelegateKind::Backlinks => {
+                if let Some(candidate) = candidates.get(selected) {
+                    let path = std::path::PathBuf::from(&candidate.data);
+                    self.dismiss_minibuffer(window, cx);
+                    self.open_note_by_path(path, window, cx);
                 }
             }
             DelegateKind::VaultSwitch => {
@@ -453,6 +521,9 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             "close-split" | "close-graph" => {
                 self.close_split(window, cx);
             }
+            "backlinks" => {
+                self.activate_backlinks(window, cx);
+            }
             "notes" => {
                 self.activate_note_search(window, cx);
             }
@@ -544,6 +615,113 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         }
 
         candidates
+    }
+
+    /// Build candidates for wikilink autocomplete — vault note titles only (no PDFs, no "create").
+    fn get_wikilink_candidates(&self) -> Vec<Candidate> {
+        let results = self.search_notes(&self.minibuffer.input);
+        results
+            .into_iter()
+            .filter(|(_, path)| path.extension().and_then(|e| e.to_str()) != Some("pdf"))
+            .map(|(title, _path)| Candidate {
+                label: title.clone(),
+                detail: None,
+                is_action: false,
+                data: title,
+            })
+            .collect()
+    }
+
+    /// Build candidates for backlinks — notes that link to the current note.
+    fn get_backlink_candidates(&self) -> Vec<Candidate> {
+        let current_title = self.state.current_title();
+        if current_title.is_empty() {
+            return vec![];
+        }
+        let vault = match &self.state.vault {
+            Some(v) => v,
+            None => return vec![],
+        };
+        let backlinks = vault.find_backlinks(&current_title);
+        let query = &self.minibuffer.input;
+
+        if query.is_empty() {
+            return backlinks
+                .into_iter()
+                .map(|(title, path)| Candidate {
+                    label: title,
+                    detail: None,
+                    is_action: false,
+                    data: path.to_string_lossy().to_string(),
+                })
+                .collect();
+        }
+
+        let matcher = SkimMatcherV2::default();
+        let mut scored: Vec<(i64, String, std::path::PathBuf)> = backlinks
+            .into_iter()
+            .filter_map(|(title, path)| {
+                matcher
+                    .fuzzy_match(&title, query)
+                    .map(|score| (score, title, path))
+            })
+            .collect();
+        scored.sort_by(|a, b| b.0.cmp(&a.0));
+        scored
+            .into_iter()
+            .take(MAX_RESULTS)
+            .map(|(_, title, path)| Candidate {
+                label: title,
+                detail: None,
+                is_action: false,
+                data: path.to_string_lossy().to_string(),
+            })
+            .collect()
+    }
+
+    /// Insert a wikilink completion at the editor cursor.
+    /// Replaces the `[[` already typed with `[[title]]`.
+    fn insert_wikilink_completion(
+        &mut self,
+        title: &str,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let editor = self.editor_state.clone();
+        editor.update(cx, |state, cx| {
+            // The cursor should be right after the `[[` that triggered autocomplete.
+            // Replace `[[` with `[[title]]`
+            let cursor = state.cursor;
+            if cursor >= 2 {
+                let content = state.content();
+                if content.get(cursor - 2..cursor) == Some("[[") {
+                    let range = (cursor - 2)..cursor;
+                    let replacement = format!("[[{}]]", title);
+                    let old_text = "[[".to_string();
+                    let cursor_before = state.cursor;
+                    let selection_before = state.selected_range.clone();
+
+                    state.rope_replace(range.clone(), &replacement);
+                    let new_cursor = range.start + replacement.len();
+
+                    state.history.record(
+                        crate::editor::undo::EditOp {
+                            range,
+                            old_text,
+                            new_text: replacement,
+                            cursor_before,
+                            cursor_after: new_cursor,
+                        },
+                        selection_before,
+                    );
+
+                    state.cursor = new_cursor;
+                    state.selected_range = new_cursor..new_cursor;
+                    cx.emit(EditorEvent::Changed);
+                    cx.notify();
+                }
+            }
+        });
     }
 
     /// Build candidates for `:vault-switch` — MRU-ordered recent vaults.
@@ -714,6 +892,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             Command { id: "open-graph", name: "Open Graph", description: "Open the vault graph in a split panel", aliases: &["graph"], binding: None },
             Command { id: "split-open", name: "Split Open", description: "Open a note or PDF in the right split panel", aliases: &["vs", "vsplit", "split"], binding: None },
             Command { id: "close-split", name: "Close Split", description: "Close the right split panel", aliases: &[], binding: None },
+            Command { id: "backlinks", name: "Backlinks", description: "Show notes that link to the current note", aliases: &["bl", "references"], binding: None },
         ]
     }
 
