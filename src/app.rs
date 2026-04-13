@@ -361,9 +361,11 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 }
                 ItemAction::ActivateLayer(layer_id) => {
                     self.keymap.stack.activate_layer(layer_id);
+                    self.sync_editor_vim_flags(cx);
                 }
                 ItemAction::SetVimEnabled(enabled) => {
                     self.keymap.set_vim_enabled(enabled);
+                    self.sync_editor_vim_flags(cx);
                 }
                 ItemAction::SyncVimFlags => {
                     self.sync_editor_vim_flags(cx);
