@@ -158,7 +158,18 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
 
     fn dismiss_minibuffer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.minibuffer.dismiss();
-        self.editor_state.read(cx).focus(window);
+        match self.view_mode {
+            ViewMode::Pdf => {
+                if let Some(ref pv) = self.pdf_view {
+                    pv.read(cx).state.read(cx).focus(window);
+                } else {
+                    self.editor_state.read(cx).focus(window);
+                }
+            }
+            ViewMode::Editor => {
+                self.editor_state.read(cx).focus(window);
+            }
+        }
         cx.notify();
     }
 
@@ -800,7 +811,9 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     let ps = pv.read(cx).state.read(cx);
                     let page_count = ps.page_count;
                     let zoom_pct = (ps.zoom * 100.0) as u32;
-                    format!("PDF {}/{} {}%", 1, page_count, zoom_pct)
+                    let (first, _) = ps.visible_range(600.0);
+                    let current = first + 1;
+                    format!("PDF {}/{} {}%", current, page_count, zoom_pct)
                 } else {
                     String::new()
                 }
@@ -1066,7 +1079,7 @@ impl Render for Memex {
             .child(self.render_title_bar(cx))
             // Main content area: editor or PDF viewer
             .child({
-                let content = div().flex_1().w_full();
+                let content = div().flex_1().w_full().overflow_hidden();
                 match self.view_mode {
                     ViewMode::Editor => content.child(self.editor_view.clone()),
                     ViewMode::Pdf => {
