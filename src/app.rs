@@ -1442,12 +1442,23 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 rgb(0x657B83) // base00 — normal text
             };
 
-            let mut row = h_flex().gap(px(8.)).child(
+            let label_element = if self.minibuffer.delegate_kind == DelegateKind::PdfSearch
+                && !self.minibuffer.input.is_empty()
+            {
+                // Highlight the search term within the candidate label
+                render_highlighted_label(
+                    &candidate.label,
+                    &self.minibuffer.input,
+                    text_color,
+                )
+            } else {
                 div()
                     .text_size(px(13.))
                     .text_color(text_color)
-                    .child(candidate.label.clone()),
-            );
+                    .child(candidate.label.clone())
+            };
+
+            let mut row = h_flex().gap(px(8.)).child(label_element);
 
             if let Some(detail) = &candidate.detail {
                 row = row.child(
@@ -1704,5 +1715,68 @@ impl Render for Memex {
         }
 
         root
+    }
+}
+
+/// Render a label with the search term highlighted in a distinct color.
+fn render_highlighted_label(
+    label: &str,
+    query: &str,
+    base_color: impl Into<Hsla> + Copy,
+) -> Div {
+    let highlight_color = rgb(0xCB4B16); // solarized orange
+    let base_hsla: Hsla = base_color.into();
+    let label_lower = label.to_lowercase();
+    let query_lower = query.to_lowercase();
+
+    let mut container = div().text_size(px(13.)).flex().flex_row();
+    let mut pos = 0;
+
+    while pos < label.len() {
+        if let Some(match_start) = label_lower[pos..].find(&query_lower) {
+            let abs_start = pos + match_start;
+            let abs_end = abs_start + query_lower.len();
+            // Snap to char boundaries
+            let abs_start = snap_to_char(label, abs_start, false);
+            let abs_end = snap_to_char(label, abs_end, true);
+
+            // Text before match
+            if abs_start > pos {
+                container = container.child(
+                    div().text_color(base_hsla).child(label[pos..abs_start].to_string()),
+                );
+            }
+            // Highlighted match
+            container = container.child(
+                div()
+                    .text_color(highlight_color)
+                    .font_weight(FontWeight::BOLD)
+                    .child(label[abs_start..abs_end].to_string()),
+            );
+            pos = abs_end;
+        } else {
+            // Remaining text after last match
+            container = container.child(
+                div().text_color(base_hsla).child(label[pos..].to_string()),
+            );
+            break;
+        }
+    }
+
+    container
+}
+
+/// Snap byte index to a valid char boundary.
+fn snap_to_char(s: &str, idx: usize, ceil: bool) -> usize {
+    if idx >= s.len() { return s.len(); }
+    if s.is_char_boundary(idx) { return idx; }
+    if ceil {
+        let mut i = idx;
+        while i < s.len() && !s.is_char_boundary(i) { i += 1; }
+        i
+    } else {
+        let mut i = idx;
+        while i > 0 && !s.is_char_boundary(i) { i -= 1; }
+        i
     }
 }
