@@ -1099,6 +1099,10 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         let pdf_view = cx.new(|cx| PdfView::new(pdf_state.clone(), cx));
         pdf_state.read(cx).focus(window);
         self.pdf_view = Some(pdf_view);
+        // Observe PdfState so Memex re-renders when async operations complete
+        // (e.g., background search results arriving)
+        let pdf_sub = cx.observe(&pdf_state, |_, _, cx| cx.notify());
+        self._subscriptions.push(pdf_sub);
         // Switch to PDF mode via mode registry
         let plan = self.mode_registry.switch_mode("pdf");
         plan.apply(&mut self.keymap.stack);
