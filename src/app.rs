@@ -675,6 +675,14 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 }, window);
             }
             "pdf-search" => {
+                // Clear previous search results
+                if let Some(ref pv) = self.pdf_view {
+                    let state = pv.read(cx).state.clone();
+                    state.update(cx, |s, cx| {
+                        s.clear_search();
+                        cx.notify();
+                    });
+                }
                 let vim = self.keymap.vim_enabled;
                 self.minibuffer.activate(DelegateKind::PdfSearch, "Search:", vim);
                 self.minibuffer_focus.focus(window);
