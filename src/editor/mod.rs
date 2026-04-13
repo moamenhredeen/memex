@@ -666,6 +666,10 @@ impl EditorState {
                 self.edit_text(&lower, cx);
             }
             OutlineCycleFold => {
+                // Table tab takes priority over outline folding
+                if self.handle_table_tab(true, cx) {
+                    return;
+                }
                 let content = self.content();
                 self.display_map.update(&content);
                 let kinds = self.display_map.line_kinds();
@@ -684,6 +688,10 @@ impl EditorState {
                 }
             }
             OutlineGlobalCycle => {
+                // Table shift-tab takes priority over global cycle
+                if self.handle_table_tab(false, cx) {
+                    return;
+                }
                 let content = self.content();
                 self.display_map.update(&content);
                 let kinds = self.display_map.line_kinds();
