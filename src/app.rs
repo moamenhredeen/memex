@@ -1096,6 +1096,8 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
 
         self.state.current_note = Some(path.clone());
         let pdf_state = cx.new(|cx| PdfState::new(&path, cx).expect("PDF already validated"));
+        // Pre-extract text from all pages on background thread for fast search
+        pdf_state.update(cx, |s, cx| s.extract_text_cache(cx));
         let pdf_view = cx.new(|cx| PdfView::new(pdf_state.clone(), cx));
         pdf_state.read(cx).focus(window);
         self.pdf_view = Some(pdf_view);

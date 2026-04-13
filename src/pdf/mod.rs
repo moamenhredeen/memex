@@ -88,6 +88,9 @@ pub struct PdfState {
     pub dark_mode: bool,
     /// Two-page spread mode
     pub spread_mode: bool,
+    /// Extracted text per page — populated once on open, used for fast search.
+    /// None = extraction not yet complete.
+    text_cache: Option<Vec<String>>,
     /// Current search query (empty = no active search).
     pub search_query: String,
     /// All search hits across the document.
@@ -129,6 +132,7 @@ impl PdfState {
             page_rotations: HashMap::new(),
             dark_mode: false,
             spread_mode: false,
+            text_cache: None,
             search_query: String::new(),
             search_hits: Vec::new(),
             search_current: 0,
@@ -136,6 +140,29 @@ impl PdfState {
             search_pending: false,
             search_generation: 0,
         })
+    }
+
+    /// Extract text from all pages on a background thread for fast search.
+    /// Called once after opening a PDF.
+    pub fn extract_text_cache(&mut self, cx: &mut Context<Self>) {
+        let raw_bytes = self.raw_bytes.clone();
+        let page_count = self.page_count;
+
+        cx.spawn(async move |this, cx| {
+            let texts = cx
+                .background_executor()
+                .spawn(async move {
+                    extract_all_text(&raw_bytes, page_count)
+                })
+                .await;
+
+            this.update(cx, |state, cx| {
+                state.text_cache = Some(texts);
+                cx.notify();
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Extract internal links from all pages.
@@ -409,8 +436,9 @@ impl PdfState {
         }
     }
 
-    /// Launch a debounced async search across all pages.
-    /// Old results stay visible until the new search completes.
+    /// Launch a debounced search. Uses the pre-extracted text cache for instant
+    /// text matching, then only calls mupdf page.search() on a background thread
+    /// for highlight quads.
     pub fn request_search(&mut self, query: &str, cx: &mut Context<Self>) {
         self.search_query = query.to_string();
         self.search_generation += 1;
@@ -425,46 +453,76 @@ impl PdfState {
             return;
         }
 
-        self.search_pending = true;
-        let raw_bytes = self.raw_bytes.clone();
-        let page_count = self.page_count;
-        let needle = query.to_string();
+        // If text cache is ready, search it instantly (no background thread needed
+        // for previews — only for highlight quads).
+        if let Some(ref texts) = self.text_cache {
+            let (previews, match_pages) = search_text_cache(texts, query, 50);
+            self.search_preview = previews;
+            cx.notify();
 
-        cx.spawn(async move |this, cx| {
-            // Debounce: wait 150ms, then check if query is still current
-            cx.background_executor()
-                .timer(std::time::Duration::from_millis(150))
-                .await;
+            // Spawn background thread only for highlight quads on matched pages
+            self.search_pending = true;
+            let raw_bytes = self.raw_bytes.clone();
+            let needle = query.to_string();
 
-            // Check if a newer search was requested while we waited
-            let still_current = this
-                .update(cx, |state, _| state.search_generation == search_gen)
-                .unwrap_or(false);
-            if !still_current {
-                return;
-            }
+            cx.spawn(async move |this, cx| {
+                let hits = cx
+                    .background_executor()
+                    .spawn(async move {
+                        search_quads_for_pages(&raw_bytes, &match_pages, &needle)
+                    })
+                    .await;
 
-            let (hits, previews) = cx
-                .background_executor()
-                .spawn(async move {
-                    search_background(&raw_bytes, page_count, &needle)
+                this.update(cx, |state, cx| {
+                    if state.search_generation == search_gen {
+                        state.search_hits = hits;
+                        state.search_current = 0;
+                        state.search_pending = false;
+                        state.scroll_to_current_match();
+                        cx.notify();
+                    }
                 })
-                .await;
-
-            this.update(cx, |state, cx| {
-                // Only apply if this is still the latest search
-                if state.search_generation == search_gen {
-                    state.search_hits = hits;
-                    state.search_preview = previews;
-                    state.search_current = 0;
-                    state.search_pending = false;
-                    state.scroll_to_current_match();
-                    cx.notify();
-                }
+                .ok();
             })
-            .ok();
-        })
-        .detach();
+            .detach();
+        } else {
+            // Text cache not ready yet — fall back to full background search
+            self.search_pending = true;
+            let raw_bytes = self.raw_bytes.clone();
+            let page_count = self.page_count;
+            let needle = query.to_string();
+
+            cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(150))
+                    .await;
+
+                let still_current = this
+                    .update(cx, |state, _| state.search_generation == search_gen)
+                    .unwrap_or(false);
+                if !still_current { return; }
+
+                let (hits, previews) = cx
+                    .background_executor()
+                    .spawn(async move {
+                        search_background(&raw_bytes, page_count, &needle)
+                    })
+                    .await;
+
+                this.update(cx, |state, cx| {
+                    if state.search_generation == search_gen {
+                        state.search_hits = hits;
+                        state.search_preview = previews;
+                        state.search_current = 0;
+                        state.search_pending = false;
+                        state.scroll_to_current_match();
+                        cx.notify();
+                    }
+                })
+                .ok();
+            })
+            .detach();
+        }
     }
 
     /// Jump to the next search match, wrapping around.
@@ -509,6 +567,93 @@ impl PdfState {
             .filter(|(_, h)| h.page == page_index)
             .collect()
     }
+}
+
+/// Extract text from all pages (runs on background thread on PDF open).
+fn extract_all_text(raw_bytes: &[u8], page_count: usize) -> Vec<String> {
+    let mut texts = Vec::with_capacity(page_count);
+    let doc = match Document::from_bytes(raw_bytes, "") {
+        Ok(d) => d,
+        Err(_) => return vec![String::new(); page_count],
+    };
+    for i in 0..page_count {
+        let text = doc
+            .load_page(i as i32)
+            .ok()
+            .and_then(|p| p.to_text_page(mupdf::TextPageFlags::empty()).ok())
+            .and_then(|tp| tp.to_text().ok())
+            .unwrap_or_default();
+        texts.push(text);
+    }
+    texts
+}
+
+/// Search the pre-cached text for a query. Returns context previews and
+/// the set of pages with matches (for quad extraction).
+fn search_text_cache(
+    texts: &[String],
+    query: &str,
+    max_previews: usize,
+) -> (Vec<(usize, String)>, Vec<usize>) {
+    let query_lower = query.to_lowercase();
+    let mut previews = Vec::new();
+    let mut match_pages = Vec::new();
+    let mut last_page = usize::MAX;
+
+    for (page_idx, text) in texts.iter().enumerate() {
+        let text_lower = text.to_lowercase();
+        let mut search_from = 0;
+        let mut page_has_match = false;
+
+        while let Some(pos) = text_lower[search_from..].find(&query_lower) {
+            page_has_match = true;
+            if previews.len() < max_previews {
+                let abs_pos = search_from + pos;
+                let ctx_start = snap_floor(&text_lower, abs_pos.saturating_sub(40));
+                let ctx_end = snap_ceil(
+                    &text_lower,
+                    (abs_pos + query_lower.len() + 40).min(text_lower.len()),
+                );
+                let mut snippet: String = text_lower[ctx_start..ctx_end]
+                    .replace('\n', " ")
+                    .replace('\r', "");
+                if ctx_start > 0 { snippet.insert_str(0, "…"); }
+                if ctx_end < text_lower.len() { snippet.push('…'); }
+                previews.push((page_idx, snippet));
+            }
+            search_from = search_from + pos + query_lower.len();
+        }
+
+        if page_has_match && page_idx != last_page {
+            match_pages.push(page_idx);
+            last_page = page_idx;
+        }
+    }
+
+    (previews, match_pages)
+}
+
+/// Get highlight quads only for pages known to have matches.
+fn search_quads_for_pages(
+    raw_bytes: &[u8],
+    pages: &[usize],
+    query: &str,
+) -> Vec<SearchHit> {
+    let mut hits = Vec::new();
+    let doc = match Document::from_bytes(raw_bytes, "") {
+        Ok(d) => d,
+        Err(_) => return hits,
+    };
+    for &page_idx in pages {
+        if let Ok(page) = doc.load_page(page_idx as i32) {
+            if let Ok(quads) = page.search(query, 100) {
+                for quad in quads {
+                    hits.push(SearchHit { page: page_idx, quad });
+                }
+            }
+        }
+    }
+    hits
 }
 
 /// Snap a byte index to a valid char boundary (rounding down).
