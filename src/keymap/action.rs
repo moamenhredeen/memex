@@ -44,16 +44,23 @@ pub struct KeyCombo {
 
 impl KeyCombo {
     /// Create from gpui keystroke event data.
+    /// Normalizes uppercase single chars to shift+lowercase for consistency.
     pub fn from_keystroke(key: &str, ctrl: bool, shift: bool, alt: bool) -> Self {
-        Self {
-            key: key.to_string(),
-            ctrl,
-            shift,
-            alt,
+        let mut key = key.to_string();
+        let mut shift = shift;
+        if key.len() == 1 {
+            let ch = key.chars().next().unwrap();
+            if ch.is_ascii_uppercase() {
+                key = ch.to_ascii_lowercase().to_string();
+                shift = true;
+            }
         }
+        Self { key, ctrl, shift, alt }
     }
 
     /// Parse from a string like "ctrl-z", "shift-left", "a", "enter".
+    /// Single uppercase letters (e.g. "G", "N") are normalized to shift+lowercase
+    /// to match how gpui reports keystrokes.
     pub fn parse(s: &str) -> Self {
         let mut ctrl = false;
         let mut shift = false;
@@ -75,6 +82,15 @@ impl KeyCombo {
                 }
             } else {
                 key = part.to_string();
+            }
+        }
+
+        // Normalize single uppercase letter → shift + lowercase
+        if key.len() == 1 {
+            let ch = key.chars().next().unwrap();
+            if ch.is_ascii_uppercase() {
+                key = ch.to_ascii_lowercase().to_string();
+                shift = true;
             }
         }
 

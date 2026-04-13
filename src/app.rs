@@ -279,8 +279,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 self.get_pdf_goto_page_candidates(cx)
             }
             DelegateKind::PdfSearch => {
-                // No candidates — search is a raw text input
-                Vec::new()
+                self.get_pdf_search_candidates(cx)
             }
         }
     }
@@ -398,6 +397,9 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             }
             DelegateKind::PdfSearch => {
                 let query = input.clone();
+                // If user selected a specific candidate, use it to set initial match page
+                let selected_page = candidates.get(selected)
+                    .and_then(|c| c.data.parse::<usize>().ok());
                 self.dismiss_minibuffer(window, cx);
                 if query.is_empty() {
                     if let Some(ref pv) = self.pdf_view {
@@ -413,16 +415,22 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     let state = pv.read(cx).state.clone();
                     state.update(cx, |s, cx| {
                         s.search(&query);
+                        // If user selected a specific result, jump to that match
+                        if let Some(target_page) = selected_page {
+                            if let Some(idx) = s.search_hits.iter()
+                                .position(|h| h.page == target_page)
+                            {
+                                s.search_current = idx;
+                            }
+                        }
+                        s.scroll_to_current_match();
                         cx.notify();
                     });
                     let hits = state.read(cx).search_hits.len();
+                    let cur = state.read(cx).search_current;
                     if hits > 0 {
-                        state.update(cx, |s, cx| {
-                            s.scroll_to_current_match();
-                            cx.notify();
-                        });
                         self.minibuffer.set_message(
-                            format!("Match 1/{}", hits)
+                            format!("Match {}/{}", cur + 1, hits)
                         );
                     } else {
                         self.minibuffer.set_message(
@@ -976,6 +984,26 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             }
         }
         Vec::new()
+    }
+
+    fn get_pdf_search_candidates(&self, cx: &App) -> Vec<Candidate> {
+        let query = self.minibuffer.input.trim();
+        if query.is_empty() {
+            return Vec::new();
+        }
+        let state = match self.pdf_view.as_ref() {
+            Some(pv) => pv.read(cx).state.read(cx),
+            None => return Vec::new(),
+        };
+        let results = state.search_with_context(query, 30);
+        results.into_iter().map(|(page, snippet)| {
+            Candidate {
+                label: format!("p{}: {}", page + 1, snippet),
+                detail: None,
+                is_action: false,
+                data: page.to_string(),
+            }
+        }).collect()
     }
 
     /// Helper to run a closure on PdfState if in PDF mode.

@@ -468,6 +468,54 @@ impl PdfState {
             .filter(|(_, h)| h.page == page_index)
             .collect()
     }
+
+    /// Search all pages and return context snippets for the minibuffer.
+    /// Each result has: label = "Page N: ...context around match...", data = page index.
+    pub fn search_with_context(&self, query: &str, max_results: usize) -> Vec<(usize, String)> {
+        if query.is_empty() {
+            return Vec::new();
+        }
+        let doc = match Document::from_bytes(&self.raw_bytes, "") {
+            Ok(d) => d,
+            Err(_) => return Vec::new(),
+        };
+        let query_lower = query.to_lowercase();
+        let mut results = Vec::new();
+
+        for page_idx in 0..self.page_count {
+            if results.len() >= max_results { break; }
+            let page = match doc.load_page(page_idx as i32) {
+                Ok(p) => p,
+                Err(_) => continue,
+            };
+            let tp = match page.to_text_page(mupdf::TextPageFlags::empty()) {
+                Ok(tp) => tp,
+                Err(_) => continue,
+            };
+            let text = match tp.to_text() {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+            let text_lower = text.to_lowercase();
+            let mut search_from = 0;
+            while let Some(pos) = text_lower[search_from..].find(&query_lower) {
+                if results.len() >= max_results { break; }
+                let abs_pos = search_from + pos;
+                // Extract ~40 chars of context around the match
+                let ctx_start = abs_pos.saturating_sub(30);
+                let ctx_end = (abs_pos + query.len() + 30).min(text.len());
+                let mut snippet: String = text[ctx_start..ctx_end]
+                    .replace('\n', " ")
+                    .replace('\r', "");
+                // Trim to clean word boundaries
+                if ctx_start > 0 { snippet.insert_str(0, "…"); }
+                if ctx_end < text.len() { snippet.push('…'); }
+                results.push((page_idx, snippet));
+                search_from = abs_pos + query.len();
+            }
+        }
+        results
+    }
 }
 
 /// Render a single page on a background thread. Standalone function (not on PdfState)
