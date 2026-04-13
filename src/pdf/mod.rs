@@ -43,6 +43,15 @@ pub struct PageLink {
     pub target_page: usize,
 }
 
+/// A table-of-contents entry extracted from the PDF outline.
+#[derive(Clone, Debug)]
+pub struct TocEntry {
+    pub title: String,
+    pub page: usize,
+    /// Nesting depth (0 = top-level chapter)
+    pub level: usize,
+}
+
 use crate::pdf::scrollbar::DragState;
 
 /// State for an open PDF document.
@@ -62,6 +71,14 @@ pub struct PdfState {
     pending_renders: HashSet<usize>,
     /// Scrollbar drag state (survives across frames)
     pub drag_state: Option<DragState>,
+    /// Table of contents extracted from the PDF outline
+    pub toc: Vec<TocEntry>,
+    /// Per-page rotation in degrees (0, 90, 180, 270)
+    pub page_rotations: HashMap<usize, i32>,
+    /// Invert colors for night reading
+    pub dark_mode: bool,
+    /// Two-page spread mode
+    pub spread_mode: bool,
 }
 
 impl PdfState {
@@ -72,6 +89,7 @@ impl PdfState {
         let page_count = doc.page_count()? as usize;
         let (page_layouts, total_height) = Self::compute_layouts(&doc, page_count, 1.0)?;
         let page_links = Self::extract_links(&doc, page_count);
+        let toc = Self::extract_toc(&doc);
 
         Ok(Self {
             path,
@@ -86,6 +104,10 @@ impl PdfState {
             page_links,
             pending_renders: HashSet::new(),
             drag_state: None,
+            toc,
+            page_rotations: HashMap::new(),
+            dark_mode: false,
+            spread_mode: false,
         })
     }
 
@@ -110,6 +132,47 @@ impl PdfState {
             }
         }
         all_links
+    }
+
+    /// Extract table of contents from the PDF outline tree.
+    fn extract_toc(doc: &Document) -> Vec<TocEntry> {
+        let outlines = match doc.outlines() {
+            Ok(o) => o,
+            Err(_) => return Vec::new(),
+        };
+        let mut entries = Vec::new();
+        Self::flatten_outlines(&outlines, 0, &mut entries);
+        entries
+    }
+
+    /// Recursively flatten the outline tree into a flat list with depth levels.
+    fn flatten_outlines(
+        outlines: &[mupdf::Outline],
+        level: usize,
+        entries: &mut Vec<TocEntry>,
+    ) {
+        for outline in outlines {
+            let page = outline
+                .dest
+                .as_ref()
+                .map(|d| d.loc.page_number as usize)
+                .unwrap_or(0);
+            entries.push(TocEntry {
+                title: outline.title.clone(),
+                page,
+                level,
+            });
+            if !outline.down.is_empty() {
+                Self::flatten_outlines(&outline.down, level + 1, entries);
+            }
+        }
+    }
+
+    /// Go to a 1-based page number (for user-facing commands).
+    pub fn goto_page_number(&mut self, page_number: usize) {
+        if page_number >= 1 && page_number <= self.page_count {
+            self.goto_page(page_number - 1);
+        }
     }
 
     /// Compute page positions from bounds (no rendering — just reads dimensions).
@@ -273,6 +336,45 @@ impl PdfState {
 
     pub fn max_scroll(&self, viewport_height: f32) -> gpui::Pixels {
         px((self.total_height - viewport_height).max(0.0))
+    }
+
+    /// Extract plain text from a page using mupdf's text extraction.
+    pub fn extract_page_text(&self, page_index: usize) -> Option<String> {
+        if page_index >= self.page_count {
+            return None;
+        }
+        let doc = Document::from_bytes(&self.raw_bytes, "").ok()?;
+        let page = doc.load_page(page_index as i32).ok()?;
+        let tp = page.to_text_page(mupdf::TextPageFlags::empty()).ok()?;
+        tp.to_text().ok()
+    }
+
+    /// Compute zoom factor to fit page width to the given viewport width.
+    pub fn fit_width(&mut self, viewport_width: f32) {
+        if self.page_count == 0 { return; }
+        // The rendering uses BASE_WIDTH * zoom as the target width
+        // So zoom = viewport_width / BASE_WIDTH (with some padding)
+        let target = viewport_width - 40.0; // leave some margin
+        self.zoom = (target / BASE_WIDTH).max(0.3).min(3.0);
+        self.invalidate_cache();
+    }
+
+    /// Compute zoom factor to fit entire page in the given viewport.
+    pub fn fit_page(&mut self, viewport_width: f32, viewport_height: f32) {
+        if self.page_count == 0 { return; }
+        if let Ok(doc) = Document::from_bytes(&self.raw_bytes, "") {
+            if let Ok(page) = doc.load_page(0) {
+                if let Ok(bounds) = page.bounds() {
+                    let aspect = bounds.height() / bounds.width();
+                    let target_w = viewport_width - 40.0;
+                    let target_h = viewport_height - PADDING_Y * 2.0;
+                    let zoom_w = target_w / BASE_WIDTH;
+                    let zoom_h = target_h / (BASE_WIDTH * aspect);
+                    self.zoom = zoom_w.min(zoom_h).max(0.3).min(3.0);
+                    self.invalidate_cache();
+                }
+            }
+        }
     }
 }
 

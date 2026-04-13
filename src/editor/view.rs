@@ -48,33 +48,6 @@ impl Render for EditorView {
                     state.dispatch(EditorCommand::OutlineGlobalCycle, window, cx);
                 });
             }))
-            .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
-                let key = e.keystroke.key.as_str();
-                let ctrl = e.keystroke.modifiers.control;
-                let shift = e.keystroke.modifiers.shift;
-                let alt = e.keystroke.modifiers.alt;
-
-                this.state.update(cx, |state, cx| {
-                    let content = state.content();
-                    let cursor = state.cursor;
-
-                    let result = state.keymap.process_key(key, ctrl, shift, alt, &content, cursor);
-
-                    // In insert mode, let OS EntityInputHandler handle plain
-                    // character insertion (supports IME, dead keys, etc.).
-                    // Only execute results that represent explicit bindings.
-                    if state.keymap.is_insert_active() {
-                        if matches!(result, crate::keymap::GrammarResult::InsertChar(_)
-                                         | crate::keymap::GrammarResult::Noop) {
-                            return;
-                        }
-                    }
-
-                    // Keymap handled this key — suppress the OS input that follows.
-                    state.suppress_next_input = true;
-                    state.execute_grammar_result(result, window, cx);
-                });
-            }))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, e: &MouseDownEvent, window, cx| {

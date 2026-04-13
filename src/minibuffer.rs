@@ -58,6 +58,10 @@ pub enum DelegateKind {
     VaultSwitch,
     /// Directory browser (:vault-open) — navigate filesystem to choose a vault.
     VaultOpen,
+    /// PDF table of contents browser — fuzzy-searches TOC entries.
+    PdfToc,
+    /// PDF go-to-page — type a page number and jump to it.
+    PdfGotoPage,
 }
 
 /// Editing mode within the minibuffer input line.

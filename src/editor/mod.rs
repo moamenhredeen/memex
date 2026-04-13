@@ -31,7 +31,7 @@ pub struct EditorState {
     pub last_line_layouts: Vec<LinePaintInfo>,
     pub last_bounds: Option<Bounds<Pixels>>,
     pub history: undo::UndoHistory,
-    pub keymap: crate::keymap::KeymapSystem,
+    pub grammar: crate::keymap::VimGrammar,
     pub display_map: display_map::DisplayMap,
     pub plugins: crate::plugin::PluginEngine,
     pub outline: outline::OutlineState,
@@ -39,6 +39,10 @@ pub struct EditorState {
     pub status_message: Option<String>,
     /// When true, the next OS text input event is suppressed (keymap already handled the key).
     pub suppress_next_input: bool,
+    /// Whether vim is enabled (mirrored from KeymapSystem for input handler)
+    pub vim_enabled: bool,
+    /// Whether insert mode is active (mirrored from KeymapSystem for input handler)
+    pub insert_mode: bool,
     _blink_sub: Subscription,
 }
 
@@ -59,11 +63,7 @@ impl EditorState {
         let mut display = display_map::DisplayMap::new(px(24.));
         display.update(&content);
 
-        let mut plugins = crate::plugin::PluginEngine::new();
-        plugins.load_all_plugins(None);
-
-        let mut keymap = crate::keymap::KeymapSystem::new(true);
-        plugins.apply_bindings_to_keymap(&mut keymap);
+        let plugins = crate::plugin::PluginEngine::new();
 
         Self {
             cursor: 0,
@@ -77,12 +77,14 @@ impl EditorState {
             last_line_layouts: Vec::new(),
             last_bounds: None,
             history: undo::UndoHistory::new(),
-            keymap,
+            grammar: crate::keymap::VimGrammar::new(),
             display_map: display,
             plugins,
             outline: outline::OutlineState::new(),
             status_message: None,
             suppress_next_input: false,
+            vim_enabled: true,
+            insert_mode: false,
             _blink_sub,
         }
     }
@@ -438,14 +440,14 @@ impl EditorState {
                     let char_start = self.buffer.byte_to_char(self.selected_range.start);
                     let char_end = self.buffer.byte_to_char(self.selected_range.end);
                     let text = self.buffer.slice(char_start..char_end).to_string();
-                    self.keymap.grammar.register_content = text;
+                    self.grammar.register_content = text;
                     // Collapse selection
                     let pos = self.selected_range.start;
                     self.move_to(pos, cx);
                 }
             }
             YankText(text) => {
-                self.keymap.grammar.register_content = text;
+                self.grammar.register_content = text;
             }
             DeleteBackward => {
                 if self.selected_range.is_empty() {
@@ -487,22 +489,12 @@ impl EditorState {
             TablePrevCell => {
                 self.handle_table_tab(false, cx);
             }
-            EnterMode(mode_str) => {
-                let layer_id = match mode_str.as_str() {
-                    "insert" => "vim:insert",
-                    "normal" => "vim:normal",
-                    "visual" => "vim:visual",
-                    "visual-line" => "vim:visual-line",
-                    _ => "vim:insert",
-                };
-                self.keymap.stack.activate_layer(layer_id);
-                cx.notify();
+            EnterMode(_) => {
+                // Handled via execute_grammar_result / execute_command_by_id
+                // which have access to the keymap
             }
             ToggleVimMode => {
-                let enabled = !self.keymap.vim_enabled;
-                self.keymap.set_vim_enabled(enabled);
-                self.history.break_coalescing();
-                cx.notify();
+                // Handled via execute_command_by_id which has access to the keymap
             }
             IndentSelection => {
                 let (start, end) = self.ordered_selection();
@@ -737,13 +729,15 @@ impl EditorState {
     pub fn execute_grammar_result(
         &mut self,
         result: crate::keymap::GrammarResult,
+        count: usize,
+        keymap: &mut crate::keymap::KeymapSystem,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         use crate::keymap::GrammarResult;
         match result {
             GrammarResult::MoveCursor(offset) => {
-                if self.keymap.is_visual_active() {
+                if keymap.is_visual_active() {
                     self.select_to(offset, cx);
                 } else {
                     self.move_to(offset, cx);
@@ -753,19 +747,20 @@ impl EditorState {
                 self.dispatch(commands::EditorCommand::InsertChar(ch), window, cx);
             }
             GrammarResult::DeleteRange { range, yanked, enter_insert } => {
-                self.keymap.grammar.register_content = yanked;
+                self.grammar.register_content = yanked;
                 let target = range.start;
                 self.selected_range = range;
                 self.edit_text("", cx);
                 self.move_to(target.min(self.content_len()), cx);
                 if enter_insert {
-                    self.keymap.stack.activate_layer("vim:insert");
+                    keymap.stack.activate_layer("vim:insert");
+                    self.insert_mode = true;
                     self.history.break_coalescing();
                     cx.notify();
                 }
             }
             GrammarResult::Yank(text) => {
-                self.keymap.grammar.register_content = text;
+                self.grammar.register_content = text;
             }
             GrammarResult::IndentRange { line_start, text } => {
                 let at = line_start;
@@ -777,11 +772,11 @@ impl EditorState {
                 self.edit_text("", cx);
             }
             GrammarResult::ExecuteCommand(cmd_id) => {
-                self.execute_command_by_id(cmd_id, window, cx);
+                self.execute_command_by_id(cmd_id, count, keymap, window, cx);
             }
             GrammarResult::Batch(results) => {
                 for r in results {
-                    self.execute_grammar_result(r, window, cx);
+                    self.execute_grammar_result(r, count, keymap, window, cx);
                 }
             }
             GrammarResult::ActivateLayer(layer_id) => {
@@ -809,6 +804,8 @@ impl EditorState {
                     _ => {}
                 }
                 cx.notify();
+                // Sync insert_mode flag for input handler
+                self.insert_mode = keymap.is_insert_active();
             }
             GrammarResult::PushTransient(_) => {
                 // Transient layer was pushed by grammar; nothing to do here
@@ -840,7 +837,29 @@ impl EditorState {
                 let sel = (self.selected_range.start, self.selected_range.end);
                 if let Some(cmds) = self.plugins.run_command(&name, &content, cursor, sel) {
                     for cmd in cmds {
-                        self.dispatch(cmd, window, cx);
+                        match cmd {
+                            commands::EditorCommand::EnterMode(mode_str) => {
+                                let layer_id = match mode_str.as_str() {
+                                    "insert" => "vim:insert",
+                                    "normal" => "vim:normal",
+                                    "visual" => "vim:visual",
+                                    "visual-line" => "vim:visual-line",
+                                    _ => "vim:insert",
+                                };
+                                keymap.stack.activate_layer(layer_id);
+                                self.insert_mode = keymap.is_insert_active();
+                                cx.notify();
+                            }
+                            commands::EditorCommand::ToggleVimMode => {
+                                let enabled = !keymap.vim_enabled;
+                                keymap.set_vim_enabled(enabled);
+                                self.vim_enabled = keymap.vim_enabled;
+                                self.insert_mode = keymap.is_insert_active();
+                                self.history.break_coalescing();
+                                cx.notify();
+                            }
+                            _ => self.dispatch(cmd, window, cx),
+                        }
                     }
                 }
             }
@@ -852,6 +871,8 @@ impl EditorState {
     pub fn execute_command_by_id(
         &mut self,
         cmd_id: &str,
+        count: usize,
+        keymap: &mut crate::keymap::KeymapSystem,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -871,35 +892,42 @@ impl EditorState {
             "undo" => self.dispatch(EditorCommand::Undo, window, cx),
             "redo" => self.dispatch(EditorCommand::Redo, window, cx),
             // Vim mode
-            "toggle-vim" => self.dispatch(EditorCommand::ToggleVimMode, window, cx),
+            "toggle-vim" => {
+                let enabled = !keymap.vim_enabled;
+                keymap.set_vim_enabled(enabled);
+                self.vim_enabled = keymap.vim_enabled;
+                self.insert_mode = keymap.is_insert_active();
+                self.history.break_coalescing();
+                cx.notify();
+            }
             // Visual mode operations
             "delete-selection" => {
-                if self.keymap.is_visual_active() {
+                if keymap.is_visual_active() {
                     let (s, e) = self.ordered_selection();
                     let content = self.content();
-                    self.keymap.grammar.register_content = content[s..e].to_string();
+                    self.grammar.register_content = content[s..e].to_string();
                 }
                 self.dispatch(EditorCommand::DeleteSelection, window, cx);
-                if self.keymap.is_visual_active() {
-                    self.keymap.stack.activate_layer("vim:normal");
+                if keymap.is_visual_active() {
+                    keymap.stack.activate_layer("vim:normal");
                     cx.notify();
                 }
             }
             "yank-selection" => {
                 self.dispatch(EditorCommand::YankSelection, window, cx);
-                if self.keymap.is_visual_active() {
-                    self.keymap.stack.activate_layer("vim:normal");
+                if keymap.is_visual_active() {
+                    keymap.stack.activate_layer("vim:normal");
                     cx.notify();
                 }
             }
             "change-selection" => {
-                if self.keymap.is_visual_active() {
+                if keymap.is_visual_active() {
                     let (s, e) = self.ordered_selection();
                     let content = self.content();
-                    self.keymap.grammar.register_content = content[s..e].to_string();
+                    self.grammar.register_content = content[s..e].to_string();
                 }
                 self.dispatch(EditorCommand::DeleteSelection, window, cx);
-                self.keymap.stack.activate_layer("vim:insert");
+                keymap.stack.activate_layer("vim:insert");
                 self.history.break_coalescing();
                 cx.notify();
             }
@@ -907,29 +935,29 @@ impl EditorState {
             "dedent-selection" => self.dispatch(EditorCommand::DedentSelection, window, cx),
             "toggle-case-selection" => {
                 self.dispatch(EditorCommand::ToggleCaseSelection, window, cx);
-                if self.keymap.is_visual_active() {
-                    self.keymap.stack.activate_layer("vim:normal");
+                if keymap.is_visual_active() {
+                    keymap.stack.activate_layer("vim:normal");
                     cx.notify();
                 }
             }
             "uppercase-selection" => {
                 self.dispatch(EditorCommand::UppercaseSelection, window, cx);
-                if self.keymap.is_visual_active() {
-                    self.keymap.stack.activate_layer("vim:normal");
+                if keymap.is_visual_active() {
+                    keymap.stack.activate_layer("vim:normal");
                     cx.notify();
                 }
             }
             "lowercase-selection" => {
                 self.dispatch(EditorCommand::LowercaseSelection, window, cx);
-                if self.keymap.is_visual_active() {
-                    self.keymap.stack.activate_layer("vim:normal");
+                if keymap.is_visual_active() {
+                    keymap.stack.activate_layer("vim:normal");
                     cx.notify();
                 }
             }
             "join-selection" => {
                 self.dispatch(EditorCommand::JoinSelection, window, cx);
-                if self.keymap.is_visual_active() {
-                    self.keymap.stack.activate_layer("vim:normal");
+                if keymap.is_visual_active() {
+                    keymap.stack.activate_layer("vim:normal");
                     cx.notify();
                 }
             }
@@ -944,7 +972,7 @@ impl EditorState {
                         while p < content.len() && !content.is_char_boundary(p) { p += 1; }
                         p
                     };
-                    self.keymap.grammar.register_content = content[pos..end].to_string();
+                    self.grammar.register_content = content[pos..end].to_string();
                     self.selected_range = pos..end;
                     self.edit_text("", cx);
                 }
@@ -959,7 +987,7 @@ impl EditorState {
                         while p > 0 && !content.is_char_boundary(p) { p -= 1; }
                         p
                     };
-                    self.keymap.grammar.register_content = content[start..pos].to_string();
+                    self.grammar.register_content = content[start..pos].to_string();
                     self.selected_range = start..pos;
                     self.edit_text("", cx);
                 }
@@ -968,7 +996,7 @@ impl EditorState {
                 // a — move right one char and enter insert
                 let pos = self.next_grapheme(self.cursor);
                 self.move_to(pos, cx);
-                self.keymap.stack.activate_layer("vim:insert");
+                keymap.stack.activate_layer("vim:insert");
                 self.history.break_coalescing();
                 cx.notify();
             }
@@ -977,7 +1005,7 @@ impl EditorState {
                 let content = self.content();
                 let target = crate::keymap::motion_first_non_whitespace(&content, self.cursor, 1);
                 self.move_to(target, cx);
-                self.keymap.stack.activate_layer("vim:insert");
+                keymap.stack.activate_layer("vim:insert");
                 self.history.break_coalescing();
                 cx.notify();
             }
@@ -986,7 +1014,7 @@ impl EditorState {
                 let content = self.content();
                 let target = crate::keymap::motion_line_end(&content, self.cursor, 1);
                 self.move_to(target, cx);
-                self.keymap.stack.activate_layer("vim:insert");
+                keymap.stack.activate_layer("vim:insert");
                 self.history.break_coalescing();
                 cx.notify();
             }
@@ -997,7 +1025,7 @@ impl EditorState {
                 let line_end = content[pos..].find('\n').map(|p| pos + p).unwrap_or(content.len());
                 self.move_to(line_end, cx);
                 self.edit_text("\n", cx);
-                self.keymap.stack.activate_layer("vim:insert");
+                keymap.stack.activate_layer("vim:insert");
                 self.history.break_coalescing();
                 cx.notify();
             }
@@ -1011,13 +1039,13 @@ impl EditorState {
                 // Move cursor up to the new empty line
                 let new_pos = line_start;
                 self.move_to(new_pos, cx);
-                self.keymap.stack.activate_layer("vim:insert");
+                keymap.stack.activate_layer("vim:insert");
                 self.history.break_coalescing();
                 cx.notify();
             }
             "paste-after" => {
                 // p — paste after cursor
-                let text = self.keymap.grammar.register_content.clone();
+                let text = self.grammar.register_content.clone();
                 if !text.is_empty() {
                     if text.ends_with('\n') {
                         // Line-wise paste: insert after current line
@@ -1039,7 +1067,7 @@ impl EditorState {
             }
             "paste-before" => {
                 // P — paste before cursor
-                let text = self.keymap.grammar.register_content.clone();
+                let text = self.grammar.register_content.clone();
                 if !text.is_empty() {
                     if text.ends_with('\n') {
                         let content = self.content();
@@ -1076,7 +1104,7 @@ impl EditorState {
                 let pos = self.snap_to_char_boundary(self.cursor);
                 let line_end = content[pos..].find('\n').map(|p| pos + p).unwrap_or(content.len());
                 if pos < line_end {
-                    self.keymap.grammar.register_content = content[pos..line_end].to_string();
+                    self.grammar.register_content = content[pos..line_end].to_string();
                     self.selected_range = pos..line_end;
                     self.edit_text("", cx);
                 }
@@ -1087,11 +1115,11 @@ impl EditorState {
                 let pos = self.snap_to_char_boundary(self.cursor);
                 let line_end = content[pos..].find('\n').map(|p| pos + p).unwrap_or(content.len());
                 if pos < line_end {
-                    self.keymap.grammar.register_content = content[pos..line_end].to_string();
+                    self.grammar.register_content = content[pos..line_end].to_string();
                     self.selected_range = pos..line_end;
                     self.edit_text("", cx);
                 }
-                self.keymap.stack.activate_layer("vim:insert");
+                keymap.stack.activate_layer("vim:insert");
                 self.history.break_coalescing();
                 cx.notify();
             }
@@ -1101,10 +1129,10 @@ impl EditorState {
                 let pos = self.snap_to_char_boundary(self.cursor);
                 let line_start = content[..pos].rfind('\n').map(|i| i + 1).unwrap_or(0);
                 let line_end = content[pos..].find('\n').map(|p| pos + p).unwrap_or(content.len());
-                self.keymap.grammar.register_content = content[line_start..line_end].to_string();
+                self.grammar.register_content = content[line_start..line_end].to_string();
                 self.selected_range = line_start..line_end;
                 self.edit_text("", cx);
-                self.keymap.stack.activate_layer("vim:insert");
+                keymap.stack.activate_layer("vim:insert");
                 self.history.break_coalescing();
                 cx.notify();
             }
@@ -1134,10 +1162,8 @@ impl EditorState {
             "repeat-char-search" => {
                 let content = self.content();
                 let cursor = self.cursor;
-                let count = self.keymap.grammar.effective_count();
-                self.keymap.grammar.count = None;
-                if let Some(target) = crate::keymap::repeat_char_search(&self.keymap.grammar, &content, cursor, count) {
-                    if self.keymap.is_visual_active() {
+                if let Some(target) = crate::keymap::repeat_char_search(&self.grammar, &content, cursor, count) {
+                    if keymap.is_visual_active() {
                         self.select_to(target, cx);
                     } else {
                         self.move_to(target, cx);
@@ -1147,10 +1173,8 @@ impl EditorState {
             "repeat-char-search-reverse" => {
                 let content = self.content();
                 let cursor = self.cursor;
-                let count = self.keymap.grammar.effective_count();
-                self.keymap.grammar.count = None;
-                if let Some(target) = crate::keymap::repeat_char_search_reverse(&self.keymap.grammar, &content, cursor, count) {
-                    if self.keymap.is_visual_active() {
+                if let Some(target) = crate::keymap::repeat_char_search_reverse(&self.grammar, &content, cursor, count) {
+                    if keymap.is_visual_active() {
                         self.select_to(target, cx);
                     } else {
                         self.move_to(target, cx);
@@ -1222,6 +1246,7 @@ impl EditorState {
     pub fn execute_ex_command(
         &mut self,
         input: &str,
+        keymap: &mut crate::keymap::KeymapSystem,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1244,7 +1269,7 @@ impl EditorState {
                 cx.emit(EditorEvent::RequestQuit);
             }
             "set" => {
-                self.status_message = Some(self.handle_set_command(args));
+                self.status_message = Some(self.handle_set_command(args, keymap));
             }
             "noh" | "nohlsearch" => {
                 self.status_message = Some("Search highlighting cleared".into());
@@ -1286,23 +1311,23 @@ impl EditorState {
         }
     }
 
-    pub fn handle_set_command(&mut self, args: &str) -> String {
+    pub fn handle_set_command(&mut self, args: &str, keymap: &mut crate::keymap::KeymapSystem) -> String {
         if args.is_empty() {
-            let mode_label = self.keymap.active_vim_state().unwrap_or("EDT");
+            let mode_label = keymap.active_vim_state().unwrap_or("EDT");
             return format!(
                 "vim={} mode={}",
-                self.keymap.vim_enabled,
+                keymap.vim_enabled,
                 mode_label
             );
         }
 
         match args {
             "vim" => {
-                self.keymap.set_vim_enabled(true);
+                keymap.set_vim_enabled(true);
                 "Vim mode enabled".into()
             }
             "novim" => {
-                self.keymap.set_vim_enabled(false);
+                keymap.set_vim_enabled(false);
                 "Vim mode disabled".into()
             }
             "number" | "nu" => "Line numbers not yet implemented".into(),

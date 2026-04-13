@@ -89,8 +89,8 @@ impl Element for EditorElement {
         let selected_range = state.selected_range.clone();
         let content = state.content();
         let dm = &state.display_map;
-        let vim_enabled = state.keymap.vim_enabled;
-        let is_insert = state.keymap.is_insert_active();
+        let vim_enabled = state.vim_enabled;
+        let is_insert = state.insert_mode;
 
         let text_system = window.text_system().clone();
         let text_style = window.text_style();

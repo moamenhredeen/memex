@@ -59,7 +59,7 @@ impl EntityInputHandler for EditorState {
         }
 
         // In vim non-insert modes, suppress OS text input entirely.
-        if !self.keymap.is_insert_active() {
+        if self.vim_enabled && !self.insert_mode {
             return;
         }
 
@@ -117,7 +117,7 @@ impl EntityInputHandler for EditorState {
         }
 
         // In vim non-insert modes, suppress OS text input entirely.
-        if !self.keymap.is_insert_active() {
+        if self.vim_enabled && !self.insert_mode {
             return;
         }
 

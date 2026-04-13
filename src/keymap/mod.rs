@@ -12,13 +12,44 @@ pub use defaults::*;
 pub use grammar::*;
 pub use layer::*;
 
-/// The unified keymap system: owns layers, grammar engine, and resolution logic.
+// ─── ResolvedKey ─────────────────────────────────────────────────────────────
+
+/// Result of resolving a key through the keymap system.
+/// This is context-free — no buffer content or cursor needed.
+#[derive(Clone, Debug)]
+pub enum ResolvedKey {
+    /// A bound action was matched, with accumulated count.
+    Action(Action, usize),
+    /// Transient layer captured a character (f/t/r prefix in vim).
+    TransientCapture {
+        transient_id: LayerId,
+        ch: char,
+        count: usize,
+    },
+    /// Count digit accumulated or multi-key sequence in progress.
+    Pending,
+    /// No binding found — key was not consumed.
+    Unhandled,
+}
+
+// ─── KeymapSystem ────────────────────────────────────────────────────────────
+
+/// App-level keymap system: owns layers, resolves keys to actions.
+///
+/// Following the Emacs model: keymaps are pure data (key → action).
+/// The keymap system knows nothing about buffer content, cursor positions,
+/// or view-specific state. Views receive resolved actions and handle them.
+///
+/// Lookup order (highest → lowest priority):
+/// 1. Transient layers (f/t/r char captures — auto-pop after one key)
+/// 2. Active layers in stack order (e.g., vim:normal > leader > markdown > global)
+/// 3. Unhandled fallback
 pub struct KeymapSystem {
     pub stack: LayerStack,
-    pub grammar: VimGrammar,
     pub vim_enabled: bool,
+    /// Count digit accumulator (e.g., `3j` → count=3, action=Motion("down")).
+    count: Option<usize>,
     /// When a multi-key sequence is in progress, holds the trie node we're at.
-    /// We store a clone of the Node's map to avoid lifetime issues.
     pending_trie: Option<std::collections::HashMap<KeyCombo, KeyTrie>>,
 }
 
@@ -36,8 +67,8 @@ impl KeymapSystem {
 
         Self {
             stack,
-            grammar: VimGrammar::new(),
             vim_enabled,
+            count: None,
             pending_trie: None,
         }
     }
@@ -52,143 +83,98 @@ impl KeymapSystem {
         self.pending_trie = None;
     }
 
-    /// Resolve a key event through the layer stack and grammar engine.
-    /// Returns a GrammarResult describing what to do.
-    pub fn process_key(
+    /// Consume and return the accumulated count, defaulting to 1.
+    pub fn take_count(&mut self) -> usize {
+        self.count.take().unwrap_or(1)
+    }
+
+    /// Push a digit to the count accumulator.
+    fn push_count_digit(&mut self, digit: u8) {
+        let current = self.count.unwrap_or(0);
+        self.count = Some(current * 10 + digit as usize);
+    }
+
+    /// Resolve a key event through the layer stack.
+    /// Returns a `ResolvedKey` — context-free, no buffer state needed.
+    pub fn resolve_key(
         &mut self,
         key: &str,
         ctrl: bool,
         shift: bool,
         alt: bool,
-        content: &str,
-        cursor: usize,
-    ) -> GrammarResult {
-        // 1. If we're mid-sequence in a trie, continue walking it
+    ) -> ResolvedKey {
+        // 1. Multi-key sequence continuation
         if let Some(pending_map) = self.pending_trie.take() {
             let combo = KeyCombo::from_keystroke(key, ctrl, shift, alt);
             if let Some(trie_node) = pending_map.get(&combo) {
                 match trie_node {
                     KeyTrie::Leaf(action) => {
-                        let action = action.clone();
-                        return self.grammar.process(action, key, content, cursor, &mut self.stack);
+                        let count = self.take_count();
+                        return ResolvedKey::Action(action.clone(), count);
                     }
                     KeyTrie::Node(map) => {
-                        // Deeper nesting — keep pending
                         self.pending_trie = Some(map.clone());
-                        return GrammarResult::Pending;
+                        return ResolvedKey::Pending;
                     }
                 }
             } else {
                 // Key doesn't match any continuation — cancel sequence
-                // (key is consumed/dropped, like vim does with invalid sequences)
-                return GrammarResult::Noop;
+                self.count = None;
+                return ResolvedKey::Unhandled;
             }
         }
 
-        // 2. Transient capture — if a transient layer (f/t/r) is waiting for input
+        // 2. Transient capture (f/t/r) — layer is waiting for a character
         if let Some(transient_id) = self.stack.peek_transient() {
             self.stack.pop_transient();
-            return self.handle_transient_capture(transient_id, key, content, cursor);
+            let ch = match key.chars().next() {
+                Some(c) if key.chars().count() == 1 && key != "escape" => c,
+                _ => {
+                    self.count = None;
+                    return ResolvedKey::Unhandled;
+                }
+            };
+            let count = self.take_count();
+            return ResolvedKey::TransientCapture { transient_id, ch, count };
         }
 
-        // 3. Count digit accumulation in vim normal/visual/op-pending
+        // 3. Count digit accumulation (vim normal/visual/op-pending)
         if self.vim_enabled && !ctrl && !alt && key.chars().count() == 1 {
             if let Some(ch) = key.chars().next() {
                 if ch.is_ascii_digit() && !self.is_insert_active() {
                     let digit = (ch as u8) - b'0';
-                    // "0" is line-start unless count already started or operator pending
-                    if digit > 0 || self.grammar.count.is_some() || self.grammar.pending_operator.is_some() {
-                        self.grammar.push_count_digit(digit);
-                        return GrammarResult::Pending;
+                    // "0" alone is a motion (line-start); digits after first are count
+                    if digit > 0 || self.count.is_some() {
+                        self.push_count_digit(digit);
+                        return ResolvedKey::Pending;
                     }
                 }
             }
         }
 
-        // 4. Normal layer resolution (now returns KeyTrie)
+        // 4. Layer stack resolution
         let combo = KeyCombo::from_keystroke(key, ctrl, shift, alt);
-        let resolved = self.stack.resolve(&combo);
+        let resolved = self.stack.resolve(&combo).cloned();
 
         match resolved {
             Some(KeyTrie::Leaf(action)) => {
-                let action = action.clone();
-                self.grammar.process(action, key, content, cursor, &mut self.stack)
+                let count = self.take_count();
+                ResolvedKey::Action(action, count)
             }
             Some(KeyTrie::Node(map)) => {
                 // In insert mode, trie prefixes (leader keys) should not activate —
-                // let the key self-insert instead.
+                // let the key fall through as unhandled (OS input handler inserts it).
                 if self.is_insert_active() {
-                    let action = if !ctrl && !alt && key.chars().count() == 1 {
-                        Action::SelfInsert
-                    } else {
-                        Action::Noop
-                    };
-                    return self.grammar.process(action, key, content, cursor, &mut self.stack);
+                    self.count = None;
+                    return ResolvedKey::Unhandled;
                 }
                 // Start of a multi-key sequence — enter pending state
                 self.pending_trie = Some(map.clone());
-                GrammarResult::Pending
+                ResolvedKey::Pending
             }
             None => {
-                // No binding — check if it's a printable self-insert
-                let action = if !ctrl && !alt && key.chars().count() == 1 {
-                    Action::SelfInsert
-                } else {
-                    Action::Noop
-                };
-                self.grammar.process(action, key, content, cursor, &mut self.stack)
-            }
-        }
-    }
-
-    /// Handle a key captured by a transient layer (f/t/r/g prefix).
-    fn handle_transient_capture(
-        &mut self,
-        transient_id: LayerId,
-        key: &str,
-        content: &str,
-        cursor: usize,
-    ) -> GrammarResult {
-        // Escape or non-single-char cancels the transient
-        let ch = match key.chars().next() {
-            Some(c) if key.chars().count() == 1 && key != "escape" => c,
-            _ => {
-                self.grammar.clear_pending();
-                return GrammarResult::Noop;
-            }
-        };
-
-        let count = self.grammar.effective_count();
-
-        match transient_id {
-            "transient:find-char" => {
-                self.grammar.last_char_search = Some((ch, "find-char"));
-                let target = find_char_forward(content, cursor, ch, count);
-                self.grammar.resolve_with_target(target, content, cursor)
-            }
-            "transient:til-char" => {
-                self.grammar.last_char_search = Some((ch, "til-char"));
-                let target = til_char_forward(content, cursor, ch, count);
-                self.grammar.resolve_with_target(target, content, cursor)
-            }
-            "transient:find-char-back" => {
-                self.grammar.last_char_search = Some((ch, "find-char-back"));
-                let target = find_char_backward(content, cursor, ch, count);
-                self.grammar.resolve_with_target(target, content, cursor)
-            }
-            "transient:til-char-back" => {
-                self.grammar.last_char_search = Some((ch, "til-char-back"));
-                let target = til_char_backward(content, cursor, ch, count);
-                self.grammar.resolve_with_target(target, content, cursor)
-            }
-            "transient:replace-char" => {
-                let c = count;
-                self.grammar.clear_pending();
-                GrammarResult::ReplaceChar { ch, count: c }
-            }
-            _ => {
-                self.grammar.clear_pending();
-                GrammarResult::Noop
+                self.count = None;
+                ResolvedKey::Unhandled
             }
         }
     }
@@ -245,7 +231,7 @@ impl KeymapSystem {
 
 // ─── Find/Til char helper functions ──────────────────────────────────────────
 
-fn find_char_forward(content: &str, cursor: usize, ch: char, count: usize) -> usize {
+pub fn find_char_forward(content: &str, cursor: usize, ch: char, count: usize) -> usize {
     let mut cur = cursor.min(content.len());
     while cur > 0 && !content.is_char_boundary(cur) { cur -= 1; }
     let after = &content[cur..];
@@ -263,10 +249,9 @@ fn find_char_forward(content: &str, cursor: usize, ch: char, count: usize) -> us
     pos
 }
 
-fn til_char_forward(content: &str, cursor: usize, ch: char, count: usize) -> usize {
+pub fn til_char_forward(content: &str, cursor: usize, ch: char, count: usize) -> usize {
     let target = find_char_forward(content, cursor, ch, count);
     if target > cursor {
-        // Back up one char
         let mut p = target;
         if p > 0 {
             p -= 1;
@@ -280,7 +265,7 @@ fn til_char_forward(content: &str, cursor: usize, ch: char, count: usize) -> usi
     }
 }
 
-fn find_char_backward(content: &str, cursor: usize, ch: char, count: usize) -> usize {
+pub fn find_char_backward(content: &str, cursor: usize, ch: char, count: usize) -> usize {
     let mut c = cursor.min(content.len());
     while c > 0 && !content.is_char_boundary(c) { c -= 1; }
     let before = &content[..c];
@@ -298,10 +283,9 @@ fn find_char_backward(content: &str, cursor: usize, ch: char, count: usize) -> u
     pos
 }
 
-fn til_char_backward(content: &str, cursor: usize, ch: char, count: usize) -> usize {
+pub fn til_char_backward(content: &str, cursor: usize, ch: char, count: usize) -> usize {
     let target = find_char_backward(content, cursor, ch, count);
     if target < cursor {
-        // Advance one char
         let mut p = target + 1;
         while p < cursor && !content.is_char_boundary(p) {
             p += 1;

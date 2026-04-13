@@ -183,57 +183,6 @@ impl Render for PdfView {
             )
             // Custom scrollbar element — uses actual rendered bounds
             .child(PdfScrollbar::new(self.state.clone()))
-            .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
-                let key = e.keystroke.key.as_str();
-                let ctrl = e.keystroke.modifiers.control;
-                let scroll_amount = px(60.);
-                let vh: f32 = window.viewport_size().height.into();
-
-                this.state.update(cx, |state, cx| {
-                    let max = state.max_scroll(vh);
-                    match key {
-                        "j" | "down" => {
-                            state.scroll_offset =
-                                (state.scroll_offset + scroll_amount).min(max);
-                            cx.notify();
-                        }
-                        "k" | "up" => {
-                            state.scroll_offset =
-                                (state.scroll_offset - scroll_amount).max(px(0.));
-                            cx.notify();
-                        }
-                        "d" if ctrl => {
-                            state.scroll_offset =
-                                (state.scroll_offset + px(400.)).min(max);
-                            cx.notify();
-                        }
-                        "u" if ctrl => {
-                            state.scroll_offset =
-                                (state.scroll_offset - px(400.)).max(px(0.));
-                            cx.notify();
-                        }
-                        "+" | "=" => {
-                            state.zoom = (state.zoom + 0.1).min(3.0);
-                            state.invalidate_cache();
-                            cx.notify();
-                        }
-                        "-" => {
-                            state.zoom = (state.zoom - 0.1).max(0.3);
-                            state.invalidate_cache();
-                            cx.notify();
-                        }
-                        "g" => {
-                            state.scroll_offset = px(0.);
-                            cx.notify();
-                        }
-                        "G" => {
-                            state.scroll_offset = max;
-                            cx.notify();
-                        }
-                        _ => {}
-                    }
-                });
-            }))
             .on_scroll_wheel(cx.listener(|this, e: &ScrollWheelEvent, window, cx| {
                 let vh: f32 = window.viewport_size().height.into();
                 this.state.update(cx, |state, cx| {

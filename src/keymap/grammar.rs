@@ -40,10 +40,16 @@ pub enum GrammarResult {
     Noop,
 }
 
-/// Vim grammar engine — handles operator+motion composition, counts, registers.
+/// Vim grammar engine — handles operator+motion composition, registers.
+///
+/// This is editor-specific: motions compute cursor positions from buffer content,
+/// operators apply to text ranges. It knows nothing about key resolution.
+/// The keymap system resolves keys to actions; the grammar composes actions into
+/// editor mutations.
 pub struct VimGrammar {
     pub pending_operator: Option<OperatorId>,
-    pub count: Option<usize>,
+    /// Count stored when operator was pressed (for linewise ops like `3dd`).
+    pending_count: Option<usize>,
     pub register: char,
     pub register_content: String,
     pub last_char_search: Option<(char, &'static str)>,
@@ -53,28 +59,17 @@ impl VimGrammar {
     pub fn new() -> Self {
         Self {
             pending_operator: None,
-            count: None,
+            pending_count: None,
             register: '"',
             register_content: String::new(),
             last_char_search: None,
         }
     }
 
-    /// Get effective count (default 1).
-    pub fn effective_count(&self) -> usize {
-        self.count.unwrap_or(1)
-    }
-
-    /// Push a digit to the count accumulator.
-    pub fn push_count_digit(&mut self, digit: u8) {
-        let current = self.count.unwrap_or(0);
-        self.count = Some(current * 10 + digit as usize);
-    }
-
     /// Clear pending state.
     pub fn clear_pending(&mut self) {
         self.pending_operator = None;
-        self.count = None;
+        self.pending_count = None;
     }
 
     /// Resolve a pre-computed motion target through the grammar.
@@ -82,7 +77,7 @@ impl VimGrammar {
     /// Otherwise returns MoveCursor.
     pub fn resolve_with_target(&mut self, target: usize, content: &str, cursor: usize) -> GrammarResult {
         if let Some(op_id) = self.pending_operator.take() {
-            self.count = None;
+            self.pending_count = None;
             let (start, end) = if target < cursor { (target, cursor) } else { (cursor, target) };
             if start == end {
                 return GrammarResult::Noop;
@@ -104,30 +99,29 @@ impl VimGrammar {
                 _ => GrammarResult::Noop,
             }
         } else {
-            self.count = None;
             GrammarResult::MoveCursor(target)
         }
     }
 
     /// Process an action through the vim grammar.
+    /// `count` is the accumulated count from the keymap system.
     pub fn process(
         &mut self,
         action: Action,
         key: &str,
+        count: usize,
         content: &str,
         cursor: usize,
         stack: &mut LayerStack,
     ) -> GrammarResult {
         match action {
             Action::Motion(motion_id) => {
-                let count = self.effective_count();
                 if let Some(op_id) = self.pending_operator.take() {
                     // Operator + motion → compute range, apply operator
-                    self.count = None;
+                    self.pending_count = None;
                     self.apply_operator_with_motion(op_id, motion_id, content, cursor, count, stack)
                 } else {
                     // Just move cursor
-                    self.count = None;
                     if let Some(motion_impl) = stack.get_motion(motion_id) {
                         match motion_impl {
                             MotionImpl::Native(f) => {
@@ -147,12 +141,13 @@ impl VimGrammar {
             Action::Operator(op_id) => {
                 if self.pending_operator == Some(op_id) {
                     // Double operator (dd, yy, cc) — line-wise
-                    let count = self.effective_count();
+                    let effective = self.pending_count.unwrap_or(count);
                     self.clear_pending();
-                    self.apply_linewise_operator(op_id, content, cursor, count)
+                    self.apply_linewise_operator(op_id, content, cursor, effective)
                 } else {
                     // Set pending operator, wait for motion
                     self.pending_operator = Some(op_id);
+                    self.pending_count = Some(count);
                     GrammarResult::Pending
                 }
             }
@@ -193,7 +188,7 @@ impl VimGrammar {
             Action::Sequence(actions) => {
                 let mut results = Vec::new();
                 for a in actions {
-                    let r = self.process(a, key, content, cursor, stack);
+                    let r = self.process(a, key, count, content, cursor, stack);
                     results.push(r);
                 }
                 GrammarResult::Batch(results)
@@ -399,7 +394,7 @@ mod tests {
         let mut stack = test_stack();
         let mut grammar = VimGrammar::new();
 
-        let result = grammar.process(Action::Motion("right"), "l", "hello", 1, &mut stack);
+        let result = grammar.process(Action::Motion("right"), "l", 1, "hello", 1, &mut stack);
         match result {
             GrammarResult::MoveCursor(pos) => assert_eq!(pos, 2),
             other => panic!("Expected MoveCursor, got {:?}", other),
@@ -412,7 +407,7 @@ mod tests {
         let mut grammar = VimGrammar::new();
 
         // Press "d" — should go pending
-        let result = grammar.process(Action::Operator("delete"), "d", "hello world", 0, &mut stack);
+        let result = grammar.process(Action::Operator("delete"), "d", 1, "hello world", 0, &mut stack);
         assert!(matches!(result, GrammarResult::Pending));
         assert_eq!(grammar.pending_operator, Some("delete"));
     }
@@ -423,8 +418,8 @@ mod tests {
         let mut grammar = VimGrammar::new();
 
         // "dw" — delete word
-        grammar.process(Action::Operator("delete"), "d", "hello world", 0, &mut stack);
-        let result = grammar.process(Action::Motion("word-forward"), "w", "hello world", 0, &mut stack);
+        grammar.process(Action::Operator("delete"), "d", 1, "hello world", 0, &mut stack);
+        let result = grammar.process(Action::Motion("word-forward"), "w", 1, "hello world", 0, &mut stack);
 
         match result {
             GrammarResult::DeleteRange { range, yanked, enter_insert } => {
@@ -442,8 +437,8 @@ mod tests {
         let mut grammar = VimGrammar::new();
 
         // "cw" — change word (delete + enter insert)
-        grammar.process(Action::Operator("change"), "c", "hello world", 0, &mut stack);
-        let result = grammar.process(Action::Motion("word-forward"), "w", "hello world", 0, &mut stack);
+        grammar.process(Action::Operator("change"), "c", 1, "hello world", 0, &mut stack);
+        let result = grammar.process(Action::Motion("word-forward"), "w", 1, "hello world", 0, &mut stack);
 
         match result {
             GrammarResult::DeleteRange { enter_insert, .. } => {
@@ -459,8 +454,8 @@ mod tests {
         let mut grammar = VimGrammar::new();
 
         // "yw" — yank word
-        grammar.process(Action::Operator("yank"), "y", "hello world", 0, &mut stack);
-        let result = grammar.process(Action::Motion("word-forward"), "w", "hello world", 0, &mut stack);
+        grammar.process(Action::Operator("yank"), "y", 1, "hello world", 0, &mut stack);
+        let result = grammar.process(Action::Motion("word-forward"), "w", 1, "hello world", 0, &mut stack);
 
         match result {
             GrammarResult::Yank(text) => assert_eq!(text, "hello "),
@@ -475,8 +470,8 @@ mod tests {
         let mut grammar = VimGrammar::new();
 
         // "dd" — delete line
-        grammar.process(Action::Operator("delete"), "d", "hello\nworld\n", 2, &mut stack);
-        let result = grammar.process(Action::Operator("delete"), "d", "hello\nworld\n", 2, &mut stack);
+        grammar.process(Action::Operator("delete"), "d", 1, "hello\nworld\n", 2, &mut stack);
+        let result = grammar.process(Action::Operator("delete"), "d", 1, "hello\nworld\n", 2, &mut stack);
 
         match result {
             GrammarResult::DeleteRange { range, yanked, .. } => {
@@ -492,8 +487,8 @@ mod tests {
         let mut stack = test_stack();
         let mut grammar = VimGrammar::new();
 
-        grammar.push_count_digit(3);
-        let result = grammar.process(Action::Motion("right"), "l", "hello world", 0, &mut stack);
+        // Count is now passed directly from the keymap system
+        let result = grammar.process(Action::Motion("right"), "l", 3, "hello world", 0, &mut stack);
 
         match result {
             GrammarResult::MoveCursor(pos) => assert_eq!(pos, 3),
@@ -506,7 +501,7 @@ mod tests {
         let mut stack = test_stack();
         let mut grammar = VimGrammar::new();
 
-        let result = grammar.process(Action::SelfInsert, "a", "hello", 0, &mut stack);
+        let result = grammar.process(Action::SelfInsert, "a", 1, "hello", 0, &mut stack);
         match result {
             GrammarResult::InsertChar('a') => {}
             other => panic!("Expected InsertChar('a'), got {:?}", other),
@@ -518,7 +513,7 @@ mod tests {
         let mut stack = test_stack();
         let mut grammar = VimGrammar::new();
 
-        let result = grammar.process(Action::ActivateLayer("vim:insert"), "i", "hello", 0, &mut stack);
+        let result = grammar.process(Action::ActivateLayer("vim:insert"), "i", 1, "hello", 0, &mut stack);
 
         assert!(matches!(result, GrammarResult::ActivateLayer("vim:insert")));
         assert!(stack.is_active("vim:insert"));
@@ -531,11 +526,9 @@ mod tests {
         let mut grammar = VimGrammar::new();
 
         grammar.pending_operator = Some("delete");
-        grammar.count = Some(3);
 
-        let result = grammar.process(Action::Command("undo"), "u", "hello", 0, &mut stack);
+        let result = grammar.process(Action::Command("undo"), "u", 1, "hello", 0, &mut stack);
         assert!(matches!(result, GrammarResult::ExecuteCommand("undo")));
         assert!(grammar.pending_operator.is_none());
-        assert!(grammar.count.is_none());
     }
 }

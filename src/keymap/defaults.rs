@@ -10,6 +10,7 @@ pub fn register_defaults(stack: &mut LayerStack) {
     register_leader_layer(stack);
     register_markdown_layer(stack);
     register_minibuffer_layer(stack);
+    register_pdf_layer(stack);
 }
 
 // ─── Motions ────────────────────────────────────────────────────────────────
@@ -700,10 +701,36 @@ fn register_minibuffer_layer(stack: &mut LayerStack) {
     stack.register_layer(layer);
 }
 
-#[cfg(test)]
+fn register_pdf_layer(stack: &mut LayerStack) {
+    let layer = Layer::new("pdf")
+        // Navigation
+        .bind("j", Action::Command("pdf-scroll-down"))
+        .bind("k", Action::Command("pdf-scroll-up"))
+        .bind("down", Action::Command("pdf-scroll-down"))
+        .bind("up", Action::Command("pdf-scroll-up"))
+        .bind("ctrl-d", Action::Command("pdf-half-page-down"))
+        .bind("ctrl-u", Action::Command("pdf-half-page-up"))
+        .bind("g", Action::Command("pdf-goto-first"))
+        .bind("G", Action::Command("pdf-goto-last"))
+        // Zoom
+        .bind("+", Action::Command("pdf-zoom-in"))
+        .bind("=", Action::Command("pdf-zoom-in"))
+        .bind("-", Action::Command("pdf-zoom-out"))
+        // Commands
+        .bind("o", Action::Command("pdf-toc"))
+        .bind("P", Action::Command("pdf-goto-page"))
+        .bind("w", Action::Command("pdf-fit-width"))
+        .bind("W", Action::Command("pdf-fit-page"))
+        .bind("r", Action::Command("pdf-rotate-cw"))
+        .bind("R", Action::Command("pdf-rotate-ccw"))
+        .bind("y", Action::Command("pdf-copy-link"))
+        .bind("Y", Action::Command("pdf-extract-text"));
+
+    stack.register_layer(layer);
+}
 mod tests {
     use super::*;
-    use super::super::layer::KeyTrie;
+    use super::super::layer::{KeyTrie, LayerStack};
 
     #[test]
     fn test_register_defaults_builds_all_layers() {

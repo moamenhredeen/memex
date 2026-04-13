@@ -5,8 +5,9 @@ use gpui_component::{h_flex, v_flex};
 
 use crate::command::CommandRegistry;
 use crate::editor::{EditorEvent, EditorState, EditorView};
+use crate::keymap::{self, KeymapSystem, ResolvedKey, Action};
 use crate::minibuffer::{Candidate, DelegateKind, Minibuffer, MinibufferAction, MinibufferVimMode};
-use crate::pdf::{PdfState, PdfView};
+use crate::pdf::{PdfState, PdfView, TocEntry};
 use crate::state::AppState;
 
 const MAX_RESULTS: usize = 15;
@@ -24,6 +25,7 @@ pub struct Memex {
     editor_state: Entity<EditorState>,
     editor_view: Entity<EditorView>,
     pdf_view: Option<Entity<PdfView>>,
+    keymap: KeymapSystem,
     minibuffer: Minibuffer,
     minibuffer_focus: FocusHandle,
     command_registry: CommandRegistry,
@@ -108,12 +110,15 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             },
         );
 
+        let keymap = KeymapSystem::new(true);
+
         Self {
             state,
             view_mode: ViewMode::Editor,
             editor_state,
             editor_view,
             pdf_view: None,
+            keymap,
             minibuffer: Minibuffer::new(),
             minibuffer_focus: cx.focus_handle(),
             command_registry: CommandRegistry::new(),
@@ -121,22 +126,32 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         }
     }
 
+    /// Sync vim_enabled and insert_mode flags to EditorState (for input handler / cursor rendering)
+    fn sync_editor_mode_flags(&self, cx: &mut Context<Self>) {
+        let vim = self.keymap.vim_enabled;
+        let insert = self.keymap.is_insert_active();
+        self.editor_state.update(cx, |state, _cx| {
+            state.vim_enabled = vim;
+            state.insert_mode = insert;
+        });
+    }
+
     fn activate_note_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let vim = self.editor_state.read(cx).keymap.vim_enabled;
+        let vim = self.keymap.vim_enabled;
         self.minibuffer.activate(DelegateKind::NoteSearch, "Find note:", vim);
         self.minibuffer_focus.focus(window);
         cx.notify();
     }
 
     fn activate_vault_switch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let vim = self.editor_state.read(cx).keymap.vim_enabled;
+        let vim = self.keymap.vim_enabled;
         self.minibuffer.activate(DelegateKind::VaultSwitch, "Switch vault:", vim);
         self.minibuffer_focus.focus(window);
         cx.notify();
     }
 
     fn activate_vault_open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let vim = self.editor_state.read(cx).keymap.vim_enabled;
+        let vim = self.keymap.vim_enabled;
         self.minibuffer.activate(DelegateKind::VaultOpen, "Open vault:", vim);
         // Seed with home directory
         if let Some(home) = dirs::home_dir() {
@@ -149,9 +164,37 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
     }
 
     fn activate_command_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let vim = self.editor_state.read(cx).keymap.vim_enabled;
+        let vim = self.keymap.vim_enabled;
         let prompt = if vim { ":" } else { "M-x" };
         self.minibuffer.activate(DelegateKind::Command, prompt, vim);
+        self.minibuffer_focus.focus(window);
+        cx.notify();
+    }
+
+    fn activate_pdf_toc(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.view_mode != ViewMode::Pdf {
+            self.minibuffer.set_message("Not in PDF view");
+            cx.notify();
+            return;
+        }
+        let vim = self.keymap.vim_enabled;
+        self.minibuffer.activate(DelegateKind::PdfToc, "TOC:", vim);
+        self.minibuffer_focus.focus(window);
+        cx.notify();
+    }
+
+    fn activate_pdf_goto_page(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.view_mode != ViewMode::Pdf {
+            self.minibuffer.set_message("Not in PDF view");
+            cx.notify();
+            return;
+        }
+        let page_count = self.pdf_view.as_ref()
+            .map(|pv| pv.read(cx).state.read(cx).page_count)
+            .unwrap_or(0);
+        let vim = self.keymap.vim_enabled;
+        let prompt = format!("Go to page (1-{}):", page_count);
+        self.minibuffer.activate(DelegateKind::PdfGotoPage, &prompt, vim);
         self.minibuffer_focus.focus(window);
         cx.notify();
     }
@@ -182,7 +225,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let candidates = self.get_candidates();
+        let candidates = self.get_candidates(cx);
         let action = self.minibuffer.handle_key(key, ctrl, shift, candidates.len());
 
         match action {
@@ -190,11 +233,11 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 cx.notify();
             }
             MinibufferAction::Confirm => {
-                let candidates = self.get_candidates();
+                let candidates = self.get_candidates(cx);
                 self.handle_confirm(candidates, window, cx);
             }
             MinibufferAction::Complete => {
-                let candidates = self.get_candidates();
+                let candidates = self.get_candidates(cx);
                 if let Some(c) = candidates.get(self.minibuffer.selected) {
                     if self.minibuffer.delegate_kind == DelegateKind::VaultOpen {
                         // Tab descends into the selected directory
@@ -217,7 +260,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
     }
 
     /// Get candidates for the current delegate kind.
-    fn get_candidates(&self) -> Vec<Candidate> {
+    fn get_candidates(&self, cx: &App) -> Vec<Candidate> {
         match self.minibuffer.delegate_kind {
             DelegateKind::Command => {
                 self.command_registry.fuzzy_filter(&self.minibuffer.input)
@@ -230,6 +273,12 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             }
             DelegateKind::VaultOpen => {
                 self.get_vault_open_candidates()
+            }
+            DelegateKind::PdfToc => {
+                self.get_pdf_toc_candidates(cx)
+            }
+            DelegateKind::PdfGotoPage => {
+                self.get_pdf_goto_page_candidates(cx)
             }
         }
     }
@@ -254,8 +303,10 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 } else if !input.is_empty() {
                     // Try executing raw input as ex command
                     self.dismiss_minibuffer(window, cx);
-                    self.editor_state.update(cx, |state, cx| {
-                        state.execute_ex_command(&input, window, cx);
+                    let keymap = &mut self.keymap;
+                    let editor = self.editor_state.clone();
+                    editor.update(cx, |state, cx| {
+                        state.execute_ex_command(&input, keymap, window, cx);
                     });
                 }
             }
@@ -309,6 +360,40 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     }
                 }
             }
+            DelegateKind::PdfToc => {
+                if let Some(candidate) = candidates.get(selected) {
+                    if let Ok(page) = candidate.data.parse::<usize>() {
+                        self.dismiss_minibuffer(window, cx);
+                        if let Some(ref pv) = self.pdf_view {
+                            let state = pv.read(cx).state.clone();
+                            state.update(cx, |s, cx| {
+                                s.goto_page(page);
+                                cx.notify();
+                            });
+                        }
+                    }
+                }
+            }
+            DelegateKind::PdfGotoPage => {
+                let page_str = if let Some(candidate) = candidates.get(selected) {
+                    candidate.data.clone()
+                } else {
+                    input.clone()
+                };
+                if let Ok(page_num) = page_str.trim().parse::<usize>() {
+                    self.dismiss_minibuffer(window, cx);
+                    if let Some(ref pv) = self.pdf_view {
+                        let state = pv.read(cx).state.clone();
+                        state.update(cx, |s, cx| {
+                            s.goto_page_number(page_num);
+                            cx.notify();
+                        });
+                        self.minibuffer.set_message(format!("Page {}", page_num));
+                    }
+                } else {
+                    self.minibuffer.set_message("Invalid page number");
+                }
+            }
         }
     }
 
@@ -356,45 +441,188 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 }
             }
             "set" => {
-                let msg = self.editor_state.update(cx, |state, _cx| {
-                    state.handle_set_command("")
+                let keymap = &mut self.keymap;
+                let editor = self.editor_state.clone();
+                let msg = editor.update(cx, |state, _cx| {
+                    state.handle_set_command("", keymap)
                 });
                 self.minibuffer.set_message(msg);
             }
             "set-vim" => {
-                self.editor_state.update(cx, |state, cx| {
-                    state.keymap.set_vim_enabled(true);
-                    cx.notify();
-                });
+                self.keymap.set_vim_enabled(true);
+                self.sync_editor_mode_flags(cx);
                 self.minibuffer.set_message("Vim mode enabled");
+                cx.notify();
             }
             "set-novim" => {
-                self.editor_state.update(cx, |state, cx| {
-                    state.keymap.set_vim_enabled(false);
-                    cx.notify();
-                });
+                self.keymap.set_vim_enabled(false);
+                self.sync_editor_mode_flags(cx);
                 self.minibuffer.set_message("Vim mode disabled");
+                cx.notify();
             }
             "nohlsearch" => {
                 self.minibuffer.set_message("Search highlighting cleared");
             }
             "toggle-vim" => {
-                let enabled = self.editor_state.update(cx, |state, cx| {
-                    let new_state = !state.keymap.vim_enabled;
-                    state.keymap.set_vim_enabled(new_state);
-                    cx.notify();
-                    new_state
-                });
-                if enabled {
+                let new_state = !self.keymap.vim_enabled;
+                self.keymap.set_vim_enabled(new_state);
+                self.sync_editor_mode_flags(cx);
+                if new_state {
                     self.minibuffer.set_message("Vim mode enabled");
                 } else {
                     self.minibuffer.set_message("Vim mode disabled");
                 }
             }
+            // PDF commands
+            "pdf-toc" | "pdf-bookmarks" => {
+                self.activate_pdf_toc(window, cx);
+            }
+            "pdf-goto-page" => {
+                self.activate_pdf_goto_page(window, cx);
+            }
+            "pdf-fit-width" => {
+                self.pdf_command(cx, |s, viewport_w, _vh, cx| {
+                    s.fit_width(viewport_w);
+                    cx.notify();
+                }, window);
+            }
+            "pdf-fit-page" => {
+                self.pdf_command(cx, |s, viewport_w, viewport_h, cx| {
+                    s.fit_page(viewport_w, viewport_h);
+                    cx.notify();
+                }, window);
+            }
+            "pdf-rotate-cw" => {
+                self.pdf_command(cx, |s, _vw, vh, cx| {
+                    let (first, _) = s.visible_range(vh);
+                    let rotation = s.page_rotations.entry(first).or_insert(0);
+                    *rotation = (*rotation + 90) % 360;
+                    s.invalidate_cache();
+                    cx.notify();
+                }, window);
+                self.minibuffer.set_message("Rotated clockwise");
+            }
+            "pdf-rotate-ccw" => {
+                self.pdf_command(cx, |s, _vw, vh, cx| {
+                    let (first, _) = s.visible_range(vh);
+                    let rotation = s.page_rotations.entry(first).or_insert(0);
+                    *rotation = (*rotation + 270) % 360;
+                    s.invalidate_cache();
+                    cx.notify();
+                }, window);
+                self.minibuffer.set_message("Rotated counter-clockwise");
+            }
+            "pdf-dark-mode" => {
+                self.pdf_command(cx, |s, _vw, _vh, cx| {
+                    s.dark_mode = !s.dark_mode;
+                    s.invalidate_cache();
+                    cx.notify();
+                }, window);
+                let mode = self.pdf_view.as_ref()
+                    .map(|pv| if pv.read(cx).state.read(cx).dark_mode { "on" } else { "off" })
+                    .unwrap_or("off");
+                self.minibuffer.set_message(format!("Dark mode {}", mode));
+            }
+            "pdf-two-page" => {
+                self.pdf_command(cx, |s, _vw, _vh, cx| {
+                    s.spread_mode = !s.spread_mode;
+                    cx.notify();
+                }, window);
+                let mode = self.pdf_view.as_ref()
+                    .map(|pv| if pv.read(cx).state.read(cx).spread_mode { "on" } else { "off" })
+                    .unwrap_or("off");
+                self.minibuffer.set_message(format!("Two-page spread {}", mode));
+            }
+            "pdf-copy-link" => {
+                if let Some(ref pv) = self.pdf_view {
+                    let state = pv.read(cx).state.read(cx);
+                    let vh: f32 = window.viewport_size().height.into();
+                    let (first, _) = state.visible_range(vh);
+                    let filename = state.path.file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("file.pdf");
+                    let link = format!("[[{}#page={}]]", filename, first + 1);
+                    cx.write_to_clipboard(ClipboardItem::new_string(link.clone()));
+                    self.minibuffer.set_message(format!("Copied: {}", link));
+                }
+            }
+            "pdf-extract-text" => {
+                if let Some(ref pv) = self.pdf_view {
+                    let state = pv.read(cx).state.read(cx);
+                    let vh: f32 = window.viewport_size().height.into();
+                    let (first, _) = state.visible_range(vh);
+                    match state.extract_page_text(first) {
+                        Some(text) if !text.is_empty() => {
+                            cx.write_to_clipboard(ClipboardItem::new_string(text));
+                            self.minibuffer.set_message(
+                                format!("Copied text from page {}", first + 1)
+                            );
+                        }
+                        _ => {
+                            self.minibuffer.set_message("No text on this page");
+                        }
+                    }
+                }
+            }
+            "pdf-scroll-down" => {
+                self.pdf_command(cx, |s, _vw, _vh, cx| {
+                    let max = s.max_scroll(_vh);
+                    s.scroll_offset = (s.scroll_offset + px(60.)).min(max);
+                    cx.notify();
+                }, window);
+            }
+            "pdf-scroll-up" => {
+                self.pdf_command(cx, |s, _vw, _vh, cx| {
+                    s.scroll_offset = (s.scroll_offset - px(60.)).max(px(0.));
+                    cx.notify();
+                }, window);
+            }
+            "pdf-half-page-down" => {
+                self.pdf_command(cx, |s, _vw, _vh, cx| {
+                    let max = s.max_scroll(_vh);
+                    s.scroll_offset = (s.scroll_offset + px(400.)).min(max);
+                    cx.notify();
+                }, window);
+            }
+            "pdf-half-page-up" => {
+                self.pdf_command(cx, |s, _vw, _vh, cx| {
+                    s.scroll_offset = (s.scroll_offset - px(400.)).max(px(0.));
+                    cx.notify();
+                }, window);
+            }
+            "pdf-zoom-in" => {
+                self.pdf_command(cx, |s, _vw, _vh, cx| {
+                    s.zoom = (s.zoom + 0.1).min(3.0);
+                    s.invalidate_cache();
+                    cx.notify();
+                }, window);
+            }
+            "pdf-zoom-out" => {
+                self.pdf_command(cx, |s, _vw, _vh, cx| {
+                    s.zoom = (s.zoom - 0.1).max(0.3);
+                    s.invalidate_cache();
+                    cx.notify();
+                }, window);
+            }
+            "pdf-goto-first" => {
+                self.pdf_command(cx, |s, _vw, _vh, cx| {
+                    s.scroll_offset = px(0.);
+                    cx.notify();
+                }, window);
+            }
+            "pdf-goto-last" => {
+                self.pdf_command(cx, |s, _vw, _vh, cx| {
+                    let max = s.max_scroll(_vh);
+                    s.scroll_offset = max;
+                    cx.notify();
+                }, window);
+            }
             _ => {
                 // Try as raw ex command (for plugin commands, etc.)
-                self.editor_state.update(cx, |state, cx| {
-                    state.execute_ex_command(cmd_id, window, cx);
+                let keymap = &mut self.keymap;
+                let editor = self.editor_state.clone();
+                editor.update(cx, |state, cx| {
+                    state.execute_ex_command(cmd_id, keymap, window, cx);
                 });
                 // Forward any status message from the editor to the minibuffer
                 if let Some(msg) = self.editor_state.read(cx).status_message.clone() {
@@ -593,6 +821,96 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         candidates
     }
 
+    /// Build candidates for PDF table of contents.
+    fn get_pdf_toc_candidates(&self, cx: &App) -> Vec<Candidate> {
+        let toc = match self.pdf_view.as_ref() {
+            Some(pv) => pv.read(cx).state.read(cx).toc.clone(),
+            None => return Vec::new(),
+        };
+        if toc.is_empty() {
+            return vec![Candidate {
+                label: "(No table of contents)".to_string(),
+                detail: None,
+                is_action: false,
+                data: String::new(),
+            }];
+        }
+
+        let query = &self.minibuffer.input;
+        let matcher = SkimMatcherV2::default();
+
+        let mut scored: Vec<(i64, &TocEntry)> = toc.iter()
+            .filter_map(|entry| {
+                if query.is_empty() {
+                    Some((0, entry))
+                } else {
+                    matcher.fuzzy_match(&entry.title, query).map(|s| (s, entry))
+                }
+            })
+            .collect();
+
+        if !query.is_empty() {
+            scored.sort_by(|a, b| b.0.cmp(&a.0));
+        }
+
+        scored.into_iter()
+            .take(MAX_RESULTS)
+            .map(|(_, entry)| {
+                let indent = "  ".repeat(entry.level);
+                Candidate {
+                    label: format!("{}{}",indent, entry.title),
+                    detail: Some(format!("Page {}", entry.page + 1)),
+                    is_action: false,
+                    data: entry.page.to_string(),
+                }
+            })
+            .collect()
+    }
+
+    /// Build candidates for go-to-page (shows matching page numbers).
+    fn get_pdf_goto_page_candidates(&self, cx: &App) -> Vec<Candidate> {
+        let page_count = match self.pdf_view.as_ref() {
+            Some(pv) => pv.read(cx).state.read(cx).page_count,
+            None => return Vec::new(),
+        };
+        let input = self.minibuffer.input.trim();
+        if input.is_empty() {
+            return Vec::new();
+        }
+        // Show matching page number as a candidate
+        if let Ok(num) = input.parse::<usize>() {
+            if num >= 1 && num <= page_count {
+                return vec![Candidate {
+                    label: format!("Page {}", num),
+                    detail: Some(format!("of {}", page_count)),
+                    is_action: false,
+                    data: num.to_string(),
+                }];
+            }
+        }
+        Vec::new()
+    }
+
+    /// Helper to run a closure on PdfState if in PDF mode.
+    fn pdf_command(
+        &mut self,
+        cx: &mut Context<Self>,
+        f: impl FnOnce(&mut PdfState, f32, f32, &mut Context<PdfState>),
+        window: &mut Window,
+    ) {
+        if self.view_mode != ViewMode::Pdf {
+            self.minibuffer.set_message("Not in PDF view");
+            cx.notify();
+            return;
+        }
+        if let Some(ref pv) = self.pdf_view {
+            let vw: f32 = window.viewport_size().width.into();
+            let vh: f32 = window.viewport_size().height.into();
+            let state = pv.read(cx).state.clone();
+            state.update(cx, |s, cx| f(s, vw, vh, cx));
+        }
+    }
+
     fn save(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
         let text = self.editor_state.read(cx).content();
         self.state.content = text;
@@ -623,6 +941,12 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             state.set_content(content, window, cx);
         });
         self.view_mode = ViewMode::Editor;
+        // Deactivate PDF layer, reactivate vim layers
+        self.keymap.stack.deactivate_layer("pdf");
+        if self.keymap.vim_enabled {
+            self.keymap.stack.activate_layer("vim:normal");
+            self.keymap.stack.activate_layer("vim:motion");
+        }
         cx.notify();
     }
 
@@ -653,6 +977,13 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         pdf_state.read(cx).focus(window);
         self.pdf_view = Some(pdf_view);
         self.view_mode = ViewMode::Pdf;
+        // Activate PDF layer, deactivate vim layers (motions don't apply to PDF)
+        self.keymap.stack.activate_layer("pdf");
+        self.keymap.stack.deactivate_layer("vim:normal");
+        self.keymap.stack.deactivate_layer("vim:motion");
+        self.keymap.stack.deactivate_layer("vim:insert");
+        self.keymap.stack.deactivate_layer("vim:visual");
+        self.keymap.stack.deactivate_layer("vim:operator-pending");
         cx.notify();
     }
 
@@ -793,8 +1124,8 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
 
     fn render_mode_line(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let es = self.editor_state.read(cx);
-        let vim_enabled = es.keymap.vim_enabled;
-        let vim_state = es.keymap.active_vim_state().map(|s| s.to_string());
+        let vim_enabled = self.keymap.vim_enabled;
+        let vim_state = self.keymap.active_vim_state().map(|s| s.to_string());
         let cursor = es.cursor;
         let content = es.content();
         let _ = es;
@@ -944,7 +1275,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         }
 
         // Active — prompt + input with cursor + vertico candidate list
-        let candidates = self.get_candidates();
+        let candidates = self.get_candidates(cx);
         let selected = self.minibuffer.selected;
         let (before_cursor, after_cursor) = self.minibuffer.input_parts();
 
@@ -1064,14 +1395,118 @@ impl Render for Memex {
             .bg(rgb(0xFDF6E3))  // solarized base3
             .font_family("FiraCode Nerd Font")
             .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
-                // Global shortcuts (only when minibuffer is not active)
-                if !this.minibuffer.active {
-                    if e.keystroke.modifiers.control && e.keystroke.key == "p" {
-                        this.activate_note_search(window, cx);
-                    } else if e.keystroke.modifiers.control && e.keystroke.key == "s" {
-                        this.save(window, cx);
-                    } else if e.keystroke.modifiers.alt && e.keystroke.key == "x" {
-                        this.activate_command_palette(window, cx);
+                // Don't intercept keys when minibuffer is active
+                if this.minibuffer.active {
+                    return;
+                }
+
+                let key = e.keystroke.key.as_str();
+                let ctrl = e.keystroke.modifiers.control;
+                let shift = e.keystroke.modifiers.shift;
+                let alt = e.keystroke.modifiers.alt;
+
+                // Global shortcuts (bypass keymap system)
+                if ctrl && key == "p" {
+                    this.activate_note_search(window, cx);
+                    return;
+                }
+                if ctrl && key == "s" {
+                    this.save(window, cx);
+                    return;
+                }
+                if alt && key == "x" {
+                    this.activate_command_palette(window, cx);
+                    return;
+                }
+
+                // Central key dispatch through the keymap system
+                let resolved = this.keymap.resolve_key(key, ctrl, shift, alt);
+                match resolved {
+                    ResolvedKey::Action(action, count) => {
+                        match &action {
+                            Action::Command(cmd_id) => {
+                                let cmd = cmd_id.clone();
+                                this.execute_command(&cmd, "", window, cx);
+                            }
+                            Action::ActivateLayer(layer_id) => {
+                                let lid = layer_id.clone();
+                                this.keymap.stack.activate_layer(&lid);
+                                cx.notify();
+                            }
+                            _ => {
+                                // Motion, Operator, SelfInsert, etc. — editor-specific
+                                if this.view_mode == ViewMode::Editor {
+                                    let keymap = &mut this.keymap;
+                                    let editor = this.editor_state.clone();
+                                    editor.update(cx, |state, ecx| {
+                                        let content = state.content();
+                                        let cursor = state.cursor;
+                                        let result = state.grammar.process(
+                                            action, key, count, &content, cursor,
+                                            &mut keymap.stack,
+                                        );
+                                        // Suppress OS input for handled keys
+                                        state.suppress_next_input = true;
+                                        state.execute_grammar_result(result, count, keymap, window, ecx);
+                                        // Sync mode flags for input handler
+                                        state.insert_mode = keymap.is_insert_active();
+                                        state.vim_enabled = keymap.vim_enabled;
+                                    });
+                                }
+                                // In PDF mode, text editing actions are ignored
+                            }
+                        }
+                    }
+                    ResolvedKey::TransientCapture { transient_id, ch, count } => {
+                        // f/t/r char captures — editor-only
+                        if this.view_mode == ViewMode::Editor {
+                            let editor = this.editor_state.clone();
+                            editor.update(cx, |state, ecx| {
+                                let content = state.content();
+                                let cursor = state.cursor;
+                                match &*transient_id {
+                                    "replace_char" => {
+                                        // Replace char at cursor
+                                        if cursor < content.len() {
+                                            let next_char_len = content[cursor..].chars().next().map_or(1, |c| c.len_utf8());
+                                            let mut new_content = content.clone();
+                                            new_content.replace_range(cursor..cursor + next_char_len, &ch.to_string());
+                                            state.set_content(new_content, window, ecx);
+                                        }
+                                        state.suppress_next_input = true;
+                                        ecx.notify();
+                                    }
+                                    kind @ ("find_char_forward" | "til_char_forward"
+                                          | "find_char_backward" | "til_char_backward") => {
+                                        let pos = match kind {
+                                            "find_char_forward" => keymap::find_char_forward(&content, cursor, ch, count),
+                                            "til_char_forward" => keymap::til_char_forward(&content, cursor, ch, count),
+                                            "find_char_backward" => keymap::find_char_backward(&content, cursor, ch, count),
+                                            "til_char_backward" => keymap::til_char_backward(&content, cursor, ch, count),
+                                            _ => cursor,
+                                        };
+                                        // Store last char search for ; and ,
+                                        state.grammar.last_char_search = Some((ch, kind));
+                                        state.cursor = pos;
+                                        state.suppress_next_input = true;
+                                        ecx.notify();
+                                    }
+                                    _ => {}
+                                }
+                            });
+                        }
+                    }
+                    ResolvedKey::Pending => {
+                        // Multi-key sequence or count digit — suppress OS input
+                        if this.view_mode == ViewMode::Editor {
+                            this.editor_state.update(cx, |state, _cx| {
+                                state.suppress_next_input = true;
+                            });
+                        }
+                    }
+                    ResolvedKey::Unhandled => {
+                        // Key not bound — in editor insert mode, let OS handle it
+                        // In normal mode or PDF mode, nothing to do
                     }
                 }
             }))

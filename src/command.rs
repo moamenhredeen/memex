@@ -240,6 +240,141 @@ impl CommandRegistry {
             aliases: &[],
             binding: Some("M-p"),
         });
+        // PDF commands
+        self.register(Command {
+            id: "pdf-toc",
+            name: "PDF: Table of Contents",
+            description: "Browse and jump to table of contents entries",
+            aliases: &["toc", "outline", "contents"],
+            binding: Some("o"),
+        });
+        self.register(Command {
+            id: "pdf-goto-page",
+            name: "PDF: Go to Page",
+            description: "Jump to a specific page number",
+            aliases: &["goto-page", "page"],
+            binding: Some("P"),
+        });
+        self.register(Command {
+            id: "pdf-bookmarks",
+            name: "PDF: Bookmarks",
+            description: "Browse PDF bookmarks (outline entries)",
+            aliases: &["bookmarks"],
+            binding: None,
+        });
+        self.register(Command {
+            id: "pdf-fit-width",
+            name: "PDF: Fit Width",
+            description: "Zoom to fit page width to viewport",
+            aliases: &["fit-width"],
+            binding: Some("w"),
+        });
+        self.register(Command {
+            id: "pdf-fit-page",
+            name: "PDF: Fit Page",
+            description: "Zoom to fit entire page in viewport",
+            aliases: &["fit-page"],
+            binding: Some("W"),
+        });
+        self.register(Command {
+            id: "pdf-rotate-cw",
+            name: "PDF: Rotate Clockwise",
+            description: "Rotate current page 90° clockwise",
+            aliases: &["rotate-cw", "rotate"],
+            binding: Some("r"),
+        });
+        self.register(Command {
+            id: "pdf-rotate-ccw",
+            name: "PDF: Rotate Counter-Clockwise",
+            description: "Rotate current page 90° counter-clockwise",
+            aliases: &["rotate-ccw"],
+            binding: Some("R"),
+        });
+        self.register(Command {
+            id: "pdf-dark-mode",
+            name: "PDF: Toggle Dark Mode",
+            description: "Invert colors for night reading",
+            aliases: &["dark-mode", "invert"],
+            binding: None,
+        });
+        self.register(Command {
+            id: "pdf-two-page",
+            name: "PDF: Two-Page Spread",
+            description: "Toggle side-by-side two-page view",
+            aliases: &["spread", "two-page"],
+            binding: None,
+        });
+        self.register(Command {
+            id: "pdf-copy-link",
+            name: "PDF: Copy Page Link",
+            description: "Copy [[file.pdf#page=N]] link to clipboard",
+            aliases: &["copy-link", "yank-link"],
+            binding: Some("y"),
+        });
+        self.register(Command {
+            id: "pdf-extract-text",
+            name: "PDF: Extract Page Text",
+            description: "Copy text from current page to clipboard",
+            aliases: &["extract-text"],
+            binding: Some("Y"),
+        });
+        // PDF navigation/scroll commands
+        self.register(Command {
+            id: "pdf-scroll-down",
+            name: "PDF: Scroll Down",
+            description: "Scroll PDF down one step",
+            aliases: &[],
+            binding: Some("j"),
+        });
+        self.register(Command {
+            id: "pdf-scroll-up",
+            name: "PDF: Scroll Up",
+            description: "Scroll PDF up one step",
+            aliases: &[],
+            binding: Some("k"),
+        });
+        self.register(Command {
+            id: "pdf-half-page-down",
+            name: "PDF: Half Page Down",
+            description: "Scroll PDF down half a page",
+            aliases: &[],
+            binding: Some("Ctrl-d"),
+        });
+        self.register(Command {
+            id: "pdf-half-page-up",
+            name: "PDF: Half Page Up",
+            description: "Scroll PDF up half a page",
+            aliases: &[],
+            binding: Some("Ctrl-u"),
+        });
+        self.register(Command {
+            id: "pdf-zoom-in",
+            name: "PDF: Zoom In",
+            description: "Increase PDF zoom level",
+            aliases: &[],
+            binding: Some("+"),
+        });
+        self.register(Command {
+            id: "pdf-zoom-out",
+            name: "PDF: Zoom Out",
+            description: "Decrease PDF zoom level",
+            aliases: &[],
+            binding: Some("-"),
+        });
+        self.register(Command {
+            id: "pdf-goto-first",
+            name: "PDF: Go to First Page",
+            description: "Jump to the first page",
+            aliases: &[],
+            binding: Some("g"),
+        });
+        self.register(Command {
+            id: "pdf-goto-last",
+            name: "PDF: Go to Last Page",
+            description: "Jump to the last page",
+            aliases: &[],
+            binding: Some("G"),
+        });
     }
 }
 
