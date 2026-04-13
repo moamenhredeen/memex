@@ -5,9 +5,9 @@ use gpui_component::{h_flex, v_flex};
 
 use crate::command::Command;
 use crate::editor::{EditorEvent, EditorState, EditorView};
-use crate::keymap::{self, KeymapSystem, ResolvedKey, Action};
+use crate::keymap::{KeymapSystem, ResolvedKey, Action};
 use crate::minibuffer::{Candidate, DelegateKind, Minibuffer, MinibufferAction, MinibufferVimMode};
-use crate::pane::{ActiveItem, ItemAction};
+use crate::pane::{ActiveItem, ItemAction, VimSnapshot};
 use crate::pdf::{PdfState, PdfView};
 use crate::state::AppState;
 
@@ -121,13 +121,21 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         }
     }
 
-    /// Sync vim_enabled and insert_mode flags to EditorState (for input handler / cursor rendering)
-    fn sync_editor_mode_flags(&self, cx: &mut Context<Self>) {
+    /// Create a read-only snapshot of keymap state for item dispatch.
+    fn vim_snapshot(&self) -> VimSnapshot {
+        VimSnapshot {
+            vim_enabled: self.keymap.vim_enabled,
+            visual_active: self.keymap.is_visual_active(),
+            insert_active: self.keymap.is_insert_active(),
+        }
+    }
+
+    /// Sync vim flags from keymap to editor state.
+    fn sync_editor_vim_flags(&self, cx: &mut Context<Self>) {
         let vim = self.keymap.vim_enabled;
         let insert = self.keymap.is_insert_active();
         self.editor_state.update(cx, |state, _cx| {
-            state.vim_enabled = vim;
-            state.insert_mode = insert;
+            state.sync_vim_flags(vim, insert);
         });
     }
 
@@ -261,11 +269,12 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 } else if !input.is_empty() {
                     // Try executing raw input as ex command
                     self.dismiss_minibuffer(window, cx);
-                    let keymap = &mut self.keymap;
+                    let vim = self.vim_snapshot();
                     let editor = self.editor_state.clone();
-                    editor.update(cx, |state, cx| {
-                        state.execute_ex_command(&input, keymap, window, cx);
+                    let actions = editor.update(cx, |state, cx| {
+                        state.execute_ex_command(&input, vim, window, cx)
                     });
+                    self.process_item_actions(actions, window, cx);
                 }
             }
             DelegateKind::NoteSearch => {
@@ -350,6 +359,15 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 ItemAction::WriteClipboard(text) => {
                     cx.write_to_clipboard(ClipboardItem::new_string(text));
                 }
+                ItemAction::ActivateLayer(layer_id) => {
+                    self.keymap.stack.activate_layer(layer_id);
+                }
+                ItemAction::SetVimEnabled(enabled) => {
+                    self.keymap.set_vim_enabled(enabled);
+                }
+                ItemAction::SyncVimFlags => {
+                    self.sync_editor_vim_flags(cx);
+                }
             }
         }
         cx.notify();
@@ -406,56 +424,22 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     self.open_note_by_path(p, window, cx);
                 }
             }
-            "set" => {
-                let keymap = &mut self.keymap;
-                let editor = self.editor_state.clone();
-                let msg = editor.update(cx, |state, _cx| {
-                    state.handle_set_command("", keymap)
-                });
-                self.minibuffer.set_message(msg);
-            }
-            "set-vim" => {
-                self.keymap.set_vim_enabled(true);
-                self.sync_editor_mode_flags(cx);
-                self.minibuffer.set_message("Vim mode enabled");
-                cx.notify();
-            }
-            "set-novim" => {
-                self.keymap.set_vim_enabled(false);
-                self.sync_editor_mode_flags(cx);
-                self.minibuffer.set_message("Vim mode disabled");
-                cx.notify();
-            }
-            "nohlsearch" => {
-                self.minibuffer.set_message("Search highlighting cleared");
-            }
-            "toggle-vim" => {
-                let new_state = !self.keymap.vim_enabled;
-                self.keymap.set_vim_enabled(new_state);
-                self.sync_editor_mode_flags(cx);
-                if new_state {
-                    self.minibuffer.set_message("Vim mode enabled");
-                } else {
-                    self.minibuffer.set_message("Vim mode disabled");
-                }
-            }
             _ => {
-                // Try as item command first (PDF commands, editor outline, etc.)
+                // Dispatch to active item (PDF commands, editor commands, etc.)
                 let vw: f32 = window.viewport_size().width.into();
                 let vh: f32 = window.viewport_size().height.into();
-                let vim = self.keymap.vim_enabled;
+                let vim = self.vim_snapshot();
                 let actions = self.active_item.execute_command(cmd_id, (vw, vh), vim, cx);
                 if !actions.is_empty() {
                     self.process_item_actions(actions, window, cx);
                 } else if self.active_item.is_editor() {
-                    // Fallback: editor commands that need keymap access
-                    let keymap = &mut self.keymap;
+                    // Editor commands that need window access (editing, motions, etc.)
+                    let vim = self.vim_snapshot();
                     let editor = self.editor_state.clone();
-                    editor.update(cx, |state, ecx| {
-                        state.execute_command_by_id(cmd_id, count, keymap, window, ecx);
-                        state.insert_mode = keymap.is_insert_active();
-                        state.vim_enabled = keymap.vim_enabled;
+                    let item_actions = editor.update(cx, |state, ecx| {
+                        state.execute_command_by_id(cmd_id, count, vim, window, ecx)
                     });
+                    self.process_item_actions(item_actions, window, cx);
                     if let Some(msg) = self.editor_state.read(cx).status_message.clone() {
                         self.minibuffer.set_message(msg);
                     }
@@ -1233,104 +1217,39 @@ impl Render for Memex {
                             }
                             Action::ActivateLayer(layer_id) => {
                                 this.keymap.stack.activate_layer(layer_id);
-                                // Sync mode flags to editor
-                                this.sync_editor_mode_flags(cx);
-                                // Suppress OS input (don't insert the key character)
                                 if this.active_item.is_editor() {
-                                    this.editor_state.update(cx, |state, _cx| {
-                                        state.suppress_next_input = true;
-                                        // Handle side effects of mode changes
-                                        match *layer_id {
-                                            "vim:insert" => {
-                                                state.history.break_coalescing();
-                                            }
-                                            "vim:normal" => {
-                                                if !state.selected_range.is_empty() {
-                                                    let pos = state.selected_range.start;
-                                                    state.selected_range = pos..pos;
-                                                    state.cursor = pos;
-                                                }
-                                                state.history.break_coalescing();
-                                            }
-                                            "vim:visual" | "vim:visual-line" => {
-                                                if state.selected_range.is_empty() {
-                                                    let pos = state.cursor;
-                                                    let end = state.cursor + 1; // approximate next grapheme
-                                                    state.selected_range = pos..end;
-                                                    state.selection_reversed = false;
-                                                }
-                                            }
-                                            _ => {}
-                                        }
+                                    this.editor_state.update(cx, |state, cx| {
+                                        state.on_layer_activated(layer_id, cx);
                                     });
                                 }
+                                this.sync_editor_vim_flags(cx);
                                 cx.notify();
                             }
                             _ => {
                                 // Motion, Operator, SelfInsert, etc. — editor-specific
                                 if this.active_item.is_editor() {
-                                    let keymap = &mut this.keymap;
+                                    let vim = this.vim_snapshot();
                                     let editor = this.editor_state.clone();
-                                    editor.update(cx, |state, ecx| {
-                                        let content = state.content();
-                                        let cursor = state.cursor;
-                                        let result = state.grammar.process(
-                                            action, key, count, &content, cursor,
-                                            &mut keymap.stack,
-                                        );
-                                        // Suppress OS input for handled keys
-                                        state.suppress_next_input = true;
-                                        state.execute_grammar_result(result, count, keymap, window, ecx);
-                                        // Sync mode flags for input handler
-                                        state.insert_mode = keymap.is_insert_active();
-                                        state.vim_enabled = keymap.vim_enabled;
+                                    let item_actions = editor.update(cx, |state, ecx| {
+                                        state.process_vim_action(
+                                            action, key, count, vim,
+                                            &mut this.keymap.stack,
+                                            window, ecx,
+                                        )
                                     });
+                                    this.process_item_actions(item_actions, window, cx);
                                 }
-                                // In PDF mode, text editing actions are ignored
                             }
                         }
                     }
                     ResolvedKey::TransientCapture { transient_id, ch, count } => {
-                        // f/t/r char captures — editor-only
                         if this.active_item.is_editor() {
-                            let editor = this.editor_state.clone();
-                            editor.update(cx, |state, ecx| {
-                                let content = state.content();
-                                let cursor = state.cursor;
-                                match &*transient_id {
-                                    "replace_char" => {
-                                        // Replace char at cursor
-                                        if cursor < content.len() {
-                                            let next_char_len = content[cursor..].chars().next().map_or(1, |c| c.len_utf8());
-                                            let mut new_content = content.clone();
-                                            new_content.replace_range(cursor..cursor + next_char_len, &ch.to_string());
-                                            state.set_content(new_content, window, ecx);
-                                        }
-                                        state.suppress_next_input = true;
-                                        ecx.notify();
-                                    }
-                                    kind @ ("find_char_forward" | "til_char_forward"
-                                          | "find_char_backward" | "til_char_backward") => {
-                                        let pos = match kind {
-                                            "find_char_forward" => keymap::find_char_forward(&content, cursor, ch, count),
-                                            "til_char_forward" => keymap::til_char_forward(&content, cursor, ch, count),
-                                            "find_char_backward" => keymap::find_char_backward(&content, cursor, ch, count),
-                                            "til_char_backward" => keymap::til_char_backward(&content, cursor, ch, count),
-                                            _ => cursor,
-                                        };
-                                        // Store last char search for ; and ,
-                                        state.grammar.last_char_search = Some((ch, kind));
-                                        state.cursor = pos;
-                                        state.suppress_next_input = true;
-                                        ecx.notify();
-                                    }
-                                    _ => {}
-                                }
+                            this.editor_state.update(cx, |state, ecx| {
+                                state.handle_transient_capture(&transient_id, ch, count, window, ecx);
                             });
                         }
                     }
                     ResolvedKey::Pending => {
-                        // Multi-key sequence or count digit — suppress OS input
                         if this.active_item.is_editor() {
                             this.editor_state.update(cx, |state, _cx| {
                                 state.suppress_next_input = true;

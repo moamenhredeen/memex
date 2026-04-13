@@ -734,14 +734,15 @@ impl EditorState {
         &mut self,
         result: crate::keymap::GrammarResult,
         count: usize,
-        keymap: &mut crate::keymap::KeymapSystem,
+        vim: crate::pane::VimSnapshot,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> Vec<ItemAction> {
         use crate::keymap::GrammarResult;
+        let mut actions = Vec::new();
         match result {
             GrammarResult::MoveCursor(offset) => {
-                if keymap.is_visual_active() {
+                if vim.visual_active {
                     self.select_to(offset, cx);
                 } else {
                     self.move_to(offset, cx);
@@ -757,7 +758,7 @@ impl EditorState {
                 self.edit_text("", cx);
                 self.move_to(target.min(self.content_len()), cx);
                 if enter_insert {
-                    keymap.stack.activate_layer("vim:insert");
+                    actions.push(ItemAction::ActivateLayer("vim:insert"));
                     self.insert_mode = true;
                     self.history.break_coalescing();
                     cx.notify();
@@ -776,21 +777,22 @@ impl EditorState {
                 self.edit_text("", cx);
             }
             GrammarResult::ExecuteCommand(cmd_id) => {
-                self.execute_command_by_id(cmd_id, count, keymap, window, cx);
+                let sub_actions = self.execute_command_by_id(cmd_id, count, vim, window, cx);
+                actions.extend(sub_actions);
             }
             GrammarResult::Batch(results) => {
                 for r in results {
-                    self.execute_grammar_result(r, count, keymap, window, cx);
+                    let sub_actions = self.execute_grammar_result(r, count, vim, window, cx);
+                    actions.extend(sub_actions);
                 }
             }
             GrammarResult::ActivateLayer(layer_id) => {
-                // Layer was already activated by grammar; handle side effects
+                // Handle side effects of layer change
                 match layer_id {
                     "vim:insert" => {
                         self.history.break_coalescing();
                     }
                     "vim:normal" => {
-                        // Collapse selection when returning to normal mode
                         if !self.selected_range.is_empty() {
                             let pos = self.selected_range.start;
                             self.move_to(pos, cx);
@@ -798,7 +800,6 @@ impl EditorState {
                         self.history.break_coalescing();
                     }
                     "vim:visual" | "vim:visual-line" => {
-                        // Start visual selection at cursor
                         if self.selected_range.is_empty() {
                             let pos = self.cursor;
                             self.selected_range = pos..self.next_grapheme(pos);
@@ -808,8 +809,7 @@ impl EditorState {
                     _ => {}
                 }
                 cx.notify();
-                // Sync insert_mode flag for input handler
-                self.insert_mode = keymap.is_insert_active();
+                actions.push(ItemAction::SyncVimFlags);
             }
             GrammarResult::PushTransient(_) => {
                 // Transient layer was pushed by grammar; nothing to do here
@@ -850,15 +850,13 @@ impl EditorState {
                                     "visual-line" => "vim:visual-line",
                                     _ => "vim:insert",
                                 };
-                                keymap.stack.activate_layer(layer_id);
-                                self.insert_mode = keymap.is_insert_active();
+                                actions.push(ItemAction::ActivateLayer(layer_id));
+                                actions.push(ItemAction::SyncVimFlags);
                                 cx.notify();
                             }
                             commands::EditorCommand::ToggleVimMode => {
-                                let enabled = !keymap.vim_enabled;
-                                keymap.set_vim_enabled(enabled);
-                                self.vim_enabled = keymap.vim_enabled;
-                                self.insert_mode = keymap.is_insert_active();
+                                actions.push(ItemAction::SetVimEnabled(!vim.vim_enabled));
+                                actions.push(ItemAction::SyncVimFlags);
                                 self.history.break_coalescing();
                                 cx.notify();
                             }
@@ -869,6 +867,109 @@ impl EditorState {
             }
             GrammarResult::Pending | GrammarResult::Noop => {}
         }
+        actions
+    }
+
+    /// Handle keymap layer activation side effects (vim mode changes).
+    pub fn on_layer_activated(&mut self, layer_id: &str, cx: &mut Context<Self>) {
+        self.suppress_next_input = true;
+        match layer_id {
+            "vim:insert" => {
+                self.history.break_coalescing();
+            }
+            "vim:normal" => {
+                if !self.selected_range.is_empty() {
+                    let pos = self.selected_range.start;
+                    self.selected_range = pos..pos;
+                    self.cursor = pos;
+                }
+                self.history.break_coalescing();
+            }
+            "vim:visual" | "vim:visual-line" => {
+                if self.selected_range.is_empty() {
+                    let pos = self.cursor;
+                    let end = self.next_grapheme(pos);
+                    self.selected_range = pos..end;
+                    self.selection_reversed = false;
+                }
+            }
+            _ => {}
+        }
+        cx.notify();
+    }
+
+    /// Handle f/t/r transient char captures.
+    pub fn handle_transient_capture(
+        &mut self,
+        transient_id: &str,
+        ch: char,
+        count: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let content = self.content();
+        let cursor = self.cursor;
+        match transient_id {
+            "replace_char" => {
+                if cursor < content.len() {
+                    let next_char_len = content[cursor..].chars().next().map_or(1, |c| c.len_utf8());
+                    let mut new_content = content.clone();
+                    new_content.replace_range(cursor..cursor + next_char_len, &ch.to_string());
+                    self.set_content(new_content, window, cx);
+                }
+                self.suppress_next_input = true;
+                cx.notify();
+            }
+            kind @ ("find_char_forward" | "til_char_forward"
+                  | "find_char_backward" | "til_char_backward") => {
+                let pos = match kind {
+                    "find_char_forward" => crate::keymap::find_char_forward(&content, cursor, ch, count),
+                    "til_char_forward" => crate::keymap::til_char_forward(&content, cursor, ch, count),
+                    "find_char_backward" => crate::keymap::find_char_backward(&content, cursor, ch, count),
+                    "til_char_backward" => crate::keymap::til_char_backward(&content, cursor, ch, count),
+                    _ => cursor,
+                };
+                // Map to static str for storage
+                let static_kind: &'static str = match kind {
+                    "find_char_forward" => "find_char_forward",
+                    "til_char_forward" => "til_char_forward",
+                    "find_char_backward" => "find_char_backward",
+                    "til_char_backward" => "til_char_backward",
+                    _ => unreachable!(),
+                };
+                self.grammar.last_char_search = Some((ch, static_kind));
+                self.cursor = pos;
+                self.suppress_next_input = true;
+                cx.notify();
+            }
+            _ => {}
+        }
+    }
+
+    /// Process a vim grammar action (Motion, Operator, SelfInsert, etc.).
+    /// Returns ItemActions for any layer changes needed.
+    pub fn process_vim_action(
+        &mut self,
+        action: crate::keymap::Action,
+        key: &str,
+        count: usize,
+        vim: crate::pane::VimSnapshot,
+        stack: &mut crate::keymap::LayerStack,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<ItemAction> {
+        let content = self.content();
+        let cursor = self.cursor;
+        let result = self.grammar.process(action, key, count, &content, cursor, stack);
+        self.suppress_next_input = true;
+        let actions = self.execute_grammar_result(result, count, vim, window, cx);
+        actions
+    }
+
+    /// Sync vim mode flags from keymap state.
+    pub fn sync_vim_flags(&mut self, vim_enabled: bool, insert_active: bool) {
+        self.vim_enabled = vim_enabled;
+        self.insert_mode = insert_active;
     }
 
     /// Execute a named command (from keymap Command actions).
@@ -876,11 +977,12 @@ impl EditorState {
         &mut self,
         cmd_id: &str,
         count: usize,
-        keymap: &mut crate::keymap::KeymapSystem,
+        vim: crate::pane::VimSnapshot,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> Vec<ItemAction> {
         use commands::EditorCommand;
+        let mut actions = Vec::new();
         match cmd_id {
             // Basic editing
             "delete-backward" => self.dispatch(EditorCommand::DeleteBackward, window, cx),
@@ -897,41 +999,39 @@ impl EditorState {
             "redo" => self.dispatch(EditorCommand::Redo, window, cx),
             // Vim mode
             "toggle-vim" => {
-                let enabled = !keymap.vim_enabled;
-                keymap.set_vim_enabled(enabled);
-                self.vim_enabled = keymap.vim_enabled;
-                self.insert_mode = keymap.is_insert_active();
+                actions.push(ItemAction::SetVimEnabled(!vim.vim_enabled));
+                actions.push(ItemAction::SyncVimFlags);
                 self.history.break_coalescing();
                 cx.notify();
             }
             // Visual mode operations
             "delete-selection" => {
-                if keymap.is_visual_active() {
+                if vim.visual_active {
                     let (s, e) = self.ordered_selection();
                     let content = self.content();
                     self.grammar.register_content = content[s..e].to_string();
                 }
                 self.dispatch(EditorCommand::DeleteSelection, window, cx);
-                if keymap.is_visual_active() {
-                    keymap.stack.activate_layer("vim:normal");
+                if vim.visual_active {
+                    actions.push(ItemAction::ActivateLayer("vim:normal"));
                     cx.notify();
                 }
             }
             "yank-selection" => {
                 self.dispatch(EditorCommand::YankSelection, window, cx);
-                if keymap.is_visual_active() {
-                    keymap.stack.activate_layer("vim:normal");
+                if vim.visual_active {
+                    actions.push(ItemAction::ActivateLayer("vim:normal"));
                     cx.notify();
                 }
             }
             "change-selection" => {
-                if keymap.is_visual_active() {
+                if vim.visual_active {
                     let (s, e) = self.ordered_selection();
                     let content = self.content();
                     self.grammar.register_content = content[s..e].to_string();
                 }
                 self.dispatch(EditorCommand::DeleteSelection, window, cx);
-                keymap.stack.activate_layer("vim:insert");
+                actions.push(ItemAction::ActivateLayer("vim:insert"));
                 self.history.break_coalescing();
                 cx.notify();
             }
@@ -939,29 +1039,29 @@ impl EditorState {
             "dedent-selection" => self.dispatch(EditorCommand::DedentSelection, window, cx),
             "toggle-case-selection" => {
                 self.dispatch(EditorCommand::ToggleCaseSelection, window, cx);
-                if keymap.is_visual_active() {
-                    keymap.stack.activate_layer("vim:normal");
+                if vim.visual_active {
+                    actions.push(ItemAction::ActivateLayer("vim:normal"));
                     cx.notify();
                 }
             }
             "uppercase-selection" => {
                 self.dispatch(EditorCommand::UppercaseSelection, window, cx);
-                if keymap.is_visual_active() {
-                    keymap.stack.activate_layer("vim:normal");
+                if vim.visual_active {
+                    actions.push(ItemAction::ActivateLayer("vim:normal"));
                     cx.notify();
                 }
             }
             "lowercase-selection" => {
                 self.dispatch(EditorCommand::LowercaseSelection, window, cx);
-                if keymap.is_visual_active() {
-                    keymap.stack.activate_layer("vim:normal");
+                if vim.visual_active {
+                    actions.push(ItemAction::ActivateLayer("vim:normal"));
                     cx.notify();
                 }
             }
             "join-selection" => {
                 self.dispatch(EditorCommand::JoinSelection, window, cx);
-                if keymap.is_visual_active() {
-                    keymap.stack.activate_layer("vim:normal");
+                if vim.visual_active {
+                    actions.push(ItemAction::ActivateLayer("vim:normal"));
                     cx.notify();
                 }
             }
@@ -1000,7 +1100,7 @@ impl EditorState {
                 // a — move right one char and enter insert
                 let pos = self.next_grapheme(self.cursor);
                 self.move_to(pos, cx);
-                keymap.stack.activate_layer("vim:insert");
+                actions.push(ItemAction::ActivateLayer("vim:insert"));
                 self.history.break_coalescing();
                 cx.notify();
             }
@@ -1009,7 +1109,7 @@ impl EditorState {
                 let content = self.content();
                 let target = crate::keymap::motion_first_non_whitespace(&content, self.cursor, 1);
                 self.move_to(target, cx);
-                keymap.stack.activate_layer("vim:insert");
+                actions.push(ItemAction::ActivateLayer("vim:insert"));
                 self.history.break_coalescing();
                 cx.notify();
             }
@@ -1018,7 +1118,7 @@ impl EditorState {
                 let content = self.content();
                 let target = crate::keymap::motion_line_end(&content, self.cursor, 1);
                 self.move_to(target, cx);
-                keymap.stack.activate_layer("vim:insert");
+                actions.push(ItemAction::ActivateLayer("vim:insert"));
                 self.history.break_coalescing();
                 cx.notify();
             }
@@ -1029,7 +1129,7 @@ impl EditorState {
                 let line_end = content[pos..].find('\n').map(|p| pos + p).unwrap_or(content.len());
                 self.move_to(line_end, cx);
                 self.edit_text("\n", cx);
-                keymap.stack.activate_layer("vim:insert");
+                actions.push(ItemAction::ActivateLayer("vim:insert"));
                 self.history.break_coalescing();
                 cx.notify();
             }
@@ -1040,10 +1140,9 @@ impl EditorState {
                 let line_start = content[..pos].rfind('\n').map(|i| i + 1).unwrap_or(0);
                 self.move_to(line_start, cx);
                 self.edit_text("\n", cx);
-                // Move cursor up to the new empty line
                 let new_pos = line_start;
                 self.move_to(new_pos, cx);
-                keymap.stack.activate_layer("vim:insert");
+                actions.push(ItemAction::ActivateLayer("vim:insert"));
                 self.history.break_coalescing();
                 cx.notify();
             }
@@ -1123,7 +1222,7 @@ impl EditorState {
                     self.selected_range = pos..line_end;
                     self.edit_text("", cx);
                 }
-                keymap.stack.activate_layer("vim:insert");
+                actions.push(ItemAction::ActivateLayer("vim:insert"));
                 self.history.break_coalescing();
                 cx.notify();
             }
@@ -1136,7 +1235,7 @@ impl EditorState {
                 self.grammar.register_content = content[line_start..line_end].to_string();
                 self.selected_range = line_start..line_end;
                 self.edit_text("", cx);
-                keymap.stack.activate_layer("vim:insert");
+                actions.push(ItemAction::ActivateLayer("vim:insert"));
                 self.history.break_coalescing();
                 cx.notify();
             }
@@ -1167,7 +1266,7 @@ impl EditorState {
                 let content = self.content();
                 let cursor = self.cursor;
                 if let Some(target) = crate::keymap::repeat_char_search(&self.grammar, &content, cursor, count) {
-                    if keymap.is_visual_active() {
+                    if vim.visual_active {
                         self.select_to(target, cx);
                     } else {
                         self.move_to(target, cx);
@@ -1178,7 +1277,7 @@ impl EditorState {
                 let content = self.content();
                 let cursor = self.cursor;
                 if let Some(target) = crate::keymap::repeat_char_search_reverse(&self.grammar, &content, cursor, count) {
-                    if keymap.is_visual_active() {
+                    if vim.visual_active {
                         self.select_to(target, cx);
                     } else {
                         self.move_to(target, cx);
@@ -1231,6 +1330,11 @@ impl EditorState {
             "outline-move-down" => self.dispatch(EditorCommand::OutlineMoveDown, window, cx),
             "outline-next-heading" => self.dispatch(EditorCommand::OutlineNextHeading, window, cx),
             "outline-prev-heading" => self.dispatch(EditorCommand::OutlinePrevHeading, window, cx),
+            "set" => {
+                let (msg, set_actions) = self.handle_set_command("", &vim);
+                actions.push(ItemAction::SetMessage(msg));
+                actions.extend(set_actions);
+            }
             _ => {
                 // Try plugin commands
                 let content = self.content();
@@ -1243,6 +1347,7 @@ impl EditorState {
                 }
             }
         }
+        actions
     }
 
     /// Execute an ex-style command (`:w`, `:q`, `:set`, etc.).
@@ -1250,10 +1355,11 @@ impl EditorState {
     pub fn execute_ex_command(
         &mut self,
         input: &str,
-        keymap: &mut crate::keymap::KeymapSystem,
+        vim: crate::pane::VimSnapshot,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) {
+    ) -> Vec<ItemAction> {
+        let mut actions = Vec::new();
         let input = input.trim();
         let (cmd, args) = match input.split_once(' ') {
             Some((c, a)) => (c, a.trim()),
@@ -1273,7 +1379,9 @@ impl EditorState {
                 cx.emit(EditorEvent::RequestQuit);
             }
             "set" => {
-                self.status_message = Some(self.handle_set_command(args, keymap));
+                let (msg, set_actions) = self.handle_set_command(args, &vim);
+                actions.push(ItemAction::SetMessage(msg));
+                actions.extend(set_actions);
             }
             "noh" | "nohlsearch" => {
                 self.status_message = Some("Search highlighting cleared".into());
@@ -1313,32 +1421,33 @@ impl EditorState {
                 }
             }
         }
+        actions
     }
 
-    pub fn handle_set_command(&mut self, args: &str, keymap: &mut crate::keymap::KeymapSystem) -> String {
+    pub fn handle_set_command(&mut self, args: &str, vim: &crate::pane::VimSnapshot) -> (String, Vec<ItemAction>) {
         if args.is_empty() {
-            let mode_label = keymap.active_vim_state().unwrap_or("EDT");
-            return format!(
-                "vim={} mode={}",
-                keymap.vim_enabled,
-                mode_label
-            );
+            let mode_label = if vim.visual_active {
+                "VIS"
+            } else if vim.insert_active {
+                "INS"
+            } else {
+                "NOR"
+            };
+            return (format!("vim={} mode={}", vim.vim_enabled, mode_label), vec![]);
         }
 
         match args {
             "vim" => {
-                keymap.set_vim_enabled(true);
-                "Vim mode enabled".into()
+                ("Vim mode enabled".into(), vec![ItemAction::SetVimEnabled(true), ItemAction::SyncVimFlags])
             }
             "novim" => {
-                keymap.set_vim_enabled(false);
-                "Vim mode disabled".into()
+                ("Vim mode disabled".into(), vec![ItemAction::SetVimEnabled(false), ItemAction::SyncVimFlags])
             }
-            "number" | "nu" => "Line numbers not yet implemented".into(),
-            "nonumber" | "nonu" => "Line numbers not yet implemented".into(),
-            "wrap" => "Soft wrap not yet implemented".into(),
-            "nowrap" => "Soft wrap not yet implemented".into(),
-            _ => format!("Unknown option: {}", args),
+            "number" | "nu" => ("Line numbers not yet implemented".into(), vec![]),
+            "nonumber" | "nonu" => ("Line numbers not yet implemented".into(), vec![]),
+            "wrap" => ("Soft wrap not yet implemented".into(), vec![]),
+            "nowrap" => ("Soft wrap not yet implemented".into(), vec![]),
+            _ => (format!("Unknown option: {}", args), vec![]),
         }
     }
 
@@ -1407,18 +1516,41 @@ impl EditorState {
     }
 
     /// Execute a command via the PaneItem interface.
-    /// Editor commands are mostly handled by `execute_command_by_id` — this is the
-    /// thin wrapper returning ItemActions.
     pub fn item_execute_command(
         &mut self,
-        _cmd_id: &str,
+        cmd_id: &str,
         _viewport: (f32, f32),
+        vim: crate::pane::VimSnapshot,
         _cx: &mut Context<Self>,
     ) -> Vec<ItemAction> {
-        // Editor commands go through the existing execute_command_by_id path,
-        // which is called directly from app.rs with the keymap reference.
-        // This method exists for interface completeness.
-        vec![]
+        // Editor needs a window for dispatch — but we don't have one here.
+        // Commands that need window go through execute_command_by_id which
+        // is called from the key dispatch path. For command palette dispatch,
+        // we return status messages as ItemActions.
+        //
+        // The full execute_command_by_id is called from process_editor_key
+        // which has the window reference.
+        //
+        // For now, handle commands that don't need window + return actions for those that do.
+        match cmd_id {
+            "set" => {
+                let (msg, set_actions) = self.handle_set_command("", &vim);
+                let mut actions = vec![ItemAction::SetMessage(msg)];
+                actions.extend(set_actions);
+                actions
+            }
+            "toggle-vim" => {
+                vec![
+                    ItemAction::SetVimEnabled(!vim.vim_enabled),
+                    ItemAction::SyncVimFlags,
+                ]
+            }
+            _ => {
+                // Return empty — the full command will be dispatched via
+                // process_editor_key which has window access
+                vec![]
+            }
+        }
     }
 
     /// Get candidates for editor-owned delegates (none currently).

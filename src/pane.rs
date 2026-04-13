@@ -21,6 +21,16 @@ use crate::pdf::{PdfState, PdfView};
 ///
 /// Items can't directly access the minibuffer or clipboard — they return
 /// actions and the app processes them. This keeps items decoupled from the shell.
+/// Read-only snapshot of keymap state that items need for decision-making.
+///
+/// Items cannot mutate the keymap — they return `ItemAction` variants instead.
+#[derive(Clone, Copy, Debug)]
+pub struct VimSnapshot {
+    pub vim_enabled: bool,
+    pub visual_active: bool,
+    pub insert_active: bool,
+}
+
 #[derive(Clone, Debug)]
 pub enum ItemAction {
     /// Show a message in the minibuffer echo area.
@@ -39,6 +49,12 @@ pub enum ItemAction {
     Dismiss,
     /// Copy text to the system clipboard.
     WriteClipboard(String),
+    /// Request the app to activate a keymap layer (e.g., "vim:insert", "vim:normal").
+    ActivateLayer(&'static str),
+    /// Request the app to toggle vim enabled/disabled.
+    SetVimEnabled(bool),
+    /// Tell the app to sync vim flags back to the editor after processing actions.
+    SyncVimFlags,
 }
 
 /// The active content in a pane. Each variant wraps a state+view entity pair.
@@ -98,17 +114,17 @@ impl ActiveItem {
         &self,
         cmd_id: &str,
         viewport: (f32, f32),
-        vim_enabled: bool,
+        vim: VimSnapshot,
         cx: &mut Context<crate::app::Memex>,
     ) -> Vec<ItemAction> {
         match self {
             Self::Editor { state, .. } => {
                 let state = state.clone();
-                state.update(cx, |s, cx| s.item_execute_command(cmd_id, viewport, cx))
+                state.update(cx, |s, cx| s.item_execute_command(cmd_id, viewport, vim, cx))
             }
             Self::Pdf { state, .. } => {
                 let state = state.clone();
-                state.update(cx, |s, cx| s.execute_command(cmd_id, viewport, vim_enabled, cx))
+                state.update(cx, |s, cx| s.execute_command(cmd_id, viewport, vim.vim_enabled, cx))
             }
         }
     }
