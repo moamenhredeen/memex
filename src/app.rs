@@ -1575,7 +1575,7 @@ impl Render for Memex {
                     .left(px(0.))
                     .w_full()
                     .h_full()
-                    .bg(rgba(0x00000020))
+                    .bg(rgba(0x00000000))  // transparent — click-to-dismiss only, no dimming
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|this, _e: &MouseDownEvent, window, cx| {
