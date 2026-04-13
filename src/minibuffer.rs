@@ -51,6 +51,8 @@ pub enum DelegateKind {
     Command,
     /// Note search (Ctrl+P, :notes) — fuzzy-searches vault notes.
     NoteSearch,
+    /// Note search that opens result in the right split panel.
+    SplitNoteSearch,
     /// Recent vaults picker (:vault-switch) — MRU-ordered registered vaults.
     VaultSwitch,
     /// Directory browser (:vault-open) — navigate filesystem to choose a vault.

@@ -159,6 +159,13 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         cx.notify();
     }
 
+    fn activate_split_note_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let vim = self.keymap.vim_enabled;
+        self.minibuffer.activate(DelegateKind::SplitNoteSearch, "Split open:", vim);
+        self.minibuffer_focus.focus(window);
+        cx.notify();
+    }
+
     fn activate_vault_switch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let vim = self.keymap.vim_enabled;
         self.minibuffer.activate(DelegateKind::VaultSwitch, "Switch vault:", vim);
@@ -250,6 +257,9 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             DelegateKind::NoteSearch => {
                 self.get_note_candidates()
             }
+            DelegateKind::SplitNoteSearch => {
+                self.get_note_candidates()
+            }
             DelegateKind::VaultSwitch => {
                 self.get_vault_switch_candidates()
             }
@@ -293,7 +303,6 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             DelegateKind::NoteSearch => {
                 if let Some(candidate) = candidates.get(selected) {
                     if candidate.is_action {
-                        // "Create new" action
                         let title = input.clone();
                         self.dismiss_minibuffer(window, cx);
                         self.create_note_by_title(&title, window, cx);
@@ -306,6 +315,15 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     let title = input.clone();
                     self.dismiss_minibuffer(window, cx);
                     self.create_note_by_title(&title, window, cx);
+                }
+            }
+            DelegateKind::SplitNoteSearch => {
+                if let Some(candidate) = candidates.get(selected) {
+                    if !candidate.is_action {
+                        let path = std::path::PathBuf::from(&candidate.data);
+                        self.dismiss_minibuffer(window, cx);
+                        self.open_in_split_by_path(path, window, cx);
+                    }
                 }
             }
             DelegateKind::VaultSwitch => {
@@ -428,6 +446,9 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             }
             "open-graph" => {
                 self.open_graph(window, cx);
+            }
+            "split-open" => {
+                self.activate_split_note_search(window, cx);
             }
             "close-split" | "close-graph" => {
                 self.close_split(window, cx);
@@ -691,6 +712,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             Command { id: "nohlsearch", name: "Clear Search Highlighting", description: "Remove search result highlighting", aliases: &["noh"], binding: Some(":noh") },
             Command { id: "toggle-vim", name: "Toggle Vim Mode", description: "Toggle vim mode on/off", aliases: &[], binding: None },
             Command { id: "open-graph", name: "Open Graph", description: "Open the vault graph in a split panel", aliases: &["graph"], binding: None },
+            Command { id: "split-open", name: "Split Open", description: "Open a note or PDF in the right split panel", aliases: &["vs", "vsplit", "split"], binding: None },
             Command { id: "close-split", name: "Close Split", description: "Close the right split panel", aliases: &[], binding: None },
         ]
     }
@@ -747,9 +769,13 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // Check if this is a PDF
+        // Check if this is a PDF — open in right split when editor is the left pane
         if path.extension().and_then(|e| e.to_str()) == Some("pdf") {
-            self.open_pdf(path, window, cx);
+            if self.active_item.is_editor() {
+                self.open_pdf_in_split(path, window, cx);
+            } else {
+                self.open_pdf(path, window, cx);
+            }
             return;
         }
 
@@ -774,40 +800,128 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         cx.notify();
     }
 
+    /// Open a note or PDF in the right split pane.
+    fn open_in_split_by_path(
+        &mut self,
+        path: std::path::PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if path.extension().and_then(|e| e.to_str()) == Some("pdf") {
+            self.open_pdf_in_split(path, window, cx);
+        } else {
+            // For markdown notes, create a second editor in split
+            // For now, load the note and show editor as split
+            let content = match std::fs::read_to_string(&path) {
+                Ok(c) => c,
+                Err(e) => {
+                    self.minibuffer.set_message(format!("Failed to read: {}", e));
+                    return;
+                }
+            };
+            let editor_state = cx.new(|cx| {
+                crate::editor::EditorState::new(content, window, cx)
+            });
+            let editor_view = cx.new(|cx| {
+                crate::editor::EditorView::new(editor_state.clone(), cx)
+            });
+            let item = ActiveItem::Editor {
+                state: editor_state,
+                view: editor_view,
+            };
+            self.open_item_in_split(item, window, cx);
+        }
+    }
+
+    /// Create a PDF ActiveItem from a path. Returns None on error (sets minibuffer message).
+    fn create_pdf_item(
+        &mut self,
+        path: &std::path::Path,
+        cx: &mut Context<Self>,
+    ) -> Option<ActiveItem> {
+        let raw_bytes = match std::fs::read(path) {
+            Ok(b) => b,
+            Err(e) => {
+                self.minibuffer.set_message(format!("Failed to read PDF: {}", e));
+                cx.notify();
+                return None;
+            }
+        };
+        if let Err(e) = mupdf::Document::from_bytes(&raw_bytes, "") {
+            self.minibuffer.set_message(format!("Invalid PDF: {:?}", e));
+            cx.notify();
+            return None;
+        }
+
+        let pdf_state = cx.new(|cx| PdfState::new(path, cx).expect("PDF already validated"));
+        pdf_state.update(cx, |s, cx| s.extract_text_cache(cx));
+        let pdf_view = cx.new(|cx| PdfView::new(pdf_state.clone(), cx));
+        let pdf_sub = cx.observe(&pdf_state, |_, _, cx| cx.notify());
+        self._subscriptions.push(pdf_sub);
+
+        Some(ActiveItem::Pdf {
+            state: pdf_state,
+            view: pdf_view,
+        })
+    }
+
     fn open_pdf(
         &mut self,
         path: std::path::PathBuf,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // Validate the PDF can be loaded before creating the entity
-        let raw_bytes = match std::fs::read(&path) {
-            Ok(b) => b,
-            Err(e) => {
-                self.minibuffer.set_message(format!("Failed to read PDF: {}", e));
-                cx.notify();
-                return;
-            }
+        let item = match self.create_pdf_item(&path, cx) {
+            Some(it) => it,
+            None => return,
         };
-        if let Err(e) = mupdf::Document::from_bytes(&raw_bytes, "") {
-            self.minibuffer.set_message(format!("Invalid PDF: {:?}", e));
-            cx.notify();
-            return;
+        self.state.current_note = Some(path);
+        item.focus(window, cx);
+        self.switch_to_item(item);
+        cx.notify();
+    }
+
+    fn open_pdf_in_split(
+        &mut self,
+        path: std::path::PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let item = match self.create_pdf_item(&path, cx) {
+            Some(it) => it,
+            None => return,
+        };
+        self.state.current_note = Some(path);
+        self.open_item_in_split(item, window, cx);
+    }
+
+    /// Open any ActiveItem in the right split pane.
+    fn open_item_in_split(
+        &mut self,
+        item: ActiveItem,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Deactivate right pane's old layers if it had one
+        if let Some(ref old) = self.right_pane {
+            for layer in old.keymap_layers() {
+                self.keymap.stack.deactivate_layer(layer);
+            }
+        }
+        // Deactivate left pane layers
+        for layer in self.active_item.keymap_layers() {
+            self.keymap.stack.deactivate_layer(layer);
         }
 
-        self.state.current_note = Some(path.clone());
-        let pdf_state = cx.new(|cx| PdfState::new(&path, cx).expect("PDF already validated"));
-        pdf_state.update(cx, |s, cx| s.extract_text_cache(cx));
-        let pdf_view = cx.new(|cx| PdfView::new(pdf_state.clone(), cx));
-        pdf_state.read(cx).focus(window);
-        // Observe PdfState so Memex re-renders when async operations complete
-        let pdf_sub = cx.observe(&pdf_state, |_, _, cx| cx.notify());
-        self._subscriptions.push(pdf_sub);
-        // Switch to PDF item
-        self.switch_to_item(ActiveItem::Pdf {
-            state: pdf_state,
-            view: pdf_view,
-        });
+        self.right_pane = Some(item);
+        self.focused_pane = PaneSide::Right;
+
+        // Focus and activate new right pane layers
+        self.right_pane.as_ref().unwrap().focus(window, cx);
+        for layer in self.right_pane.as_ref().unwrap().keymap_layers() {
+            self.keymap.stack.activate_layer(layer);
+        }
+
         cx.notify();
     }
 
@@ -853,27 +967,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             view: graph_view,
         };
 
-        // Open in right split
-        // Deactivate right pane's old layers if it had one
-        if let Some(ref old) = self.right_pane {
-            for layer in old.keymap_layers() {
-                self.keymap.stack.deactivate_layer(layer);
-            }
-        }
-        self.right_pane = Some(graph_item);
-        self.focused_pane = PaneSide::Right;
-
-        // Activate graph layers
-        // Deactivate left pane layers first
-        for layer in self.active_item.keymap_layers() {
-            self.keymap.stack.deactivate_layer(layer);
-        }
-        self.right_pane.as_ref().unwrap().focus(window, cx);
-        for layer in self.right_pane.as_ref().unwrap().keymap_layers() {
-            self.keymap.stack.activate_layer(layer);
-        }
-
-        cx.notify();
+        self.open_item_in_split(graph_item, window, cx);
     }
 
     fn close_split(
