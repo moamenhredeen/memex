@@ -228,6 +228,16 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
 
         match action {
             MinibufferAction::Updated => {
+                // Trigger async search when typing in PDF search minibuffer
+                if self.minibuffer.delegate_kind == DelegateKind::PdfSearch {
+                    let query = self.minibuffer.input.trim().to_string();
+                    if let Some(ref pv) = self.pdf_view {
+                        let state = pv.read(cx).state.clone();
+                        state.update(cx, |s, cx| {
+                            s.request_search(&query, cx);
+                        });
+                    }
+                }
                 cx.notify();
             }
             MinibufferAction::Confirm => {
@@ -397,7 +407,6 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             }
             DelegateKind::PdfSearch => {
                 let query = input.clone();
-                // If user selected a specific candidate, use it to set initial match page
                 let selected_page = candidates.get(selected)
                     .and_then(|c| c.data.parse::<usize>().ok());
                 self.dismiss_minibuffer(window, cx);
@@ -413,9 +422,9 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 }
                 if let Some(ref pv) = self.pdf_view {
                     let state = pv.read(cx).state.clone();
+                    // Results are already populated by the async search triggered on input.
+                    // Jump to the selected candidate's page if one was chosen.
                     state.update(cx, |s, cx| {
-                        s.search(&query);
-                        // If user selected a specific result, jump to that match
                         if let Some(target_page) = selected_page {
                             if let Some(idx) = s.search_hits.iter()
                                 .position(|h| h.page == target_page)
@@ -432,6 +441,8 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                         self.minibuffer.set_message(
                             format!("Match {}/{}", cur + 1, hits)
                         );
+                    } else if state.read(cx).search_pending {
+                        self.minibuffer.set_message("Searching…");
                     } else {
                         self.minibuffer.set_message(
                             format!("No matches for '{}'", query)
@@ -987,16 +998,12 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
     }
 
     fn get_pdf_search_candidates(&self, cx: &App) -> Vec<Candidate> {
-        let query = self.minibuffer.input.trim();
-        if query.is_empty() {
-            return Vec::new();
-        }
         let state = match self.pdf_view.as_ref() {
             Some(pv) => pv.read(cx).state.read(cx),
             None => return Vec::new(),
         };
-        let results = state.search_with_context(query, 30);
-        results.into_iter().map(|(page, snippet)| {
+        // Return cached previews from the last background search
+        state.search_preview.iter().map(|(page, snippet)| {
             Candidate {
                 label: format!("p{}: {}", page + 1, snippet),
                 detail: None,

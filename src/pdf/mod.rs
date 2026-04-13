@@ -94,6 +94,10 @@ pub struct PdfState {
     pub search_hits: Vec<SearchHit>,
     /// Index into `search_hits` for the currently focused match.
     pub search_current: usize,
+    /// Cached context snippets for the minibuffer (page_index, snippet).
+    pub search_preview: Vec<(usize, String)>,
+    /// Whether a background search is running.
+    pub search_pending: bool,
 }
 
 impl PdfState {
@@ -126,6 +130,8 @@ impl PdfState {
             search_query: String::new(),
             search_hits: Vec::new(),
             search_current: 0,
+            search_preview: Vec::new(),
+            search_pending: false,
         })
     }
 
@@ -400,33 +406,46 @@ impl PdfState {
         }
     }
 
-    /// Search all pages for the given needle, storing results.
-    pub fn search(&mut self, query: &str) {
+    /// Launch an async search across all pages. Results arrive via cx.notify().
+    pub fn request_search(&mut self, query: &str, cx: &mut Context<Self>) {
         self.search_query = query.to_string();
         self.search_hits.clear();
+        self.search_preview.clear();
         self.search_current = 0;
 
         if query.is_empty() {
+            self.search_pending = false;
+            cx.notify();
             return;
         }
 
-        let doc = match Document::from_bytes(&self.raw_bytes, "") {
-            Ok(d) => d,
-            Err(_) => return,
-        };
+        self.search_pending = true;
+        let raw_bytes = self.raw_bytes.clone();
+        let page_count = self.page_count;
+        let needle = query.to_string();
 
-        for page_idx in 0..self.page_count {
-            if let Ok(page) = doc.load_page(page_idx as i32) {
-                if let Ok(quads) = page.search(query, 100) {
-                    for quad in quads {
-                        self.search_hits.push(SearchHit {
-                            page: page_idx,
-                            quad,
-                        });
-                    }
+        cx.spawn(async move |this, cx| {
+            let needle_check = needle.clone();
+            let (hits, previews) = cx
+                .background_executor()
+                .spawn(async move {
+                    search_background(&raw_bytes, page_count, &needle)
+                })
+                .await;
+
+            this.update(cx, |state, cx| {
+                if state.search_query == needle_check {
+                    state.search_hits = hits;
+                    state.search_preview = previews;
+                    state.search_current = 0;
+                    state.search_pending = false;
+                    state.scroll_to_current_match();
+                    cx.notify();
                 }
-            }
-        }
+            })
+            .ok();
+        })
+        .detach();
     }
 
     /// Jump to the next search match, wrapping around.
@@ -458,7 +477,9 @@ impl PdfState {
     pub fn clear_search(&mut self) {
         self.search_query.clear();
         self.search_hits.clear();
+        self.search_preview.clear();
         self.search_current = 0;
+        self.search_pending = false;
     }
 
     /// Get search hits for a specific page (for rendering highlights).
@@ -468,54 +489,83 @@ impl PdfState {
             .filter(|(_, h)| h.page == page_index)
             .collect()
     }
+}
 
-    /// Search all pages and return context snippets for the minibuffer.
-    /// Each result has: label = "Page N: ...context around match...", data = page index.
-    pub fn search_with_context(&self, query: &str, max_results: usize) -> Vec<(usize, String)> {
-        if query.is_empty() {
-            return Vec::new();
-        }
-        let doc = match Document::from_bytes(&self.raw_bytes, "") {
-            Ok(d) => d,
-            Err(_) => return Vec::new(),
+/// Snap a byte index to a valid char boundary (rounding down).
+fn snap_floor(s: &str, idx: usize) -> usize {
+    if idx >= s.len() { return s.len(); }
+    let mut i = idx;
+    while i > 0 && !s.is_char_boundary(i) { i -= 1; }
+    i
+}
+
+/// Snap a byte index to a valid char boundary (rounding up).
+fn snap_ceil(s: &str, idx: usize) -> usize {
+    if idx >= s.len() { return s.len(); }
+    let mut i = idx;
+    while i < s.len() && !s.is_char_boundary(i) { i += 1; }
+    i
+}
+
+/// Run a full-text search on a background thread.
+/// Returns (search_hits for highlight quads, context previews for minibuffer).
+fn search_background(
+    raw_bytes: &[u8],
+    page_count: usize,
+    query: &str,
+) -> (Vec<SearchHit>, Vec<(usize, String)>) {
+    let mut hits = Vec::new();
+    let mut previews = Vec::new();
+    let max_previews = 50;
+
+    let doc = match Document::from_bytes(raw_bytes, "") {
+        Ok(d) => d,
+        Err(_) => return (hits, previews),
+    };
+
+    let query_lower = query.to_lowercase();
+
+    for page_idx in 0..page_count {
+        let page = match doc.load_page(page_idx as i32) {
+            Ok(p) => p,
+            Err(_) => continue,
         };
-        let query_lower = query.to_lowercase();
-        let mut results = Vec::new();
 
-        for page_idx in 0..self.page_count {
-            if results.len() >= max_results { break; }
-            let page = match doc.load_page(page_idx as i32) {
-                Ok(p) => p,
-                Err(_) => continue,
-            };
-            let tp = match page.to_text_page(mupdf::TextPageFlags::empty()) {
-                Ok(tp) => tp,
-                Err(_) => continue,
-            };
-            let text = match tp.to_text() {
-                Ok(t) => t,
-                Err(_) => continue,
-            };
-            let text_lower = text.to_lowercase();
-            let mut search_from = 0;
-            while let Some(pos) = text_lower[search_from..].find(&query_lower) {
-                if results.len() >= max_results { break; }
-                let abs_pos = search_from + pos;
-                // Extract ~40 chars of context around the match
-                let ctx_start = abs_pos.saturating_sub(30);
-                let ctx_end = (abs_pos + query.len() + 30).min(text.len());
-                let mut snippet: String = text[ctx_start..ctx_end]
-                    .replace('\n', " ")
-                    .replace('\r', "");
-                // Trim to clean word boundaries
-                if ctx_start > 0 { snippet.insert_str(0, "…"); }
-                if ctx_end < text.len() { snippet.push('…'); }
-                results.push((page_idx, snippet));
-                search_from = abs_pos + query.len();
+        // Collect highlight quads
+        if let Ok(quads) = page.search(query, 100) {
+            for quad in quads {
+                hits.push(SearchHit { page: page_idx, quad });
             }
         }
-        results
+
+        // Collect context previews (up to max_previews total)
+        if previews.len() < max_previews {
+            if let Ok(tp) = page.to_text_page(mupdf::TextPageFlags::empty()) {
+                if let Ok(text) = tp.to_text() {
+                    let text_lower = text.to_lowercase();
+                    let mut search_from = 0;
+                    while let Some(pos) = text_lower[search_from..].find(&query_lower) {
+                        if previews.len() >= max_previews { break; }
+                        let abs_pos = search_from + pos;
+                        let ctx_start = snap_floor(&text_lower, abs_pos.saturating_sub(40));
+                        let ctx_end = snap_ceil(
+                            &text_lower,
+                            (abs_pos + query_lower.len() + 40).min(text_lower.len()),
+                        );
+                        let mut snippet: String = text_lower[ctx_start..ctx_end]
+                            .replace('\n', " ")
+                            .replace('\r', "");
+                        if ctx_start > 0 { snippet.insert_str(0, "…"); }
+                        if ctx_end < text_lower.len() { snippet.push('…'); }
+                        previews.push((page_idx, snippet));
+                        search_from = abs_pos + query_lower.len();
+                    }
+                }
+            }
+        }
     }
+
+    (hits, previews)
 }
 
 /// Render a single page on a background thread. Standalone function (not on PdfState)
