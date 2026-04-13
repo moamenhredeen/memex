@@ -8,6 +8,12 @@ pub struct PdfView {
     pub state: Entity<PdfState>,
     focus_handle: FocusHandle,
     _observe_state: Subscription,
+    /// Whether the user is dragging the scrollbar thumb
+    dragging_scrollbar: bool,
+    /// Mouse Y at drag start (window coords)
+    drag_start_mouse_y: f32,
+    /// Scroll offset at drag start
+    drag_start_scroll: f32,
 }
 
 impl PdfView {
@@ -18,6 +24,9 @@ impl PdfView {
             state,
             focus_handle,
             _observe_state,
+            dragging_scrollbar: false,
+            drag_start_mouse_y: 0.0,
+            drag_start_scroll: 0.0,
         }
     }
 }
@@ -37,15 +46,34 @@ impl Render for PdfView {
 
         let (vis_first, vis_last) = self.state.read(cx).visible_range(viewport_h);
 
-        // Render only visible pages and collect their image data
-        let mut visible_pages: Vec<(usize, Arc<gpui::Image>, f32, f32)> = Vec::new();
-        self.state.update(cx, |s, _| {
+        // Collect cached page images and track which pages need rendering
+        let mut visible_pages: Vec<(usize, Option<Arc<gpui::Image>>, f32, f32)> = Vec::new();
+        let mut needs_render: Vec<usize> = Vec::new();
+
+        {
+            let state = self.state.read(cx);
             for i in vis_first..vis_last {
-                let (_, w, h) = s.page_layout(i);
-                if let Some(rendered) = s.render_page(i) {
-                    visible_pages.push((i, rendered.image.clone(), w, h));
+                let (_, w, h) = state.page_layout(i);
+                if let Some(rendered) = state.get_cached_page(i) {
+                    visible_pages.push((i, Some(rendered.image.clone()), w, h));
+                } else {
+                    visible_pages.push((i, None, w, h));
+                    if !state.is_pending(i) {
+                        needs_render.push(i);
+                    }
                 }
             }
+        }
+
+        // Kick off background renders for uncached pages
+        if !needs_render.is_empty() {
+            self.state.update(cx, |s, cx| {
+                s.request_render_pages(&needs_render, cx);
+            });
+        }
+
+        // Evict distant pages
+        self.state.update(cx, |s, _| {
             s.evict_distant_pages(vis_first, vis_last);
         });
 
@@ -66,22 +94,25 @@ impl Render for PdfView {
                 pages_column.child(div().id("pdf-spacer-top").h(px(top_spacer_height)));
         }
 
-        // Visible pages with rendered images and click handlers for links
+        // Visible pages: rendered images or loading placeholders
         let viewport_width: f32 = window.viewport_size().width.into();
-        for (idx, image, w, h) in &visible_pages {
+        for (idx, maybe_image, w, h) in &visible_pages {
             let page_idx = *idx;
             let state = self.state.clone();
             let page_w = *w;
             let page_h = *h;
             let vw = viewport_width;
 
-            pages_column = pages_column.child(
-                div()
-                    .id(ElementId::Name(format!("pdf-page-{}", idx).into()))
-                    .w(px(page_w))
-                    .h(px(page_h))
-                    .bg(rgb(0xFFFFFF))
-                    .shadow_md()
+            let mut page_div = div()
+                .id(ElementId::Name(format!("pdf-page-{}", idx).into()))
+                .w(px(page_w))
+                .h(px(page_h))
+                .bg(rgb(0xFFFFFF))
+                .shadow_md();
+
+            if let Some(image) = maybe_image {
+                // Rendered page with click handler for links
+                page_div = page_div
                     .cursor_pointer()
                     .on_mouse_down(MouseButton::Left, move |e, _window, cx| {
                         state.update(cx, |s, cx| {
@@ -109,8 +140,21 @@ impl Render for PdfView {
                             .w(px(page_w))
                             .h(px(page_h))
                             .object_fit(ObjectFit::Contain),
-                    ),
-            );
+                    );
+            } else {
+                // Loading placeholder
+                page_div = page_div.child(
+                    div()
+                        .size_full()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .text_color(rgb(0x999999))
+                        .child(format!("Loading page {}...", page_idx + 1)),
+                );
+            }
+
+            pages_column = pages_column.child(page_div);
         }
 
         // Bottom spacer covering all pages below visible range
@@ -125,8 +169,30 @@ impl Render for PdfView {
         }
 
         let neg_scroll = -scroll_offset;
+        let scroll_f: f32 = scroll_offset.into();
+        let scrollbar_width = 10.0;
+        let min_thumb_height = 30.0;
+        let track_height = viewport_h;
+        let thumb_ratio = if total_height > 0.0 {
+            (viewport_h / total_height).min(1.0)
+        } else {
+            1.0
+        };
+        let scroll_ratio = if total_height > viewport_h {
+            scroll_f / (total_height - viewport_h)
+        } else {
+            0.0
+        };
+        let thumb_height = (track_height * thumb_ratio).max(min_thumb_height);
+        let thumb_top = scroll_ratio * (track_height - thumb_height);
+        let show_scrollbar = total_height > viewport_h;
 
-        div()
+        let total_h = total_height;
+        let vh_copy = viewport_h;
+        let thumb_h = thumb_height;
+        let thumb_t = thumb_top;
+
+        let mut root = div()
             .id("pdf-view")
             .size_full()
             .track_focus(&self.focus_handle)
@@ -143,7 +209,94 @@ impl Render for PdfView {
                     .py(px(16.))
                     .top(neg_scroll)
                     .child(pages_column),
-            )
+            );
+
+        // Scrollbar track on the right edge
+        if show_scrollbar {
+            root = root.child(
+                div()
+                    .id("pdf-scrollbar-track")
+                    .absolute()
+                    .right(px(0.))
+                    .top(px(0.))
+                    .w(px(scrollbar_width))
+                    .h(px(track_height))
+                    .bg(rgba(0x00000015))
+                    .on_mouse_down(MouseButton::Left, cx.listener(
+                        move |this, e: &MouseDownEvent, _window, cx| {
+                            // Skip if thumb already handled this click
+                            if this.dragging_scrollbar {
+                                return;
+                            }
+                            // Click on track (not thumb): center thumb at click position
+                            let click_y: f32 = e.position.y.into();
+                            let usable = (vh_copy - thumb_h).max(1.0);
+                            let new_thumb_top = (click_y - thumb_h / 2.0).clamp(0.0, usable);
+                            let ratio = new_thumb_top / usable;
+                            let max_scroll = (total_h - vh_copy).max(0.0);
+                            let new_scroll = ratio * max_scroll;
+                            this.state.update(cx, |s, cx| {
+                                s.scroll_offset = px(new_scroll);
+                                cx.notify();
+                            });
+                            // Start dragging from this position
+                            this.dragging_scrollbar = true;
+                            this.drag_start_mouse_y = click_y;
+                            this.drag_start_scroll = new_scroll;
+                        },
+                    ))
+                    .child(
+                        div()
+                            .id("pdf-scrollbar-thumb")
+                            .absolute()
+                            .top(px(thumb_top))
+                            .left(px(1.0))
+                            .w(px(scrollbar_width - 2.0))
+                            .h(px(thumb_height))
+                            .bg(rgba(0x00000055))
+                            .rounded(px(3.0))
+                            .hover(|s| s.bg(rgba(0x00000088)))
+                            .on_mouse_down(MouseButton::Left, cx.listener(
+                                move |this, e: &MouseDownEvent, _window, cx| {
+                                    this.dragging_scrollbar = true;
+                                    this.drag_start_mouse_y = f32::from(e.position.y);
+                                    this.drag_start_scroll =
+                                        f32::from(this.state.read(cx).scroll_offset);
+                                },
+                            )),
+                    ),
+            );
+        }
+
+        // Mouse move handler on root for scrollbar dragging.
+        // Uses delta from drag start to compute new scroll, so thumb tracks mouse exactly.
+        root = root.on_mouse_move(cx.listener(move |this, e: &MouseMoveEvent, _window, cx| {
+            if this.dragging_scrollbar && e.pressed_button == Some(MouseButton::Left) {
+                let mouse_y: f32 = e.position.y.into();
+                let delta_y = mouse_y - this.drag_start_mouse_y;
+                // Convert pixel delta to scroll delta:
+                // 1 pixel of thumb movement = (max_scroll / usable_track) scroll pixels
+                let usable = (vh_copy - thumb_h).max(1.0);
+                let max_scroll = (total_h - vh_copy).max(0.0);
+                let scroll_per_px = max_scroll / usable;
+                let new_scroll = (this.drag_start_scroll + delta_y * scroll_per_px)
+                    .clamp(0.0, max_scroll);
+                this.state.update(cx, |s, cx| {
+                    s.scroll_offset = px(new_scroll);
+                    cx.notify();
+                });
+            }
+        }));
+
+        // Mouse up handler to stop dragging
+        root = root.on_mouse_up(
+            MouseButton::Left,
+            cx.listener(|this, _e: &MouseUpEvent, _window, _cx| {
+                this.dragging_scrollbar = false;
+            }),
+        );
+
+        root
             .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
                 let key = e.keystroke.key.as_str();
                 let ctrl = e.keystroke.modifiers.control;

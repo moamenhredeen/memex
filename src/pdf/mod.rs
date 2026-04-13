@@ -2,7 +2,7 @@ mod view;
 
 pub use view::PdfView;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -50,17 +50,19 @@ pub struct PdfState {
     pub zoom: f32,
     pub focus_handle: FocusHandle,
     page_cache: HashMap<usize, RenderedPage>,
-    raw_bytes: Vec<u8>,
+    raw_bytes: Arc<Vec<u8>>,
     page_layouts: Vec<PageLayout>,
     pub total_height: f32,
     /// Internal links per page (only internal navigation links, not external URLs)
     page_links: HashMap<usize, Vec<PageLink>>,
+    /// Pages currently being rendered on background threads
+    pending_renders: HashSet<usize>,
 }
 
 impl PdfState {
     pub fn new(path: impl AsRef<Path>, cx: &mut Context<Self>) -> Result<Self, mupdf::Error> {
         let path = path.as_ref().to_path_buf();
-        let raw_bytes = std::fs::read(&path).map_err(mupdf::Error::Io)?;
+        let raw_bytes = Arc::new(std::fs::read(&path).map_err(mupdf::Error::Io)?);
         let doc = Document::from_bytes(&raw_bytes, "")?;
         let page_count = doc.page_count()? as usize;
         let (page_layouts, total_height) = Self::compute_layouts(&doc, page_count, 1.0)?;
@@ -77,6 +79,7 @@ impl PdfState {
             page_layouts,
             total_height,
             page_links,
+            pending_renders: HashSet::new(),
         })
     }
 
@@ -192,44 +195,49 @@ impl PdfState {
         }
     }
 
-    /// Render a page to a PNG-encoded gpui Image. Results are cached.
-    pub fn render_page(&mut self, page_index: usize) -> Option<&RenderedPage> {
-        if page_index >= self.page_count {
-            return None;
-        }
-
-        if !self.page_cache.contains_key(&page_index) {
-            if let Ok(rendered) = self.render_page_inner(page_index) {
-                self.page_cache.insert(page_index, rendered);
-            }
-        }
-
+    /// Get a cached rendered page (does NOT trigger rendering).
+    pub fn get_cached_page(&self, page_index: usize) -> Option<&RenderedPage> {
         self.page_cache.get(&page_index)
     }
 
-    fn render_page_inner(&self, page_index: usize) -> Result<RenderedPage, mupdf::Error> {
-        let doc = Document::from_bytes(&self.raw_bytes, "")?;
-        let page = doc.load_page(page_index as i32)?;
-        let bounds = page.bounds()?;
+    /// Check if a page is currently being rendered in the background.
+    pub fn is_pending(&self, page_index: usize) -> bool {
+        self.pending_renders.contains(&page_index)
+    }
 
-        let scale = (BASE_WIDTH * self.zoom) / bounds.width();
-        let ctm = MuMatrix::new_scale(scale, scale);
+    /// Request async rendering of pages that aren't cached or already pending.
+    pub fn request_render_pages(&mut self, pages: &[usize], cx: &mut Context<Self>) {
+        for &page_index in pages {
+            if page_index >= self.page_count
+                || self.page_cache.contains_key(&page_index)
+                || self.pending_renders.contains(&page_index)
+            {
+                continue;
+            }
+            self.pending_renders.insert(page_index);
 
-        let pixmap = page.to_pixmap(&ctm, &Colorspace::device_rgb(), false, true)?;
-        let width = pixmap.width();
-        let height = pixmap.height();
+            let raw_bytes = self.raw_bytes.clone();
+            let zoom = self.zoom;
 
-        let mut png_buf = Cursor::new(Vec::new());
-        pixmap.write_to(&mut png_buf, mupdf::ImageFormat::PNG)?;
+            cx.spawn(async move |this, cx| {
+                let result = cx
+                    .background_executor()
+                    .spawn(async move {
+                        render_page_background(&raw_bytes, page_index, zoom)
+                    })
+                    .await;
 
-        Ok(RenderedPage {
-            image: Arc::new(gpui::Image::from_bytes(
-                gpui::ImageFormat::Png,
-                png_buf.into_inner(),
-            )),
-            width,
-            height,
-        })
+                this.update(cx, |state, cx| {
+                    state.pending_renders.remove(&page_index);
+                    if let Some(rendered) = result {
+                        state.page_cache.insert(page_index, rendered);
+                        cx.notify();
+                    }
+                })
+                .ok();
+            })
+            .detach();
+        }
     }
 
     /// Evict pages far from the visible range to limit memory usage.
@@ -242,6 +250,7 @@ impl PdfState {
     /// Invalidate cached pages and recompute layouts (e.g., after zoom change).
     pub fn invalidate_cache(&mut self) {
         self.page_cache.clear();
+        self.pending_renders.clear();
         if let Ok(doc) = Document::from_bytes(&self.raw_bytes, "") {
             if let Ok((layouts, total)) =
                 Self::compute_layouts(&doc, self.page_count, self.zoom)
@@ -259,4 +268,35 @@ impl PdfState {
     pub fn max_scroll(&self, viewport_height: f32) -> gpui::Pixels {
         px((self.total_height - viewport_height).max(0.0))
     }
+}
+
+/// Render a single page on a background thread. Standalone function (not on PdfState)
+/// because mupdf::Document is not Send — we create it fresh from shared bytes.
+fn render_page_background(
+    raw_bytes: &[u8],
+    page_index: usize,
+    zoom: f32,
+) -> Option<RenderedPage> {
+    let doc = Document::from_bytes(raw_bytes, "").ok()?;
+    let page = doc.load_page(page_index as i32).ok()?;
+    let bounds = page.bounds().ok()?;
+
+    let scale = (BASE_WIDTH * zoom) / bounds.width();
+    let ctm = MuMatrix::new_scale(scale, scale);
+
+    let pixmap = page.to_pixmap(&ctm, &Colorspace::device_rgb(), false, true).ok()?;
+    let width = pixmap.width();
+    let height = pixmap.height();
+
+    let mut png_buf = Cursor::new(Vec::new());
+    pixmap.write_to(&mut png_buf, mupdf::ImageFormat::PNG).ok()?;
+
+    Some(RenderedPage {
+        image: Arc::new(gpui::Image::from_bytes(
+            gpui::ImageFormat::Png,
+            png_buf.into_inner(),
+        )),
+        width,
+        height,
+    })
 }
