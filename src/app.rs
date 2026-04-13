@@ -299,7 +299,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 if let Some(candidate) = candidates.get(selected) {
                     let cmd_id = candidate.data.clone();
                     self.dismiss_minibuffer(window, cx);
-                    self.execute_command(&cmd_id, &input, window, cx);
+                    self.execute_command(&cmd_id, &input, 1, window, cx);
                 } else if !input.is_empty() {
                     // Try executing raw input as ex command
                     self.dismiss_minibuffer(window, cx);
@@ -402,10 +402,18 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         &mut self,
         cmd_id: &str,
         raw_input: &str,
+        count: usize,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         match cmd_id {
+            // App-level commands
+            "command-palette" => {
+                self.activate_command_palette(window, cx);
+            }
+            "find-note" => {
+                self.activate_note_search(window, cx);
+            }
             "write" => {
                 self.save(window, cx);
                 self.minibuffer.set_message("Written");
@@ -618,15 +626,20 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 }, window);
             }
             _ => {
-                // Try as raw ex command (for plugin commands, etc.)
-                let keymap = &mut self.keymap;
-                let editor = self.editor_state.clone();
-                editor.update(cx, |state, cx| {
-                    state.execute_ex_command(cmd_id, keymap, window, cx);
-                });
-                // Forward any status message from the editor to the minibuffer
-                if let Some(msg) = self.editor_state.read(cx).status_message.clone() {
-                    self.minibuffer.set_message(msg);
+                // Try as editor command first (open-line-below, append-after, etc.)
+                if self.view_mode == ViewMode::Editor {
+                    let keymap = &mut self.keymap;
+                    let editor = self.editor_state.clone();
+                    editor.update(cx, |state, ecx| {
+                        state.execute_command_by_id(cmd_id, count, keymap, window, ecx);
+                        // Sync mode flags after command execution
+                        state.insert_mode = keymap.is_insert_active();
+                        state.vim_enabled = keymap.vim_enabled;
+                    });
+                    // Forward any status message from the editor to the minibuffer
+                    if let Some(msg) = self.editor_state.read(cx).status_message.clone() {
+                        self.minibuffer.set_message(msg);
+                    }
                 }
             }
         }
@@ -1426,7 +1439,7 @@ impl Render for Memex {
                         match &action {
                             Action::Command(cmd_id) => {
                                 let cmd = cmd_id.clone();
-                                this.execute_command(&cmd, "", window, cx);
+                                this.execute_command(&cmd, "", count, window, cx);
                             }
                             Action::ActivateLayer(layer_id) => {
                                 let lid = layer_id.clone();
