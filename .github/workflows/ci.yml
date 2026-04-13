@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwayland-dev \
+            libxkbcommon-dev \
+            libxkbcommon-x11-dev \
+            libx11-xcb-dev \
+            libvulkan-dev \
+            libfontconfig-dev \
+            libfreetype-dev \
+            clang \
+            libstdc++-12-dev
+
+      - name: Build
+        run: cargo build --release
+
+      - name: Test
+        run: cargo test

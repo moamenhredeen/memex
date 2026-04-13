@@ -2,6 +2,9 @@
 name = "memex"
 version = "0.1.0"
 edition = "2024"
+repository = "https://github.com/moamenhredeen/memex"
+description = "A note-taking editor inspired by Obsidian, Logseq, and Emacs org-roam"
+license = "MIT"
 
 [dependencies]
 dirs = "6.0.0"
@@ -15,3 +18,8 @@ pulldown-cmark = { version = "0.12", default-features = false, features = ["simd
 ropey = "1"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
+
+# The profile that 'dist' will build with
+[profile.dist]
+inherits = "release"
+lto = "thin"
