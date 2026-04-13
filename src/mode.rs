@@ -483,6 +483,27 @@ impl ModeRegistry {
                     aliases: &[],
                     binding: Some("G"),
                 },
+                Command {
+                    id: "pdf-search",
+                    name: "PDF: Search Text",
+                    description: "Search for text across all pages",
+                    aliases: &["search", "find"],
+                    binding: Some("/"),
+                },
+                Command {
+                    id: "pdf-search-next",
+                    name: "PDF: Next Match",
+                    description: "Jump to the next search match",
+                    aliases: &["next-match"],
+                    binding: Some("n"),
+                },
+                Command {
+                    id: "pdf-search-prev",
+                    name: "PDF: Previous Match",
+                    description: "Jump to the previous search match",
+                    aliases: &["prev-match"],
+                    binding: Some("N"),
+                },
             ],
         };
         self.modes.insert("pdf", mode);

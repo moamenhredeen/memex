@@ -62,6 +62,8 @@ pub enum DelegateKind {
     PdfToc,
     /// PDF go-to-page — type a page number and jump to it.
     PdfGotoPage,
+    /// PDF text search — type a query to search across all pages.
+    PdfSearch,
 }
 
 /// Editing mode within the minibuffer input line.

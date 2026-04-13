@@ -100,9 +100,30 @@ impl Render for PdfView {
                 .w(px(page_w))
                 .h(px(page_h))
                 .bg(rgb(0xFFFFFF))
-                .shadow_md();
+                .shadow_md()
+                .relative();
 
             if let Some(image) = maybe_image {
+                // Collect search highlights for this page
+                let search_highlights: Vec<(bool, f32, f32, f32, f32)> = {
+                    let st = self.state.read(cx);
+                    let scale = st.page_scale(page_idx);
+                    let current = st.search_current;
+                    st.search_hits_for_page(page_idx)
+                        .into_iter()
+                        .map(|(global_idx, hit)| {
+                            let q = &hit.quad;
+                            // Quad corners: ul (upper-left), ur (upper-right),
+                            // ll (lower-left), lr (lower-right) in PDF coords.
+                            let x = q.ul.x.min(q.ll.x) * scale;
+                            let y = q.ul.y.min(q.ur.y) * scale;
+                            let x2 = q.ur.x.max(q.lr.x) * scale;
+                            let y2 = q.ll.y.max(q.lr.y) * scale;
+                            (global_idx == current, x, y, x2 - x, y2 - y)
+                        })
+                        .collect()
+                };
+
                 // Rendered page with click handler for links
                 page_div = page_div
                     .cursor_pointer()
@@ -133,6 +154,27 @@ impl Render for PdfView {
                             .h(px(page_h))
                             .object_fit(ObjectFit::Contain),
                     );
+
+                // Add search highlight overlays
+                for (i, (is_current, x, y, w, h)) in search_highlights.iter().enumerate() {
+                    let color = if *is_current {
+                        rgba(0xFF8C0080) // orange for current match
+                    } else {
+                        rgba(0xFFFF0050) // yellow for other matches
+                    };
+                    page_div = page_div.child(
+                        div()
+                            .id(ElementId::Name(
+                                format!("search-hl-{}-{}", page_idx, i).into(),
+                            ))
+                            .absolute()
+                            .left(px(*x))
+                            .top(px(*y))
+                            .w(px(*w))
+                            .h(px(*h))
+                            .bg(color),
+                    );
+                }
             } else {
                 // Loading placeholder
                 page_div = page_div.child(

@@ -52,6 +52,15 @@ pub struct TocEntry {
     pub level: usize,
 }
 
+/// A search hit: a highlighted quad on a specific page.
+#[derive(Clone, Debug)]
+pub struct SearchHit {
+    /// Page index (0-based).
+    pub page: usize,
+    /// Bounding quad in PDF page coordinates.
+    pub quad: mupdf::Quad,
+}
+
 use crate::pdf::scrollbar::DragState;
 
 /// State for an open PDF document.
@@ -79,6 +88,12 @@ pub struct PdfState {
     pub dark_mode: bool,
     /// Two-page spread mode
     pub spread_mode: bool,
+    /// Current search query (empty = no active search).
+    pub search_query: String,
+    /// All search hits across the document.
+    pub search_hits: Vec<SearchHit>,
+    /// Index into `search_hits` for the currently focused match.
+    pub search_current: usize,
 }
 
 impl PdfState {
@@ -108,6 +123,9 @@ impl PdfState {
             page_rotations: HashMap::new(),
             dark_mode: false,
             spread_mode: false,
+            search_query: String::new(),
+            search_hits: Vec::new(),
+            search_current: 0,
         })
     }
 
@@ -233,6 +251,11 @@ impl PdfState {
     pub fn page_layout(&self, page_index: usize) -> (f32, f32, f32) {
         let l = &self.page_layouts[page_index];
         (l.y_offset, l.width, l.height)
+    }
+
+    /// Scale factor for a page (PDF coords → screen pixels).
+    pub fn page_scale(&self, page_index: usize) -> f32 {
+        self.page_layouts[page_index].scale
     }
 
     /// Hit-test a click at screen coordinates against links on a page.
@@ -375,6 +398,75 @@ impl PdfState {
                 }
             }
         }
+    }
+
+    /// Search all pages for the given needle, storing results.
+    pub fn search(&mut self, query: &str) {
+        self.search_query = query.to_string();
+        self.search_hits.clear();
+        self.search_current = 0;
+
+        if query.is_empty() {
+            return;
+        }
+
+        let doc = match Document::from_bytes(&self.raw_bytes, "") {
+            Ok(d) => d,
+            Err(_) => return,
+        };
+
+        for page_idx in 0..self.page_count {
+            if let Ok(page) = doc.load_page(page_idx as i32) {
+                if let Ok(quads) = page.search(query, 100) {
+                    for quad in quads {
+                        self.search_hits.push(SearchHit {
+                            page: page_idx,
+                            quad,
+                        });
+                    }
+                }
+            }
+        }
+    }
+
+    /// Jump to the next search match, wrapping around.
+    pub fn search_next(&mut self) {
+        if self.search_hits.is_empty() { return; }
+        self.search_current = (self.search_current + 1) % self.search_hits.len();
+        self.scroll_to_current_match();
+    }
+
+    /// Jump to the previous search match, wrapping around.
+    pub fn search_prev(&mut self) {
+        if self.search_hits.is_empty() { return; }
+        if self.search_current == 0 {
+            self.search_current = self.search_hits.len() - 1;
+        } else {
+            self.search_current -= 1;
+        }
+        self.scroll_to_current_match();
+    }
+
+    /// Scroll so the current match is visible.
+    pub fn scroll_to_current_match(&mut self) {
+        if let Some(hit) = self.search_hits.get(self.search_current) {
+            self.goto_page(hit.page);
+        }
+    }
+
+    /// Clear the active search.
+    pub fn clear_search(&mut self) {
+        self.search_query.clear();
+        self.search_hits.clear();
+        self.search_current = 0;
+    }
+
+    /// Get search hits for a specific page (for rendering highlights).
+    pub fn search_hits_for_page(&self, page_index: usize) -> Vec<(usize, &SearchHit)> {
+        self.search_hits.iter()
+            .enumerate()
+            .filter(|(_, h)| h.page == page_index)
+            .collect()
     }
 }
 

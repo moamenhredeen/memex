@@ -724,7 +724,11 @@ fn register_pdf_layer(stack: &mut LayerStack) {
         .bind("r", Action::Command("pdf-rotate-cw"))
         .bind("R", Action::Command("pdf-rotate-ccw"))
         .bind("y", Action::Command("pdf-copy-link"))
-        .bind("Y", Action::Command("pdf-extract-text"));
+        .bind("Y", Action::Command("pdf-extract-text"))
+        // Search
+        .bind("/", Action::Command("pdf-search"))
+        .bind("n", Action::Command("pdf-search-next"))
+        .bind("N", Action::Command("pdf-search-prev"));
 
     stack.register_layer(layer);
 }

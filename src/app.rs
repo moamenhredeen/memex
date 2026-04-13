@@ -278,6 +278,10 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             DelegateKind::PdfGotoPage => {
                 self.get_pdf_goto_page_candidates(cx)
             }
+            DelegateKind::PdfSearch => {
+                // No candidates — search is a raw text input
+                Vec::new()
+            }
         }
     }
 
@@ -390,6 +394,41 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     }
                 } else {
                     self.minibuffer.set_message("Invalid page number");
+                }
+            }
+            DelegateKind::PdfSearch => {
+                let query = input.clone();
+                self.dismiss_minibuffer(window, cx);
+                if query.is_empty() {
+                    if let Some(ref pv) = self.pdf_view {
+                        let state = pv.read(cx).state.clone();
+                        state.update(cx, |s, cx| {
+                            s.clear_search();
+                            cx.notify();
+                        });
+                    }
+                    return;
+                }
+                if let Some(ref pv) = self.pdf_view {
+                    let state = pv.read(cx).state.clone();
+                    state.update(cx, |s, cx| {
+                        s.search(&query);
+                        cx.notify();
+                    });
+                    let hits = state.read(cx).search_hits.len();
+                    if hits > 0 {
+                        state.update(cx, |s, cx| {
+                            s.scroll_to_current_match();
+                            cx.notify();
+                        });
+                        self.minibuffer.set_message(
+                            format!("Match 1/{}", hits)
+                        );
+                    } else {
+                        self.minibuffer.set_message(
+                            format!("No matches for '{}'", query)
+                        );
+                    }
                 }
             }
         }
@@ -622,6 +661,43 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     s.scroll_offset = max;
                     cx.notify();
                 }, window);
+            }
+            "pdf-search" => {
+                let vim = self.keymap.vim_enabled;
+                self.minibuffer.activate(DelegateKind::PdfSearch, "Search:", vim);
+                self.minibuffer_focus.focus(window);
+            }
+            "pdf-search-next" => {
+                if let Some(ref pv) = self.pdf_view {
+                    let state = pv.read(cx).state.clone();
+                    state.update(cx, |s, cx| {
+                        s.search_next();
+                        cx.notify();
+                    });
+                    let hits = state.read(cx).search_hits.len();
+                    let cur = state.read(cx).search_current;
+                    if hits > 0 {
+                        self.minibuffer.set_message(
+                            format!("Match {}/{}", cur + 1, hits)
+                        );
+                    }
+                }
+            }
+            "pdf-search-prev" => {
+                if let Some(ref pv) = self.pdf_view {
+                    let state = pv.read(cx).state.clone();
+                    state.update(cx, |s, cx| {
+                        s.search_prev();
+                        cx.notify();
+                    });
+                    let hits = state.read(cx).search_hits.len();
+                    let cur = state.read(cx).search_current;
+                    if hits > 0 {
+                        self.minibuffer.set_message(
+                            format!("Match {}/{}", cur + 1, hits)
+                        );
+                    }
+                }
             }
             _ => {
                 // Try as editor command first (open-line-below, append-after, etc.)
