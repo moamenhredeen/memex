@@ -14,6 +14,10 @@ use std::ops::Range;
 use gpui::*;
 use ropey::Rope;
 
+use crate::command::Command;
+use crate::minibuffer::Candidate;
+use crate::pane::ItemAction;
+
 pub use blink::BlinkCursor;
 pub use view::EditorView;
 
@@ -1336,6 +1340,100 @@ impl EditorState {
             "nowrap" => "Soft wrap not yet implemented".into(),
             _ => format!("Unknown option: {}", args),
         }
+    }
+
+    // ─── PaneItem interface ─────────────────────────────────────────────────
+
+    /// Commands for the command palette when the editor is active.
+    pub fn commands() -> Vec<Command> {
+        vec![
+            Command {
+                id: "outline-cycle-fold",
+                name: "Outline: Toggle Fold",
+                description: "Cycle fold state on current heading",
+                aliases: &["fold", "toggle-fold"],
+                binding: Some("Tab"),
+            },
+            Command {
+                id: "outline-global-cycle",
+                name: "Outline: Global Cycle",
+                description: "Cycle all headings: overview → children → show all",
+                aliases: &["fold-all", "unfold-all"],
+                binding: Some("S-Tab"),
+            },
+            Command {
+                id: "outline-promote",
+                name: "Outline: Promote Heading",
+                description: "Decrease heading level (## → #)",
+                aliases: &["promote"],
+                binding: Some("M-left"),
+            },
+            Command {
+                id: "outline-demote",
+                name: "Outline: Demote Heading",
+                description: "Increase heading level (# → ##)",
+                aliases: &["demote"],
+                binding: Some("M-right"),
+            },
+            Command {
+                id: "outline-move-up",
+                name: "Outline: Move Subtree Up",
+                description: "Swap heading subtree with previous sibling",
+                aliases: &[],
+                binding: Some("M-up"),
+            },
+            Command {
+                id: "outline-move-down",
+                name: "Outline: Move Subtree Down",
+                description: "Swap heading subtree with next sibling",
+                aliases: &[],
+                binding: Some("M-down"),
+            },
+            Command {
+                id: "outline-next-heading",
+                name: "Outline: Next Heading",
+                description: "Jump to next heading",
+                aliases: &[],
+                binding: Some("M-n"),
+            },
+            Command {
+                id: "outline-prev-heading",
+                name: "Outline: Previous Heading",
+                description: "Jump to previous heading",
+                aliases: &[],
+                binding: Some("M-p"),
+            },
+        ]
+    }
+
+    /// Execute a command via the PaneItem interface.
+    /// Editor commands are mostly handled by `execute_command_by_id` — this is the
+    /// thin wrapper returning ItemActions.
+    pub fn item_execute_command(
+        &mut self,
+        _cmd_id: &str,
+        _viewport: (f32, f32),
+        _cx: &mut Context<Self>,
+    ) -> Vec<ItemAction> {
+        // Editor commands go through the existing execute_command_by_id path,
+        // which is called directly from app.rs with the keymap reference.
+        // This method exists for interface completeness.
+        vec![]
+    }
+
+    /// Get candidates for editor-owned delegates (none currently).
+    pub fn item_get_candidates(&self, _delegate_id: &str, _input: &str) -> Vec<Candidate> {
+        vec![]
+    }
+
+    /// Handle confirm for editor-owned delegates (none currently).
+    pub fn item_handle_confirm(
+        &mut self,
+        _delegate_id: &str,
+        _input: &str,
+        _candidate: Option<&Candidate>,
+    ) -> Vec<ItemAction> {
+        vec![]
     }
 }
 

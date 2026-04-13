@@ -40,17 +40,14 @@ pub enum MinibufferResult {
 }
 
 /// Identifies which delegate is active. Used to dispatch to the right
-/// candidate/confirm logic in the app layer.
+/// candidate/confirm logic.
 ///
-/// This is an enum rather than trait objects because we have a known set of
-/// delegates and want to avoid Box<dyn> complexity. Each variant maps to
-/// concrete candidate-generation and confirmation logic in app.rs.
-///
-/// To add a new delegate: add a variant here, implement candidate generation
-/// and confirm handling in app.rs's match arms.
+/// App-global delegates (command palette, note search, vaults) are enum variants.
+/// Item-specific delegates (PDF TOC, PDF search, etc.) use `Item(String)` and
+/// dispatch through the active item's PaneItem methods.
 #[derive(Clone, Debug, PartialEq)]
 pub enum DelegateKind {
-    /// Command palette (M-x, vim :) — fuzzy-searches mode-scoped commands via ModeRegistry.
+    /// Command palette (M-x, vim :) — fuzzy-searches item-scoped + global commands.
     Command,
     /// Note search (Ctrl+P, :notes) — fuzzy-searches vault notes.
     NoteSearch,
@@ -58,12 +55,8 @@ pub enum DelegateKind {
     VaultSwitch,
     /// Directory browser (:vault-open) — navigate filesystem to choose a vault.
     VaultOpen,
-    /// PDF table of contents browser — fuzzy-searches TOC entries.
-    PdfToc,
-    /// PDF go-to-page — type a page number and jump to it.
-    PdfGotoPage,
-    /// PDF text search — type a query to search across all pages.
-    PdfSearch,
+    /// Item-owned delegate — dispatched to the active PaneItem.
+    Item(String),
 }
 
 /// Editing mode within the minibuffer input line.

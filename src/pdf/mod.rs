@@ -8,8 +8,14 @@ use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
+use fuzzy_matcher::FuzzyMatcher;
+use fuzzy_matcher::skim::SkimMatcherV2;
 use gpui::*;
 use mupdf::{Colorspace, Document, Matrix as MuMatrix};
+
+use crate::command::Command;
+use crate::minibuffer::Candidate;
+use crate::pane::ItemAction;
 
 const PAGE_GAP: f32 = 8.0;
 pub(crate) const PADDING_Y: f32 = 16.0;
@@ -566,6 +572,486 @@ impl PdfState {
             .enumerate()
             .filter(|(_, h)| h.page == page_index)
             .collect()
+    }
+
+    // ─── PaneItem interface ─────────────────────────────────────────────────
+
+    /// Commands for the command palette when PDF is the active item.
+    pub fn commands() -> Vec<Command> {
+        vec![
+            Command {
+                id: "pdf-toc",
+                name: "PDF: Table of Contents",
+                description: "Browse and jump to table of contents entries",
+                aliases: &["toc", "outline", "contents"],
+                binding: Some("o"),
+            },
+            Command {
+                id: "pdf-goto-page",
+                name: "PDF: Go to Page",
+                description: "Jump to a specific page number",
+                aliases: &["goto-page", "page"],
+                binding: Some("P"),
+            },
+            Command {
+                id: "pdf-bookmarks",
+                name: "PDF: Bookmarks",
+                description: "Browse PDF bookmarks (outline entries)",
+                aliases: &["bookmarks"],
+                binding: None,
+            },
+            Command {
+                id: "pdf-fit-width",
+                name: "PDF: Fit Width",
+                description: "Zoom to fit page width to viewport",
+                aliases: &["fit-width"],
+                binding: Some("w"),
+            },
+            Command {
+                id: "pdf-fit-page",
+                name: "PDF: Fit Page",
+                description: "Zoom to fit entire page in viewport",
+                aliases: &["fit-page"],
+                binding: Some("W"),
+            },
+            Command {
+                id: "pdf-rotate-cw",
+                name: "PDF: Rotate Clockwise",
+                description: "Rotate current page 90° clockwise",
+                aliases: &["rotate-cw", "rotate"],
+                binding: Some("r"),
+            },
+            Command {
+                id: "pdf-rotate-ccw",
+                name: "PDF: Rotate Counter-Clockwise",
+                description: "Rotate current page 90° counter-clockwise",
+                aliases: &["rotate-ccw"],
+                binding: Some("R"),
+            },
+            Command {
+                id: "pdf-dark-mode",
+                name: "PDF: Toggle Dark Mode",
+                description: "Invert colors for night reading",
+                aliases: &["dark-mode", "invert"],
+                binding: None,
+            },
+            Command {
+                id: "pdf-two-page",
+                name: "PDF: Two-Page Spread",
+                description: "Toggle side-by-side two-page view",
+                aliases: &["spread", "two-page"],
+                binding: None,
+            },
+            Command {
+                id: "pdf-copy-link",
+                name: "PDF: Copy Page Link",
+                description: "Copy [[file.pdf#page=N]] link to clipboard",
+                aliases: &["copy-link", "yank-link"],
+                binding: Some("y"),
+            },
+            Command {
+                id: "pdf-extract-text",
+                name: "PDF: Extract Page Text",
+                description: "Copy text from current page to clipboard",
+                aliases: &["extract-text"],
+                binding: Some("Y"),
+            },
+            Command {
+                id: "pdf-scroll-down",
+                name: "PDF: Scroll Down",
+                description: "Scroll PDF down one step",
+                aliases: &[],
+                binding: Some("j"),
+            },
+            Command {
+                id: "pdf-scroll-up",
+                name: "PDF: Scroll Up",
+                description: "Scroll PDF up one step",
+                aliases: &[],
+                binding: Some("k"),
+            },
+            Command {
+                id: "pdf-half-page-down",
+                name: "PDF: Half Page Down",
+                description: "Scroll PDF down half a page",
+                aliases: &[],
+                binding: Some("Ctrl-d"),
+            },
+            Command {
+                id: "pdf-half-page-up",
+                name: "PDF: Half Page Up",
+                description: "Scroll PDF up half a page",
+                aliases: &[],
+                binding: Some("Ctrl-u"),
+            },
+            Command {
+                id: "pdf-zoom-in",
+                name: "PDF: Zoom In",
+                description: "Increase PDF zoom level",
+                aliases: &[],
+                binding: Some("+"),
+            },
+            Command {
+                id: "pdf-zoom-out",
+                name: "PDF: Zoom Out",
+                description: "Decrease PDF zoom level",
+                aliases: &[],
+                binding: Some("-"),
+            },
+            Command {
+                id: "pdf-goto-first",
+                name: "PDF: Go to First Page",
+                description: "Jump to the first page",
+                aliases: &[],
+                binding: Some("g"),
+            },
+            Command {
+                id: "pdf-goto-last",
+                name: "PDF: Go to Last Page",
+                description: "Jump to the last page",
+                aliases: &[],
+                binding: Some("G"),
+            },
+            Command {
+                id: "pdf-search",
+                name: "PDF: Search Text",
+                description: "Search for text across all pages",
+                aliases: &["search", "find"],
+                binding: Some("/"),
+            },
+            Command {
+                id: "pdf-search-next",
+                name: "PDF: Next Match",
+                description: "Jump to the next search match",
+                aliases: &["next-match"],
+                binding: Some("n"),
+            },
+            Command {
+                id: "pdf-search-prev",
+                name: "PDF: Previous Match",
+                description: "Jump to the previous search match",
+                aliases: &["prev-match"],
+                binding: Some("N"),
+            },
+        ]
+    }
+
+    /// Execute a PDF command, returning actions for the app shell.
+    pub fn execute_command(
+        &mut self,
+        cmd_id: &str,
+        viewport: (f32, f32),
+        vim_enabled: bool,
+        cx: &mut Context<Self>,
+    ) -> Vec<ItemAction> {
+        let (vw, vh) = viewport;
+        match cmd_id {
+            "pdf-toc" | "pdf-bookmarks" => {
+                vec![ItemAction::ActivateDelegate {
+                    id: "pdf-toc".into(),
+                    prompt: "TOC:".into(),
+                    highlight_input: false,
+                }]
+            }
+            "pdf-goto-page" => {
+                let prompt = format!("Go to page (1-{}):", self.page_count);
+                vec![ItemAction::ActivateDelegate {
+                    id: "pdf-goto-page".into(),
+                    prompt,
+                    highlight_input: false,
+                }]
+            }
+            "pdf-fit-width" => {
+                self.fit_width(vw);
+                cx.notify();
+                vec![]
+            }
+            "pdf-fit-page" => {
+                self.fit_page(vw, vh);
+                cx.notify();
+                vec![]
+            }
+            "pdf-rotate-cw" => {
+                let (first, _) = self.visible_range(vh);
+                let rotation = self.page_rotations.entry(first).or_insert(0);
+                *rotation = (*rotation + 90) % 360;
+                self.invalidate_cache();
+                cx.notify();
+                vec![ItemAction::SetMessage("Rotated clockwise".into())]
+            }
+            "pdf-rotate-ccw" => {
+                let (first, _) = self.visible_range(vh);
+                let rotation = self.page_rotations.entry(first).or_insert(0);
+                *rotation = (*rotation + 270) % 360;
+                self.invalidate_cache();
+                cx.notify();
+                vec![ItemAction::SetMessage("Rotated counter-clockwise".into())]
+            }
+            "pdf-dark-mode" => {
+                self.dark_mode = !self.dark_mode;
+                self.invalidate_cache();
+                cx.notify();
+                let mode = if self.dark_mode { "on" } else { "off" };
+                vec![ItemAction::SetMessage(format!("Dark mode {}", mode))]
+            }
+            "pdf-two-page" => {
+                self.spread_mode = !self.spread_mode;
+                cx.notify();
+                let mode = if self.spread_mode { "on" } else { "off" };
+                vec![ItemAction::SetMessage(format!("Two-page spread {}", mode))]
+            }
+            "pdf-copy-link" => {
+                let (first, _) = self.visible_range(vh);
+                let filename = self.path.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("file.pdf");
+                let link = format!("[[{}#page={}]]", filename, first + 1);
+                vec![
+                    ItemAction::WriteClipboard(link.clone()),
+                    ItemAction::SetMessage(format!("Copied: {}", link)),
+                ]
+            }
+            "pdf-extract-text" => {
+                let (first, _) = self.visible_range(vh);
+                match self.extract_page_text(first) {
+                    Some(text) if !text.is_empty() => {
+                        vec![
+                            ItemAction::WriteClipboard(text),
+                            ItemAction::SetMessage(format!("Copied text from page {}", first + 1)),
+                        ]
+                    }
+                    _ => {
+                        vec![ItemAction::SetMessage("No text on this page".into())]
+                    }
+                }
+            }
+            "pdf-scroll-down" => {
+                let max = self.max_scroll(vh);
+                self.scroll_offset = (self.scroll_offset + px(60.)).min(max);
+                cx.notify();
+                vec![]
+            }
+            "pdf-scroll-up" => {
+                self.scroll_offset = (self.scroll_offset - px(60.)).max(px(0.));
+                cx.notify();
+                vec![]
+            }
+            "pdf-half-page-down" => {
+                let max = self.max_scroll(vh);
+                self.scroll_offset = (self.scroll_offset + px(400.)).min(max);
+                cx.notify();
+                vec![]
+            }
+            "pdf-half-page-up" => {
+                self.scroll_offset = (self.scroll_offset - px(400.)).max(px(0.));
+                cx.notify();
+                vec![]
+            }
+            "pdf-zoom-in" => {
+                self.zoom = (self.zoom + 0.1).min(3.0);
+                self.invalidate_cache();
+                cx.notify();
+                vec![]
+            }
+            "pdf-zoom-out" => {
+                self.zoom = (self.zoom - 0.1).max(0.3);
+                self.invalidate_cache();
+                cx.notify();
+                vec![]
+            }
+            "pdf-goto-first" => {
+                self.scroll_offset = px(0.);
+                cx.notify();
+                vec![]
+            }
+            "pdf-goto-last" => {
+                let max = self.max_scroll(vh);
+                self.scroll_offset = max;
+                cx.notify();
+                vec![]
+            }
+            "pdf-search" => {
+                self.clear_search();
+                cx.notify();
+                vec![ItemAction::ActivateDelegate {
+                    id: "pdf-search".into(),
+                    prompt: "Search:".into(),
+                    highlight_input: true,
+                }]
+            }
+            "pdf-search-next" => {
+                self.search_next();
+                cx.notify();
+                let hits = self.search_hits.len();
+                let cur = self.search_current;
+                if hits > 0 {
+                    vec![ItemAction::SetMessage(format!("Match {}/{}", cur + 1, hits))]
+                } else {
+                    vec![]
+                }
+            }
+            "pdf-search-prev" => {
+                self.search_prev();
+                cx.notify();
+                let hits = self.search_hits.len();
+                let cur = self.search_current;
+                if hits > 0 {
+                    vec![ItemAction::SetMessage(format!("Match {}/{}", cur + 1, hits))]
+                } else {
+                    vec![]
+                }
+            }
+            _ => vec![] // unknown command
+        }
+    }
+
+    /// Get candidates for a PDF-owned minibuffer delegate.
+    pub fn get_candidates(&self, delegate_id: &str, input: &str) -> Vec<Candidate> {
+        match delegate_id {
+            "pdf-toc" => self.toc_candidates(input),
+            "pdf-goto-page" => self.goto_page_candidates(input),
+            "pdf-search" => self.search_candidates(),
+            _ => vec![],
+        }
+    }
+
+    /// Handle confirm for a PDF-owned minibuffer delegate.
+    pub fn handle_confirm(
+        &mut self,
+        delegate_id: &str,
+        input: &str,
+        candidate: Option<&Candidate>,
+        cx: &mut Context<Self>,
+    ) -> Vec<ItemAction> {
+        match delegate_id {
+            "pdf-toc" => {
+                if let Some(c) = candidate {
+                    if let Ok(page) = c.data.parse::<usize>() {
+                        self.goto_page(page);
+                        cx.notify();
+                    }
+                }
+                vec![ItemAction::Dismiss]
+            }
+            "pdf-goto-page" => {
+                let page_str = candidate
+                    .map(|c| c.data.as_str())
+                    .unwrap_or(input);
+                if let Ok(page_num) = page_str.trim().parse::<usize>() {
+                    self.goto_page_number(page_num);
+                    cx.notify();
+                    vec![
+                        ItemAction::Dismiss,
+                        ItemAction::SetMessage(format!("Page {}", page_num)),
+                    ]
+                } else {
+                    vec![ItemAction::SetMessage("Invalid page number".into())]
+                }
+            }
+            "pdf-search" => {
+                let query = input.to_string();
+                let selected_page = candidate.and_then(|c| c.data.parse::<usize>().ok());
+                if query.is_empty() {
+                    self.clear_search();
+                    cx.notify();
+                    return vec![ItemAction::Dismiss];
+                }
+                if let Some(page) = selected_page {
+                    self.goto_page(page);
+                } else if !self.search_hits.is_empty() {
+                    self.scroll_to_current_match();
+                }
+                cx.notify();
+                let total = self.search_preview.len();
+                let msg = if total > 0 {
+                    format!("{} matches", total)
+                } else {
+                    format!("No matches for '{}'", query)
+                };
+                vec![ItemAction::Dismiss, ItemAction::SetMessage(msg)]
+            }
+            _ => vec![],
+        }
+    }
+
+    /// Called when minibuffer input changes for a PDF delegate.
+    pub fn on_input_changed(&mut self, delegate_id: &str, input: &str, cx: &mut Context<Self>) {
+        if delegate_id == "pdf-search" {
+            let query = input.trim().to_string();
+            self.request_search(&query, cx);
+        }
+    }
+
+    // ─── Private candidate builders ─────────────────────────────────────
+
+    const MAX_CANDIDATES: usize = 15;
+
+    fn toc_candidates(&self, query: &str) -> Vec<Candidate> {
+        if self.toc.is_empty() {
+            return vec![Candidate {
+                label: "(No table of contents)".to_string(),
+                detail: None,
+                is_action: false,
+                data: String::new(),
+            }];
+        }
+
+        let matcher = SkimMatcherV2::default();
+        let mut scored: Vec<(i64, &TocEntry)> = self.toc.iter()
+            .filter_map(|entry| {
+                if query.is_empty() {
+                    Some((0, entry))
+                } else {
+                    matcher.fuzzy_match(&entry.title, query).map(|s| (s, entry))
+                }
+            })
+            .collect();
+
+        if !query.is_empty() {
+            scored.sort_by(|a, b| b.0.cmp(&a.0));
+        }
+
+        scored.into_iter()
+            .take(Self::MAX_CANDIDATES)
+            .map(|(_, entry)| {
+                let indent = "  ".repeat(entry.level);
+                Candidate {
+                    label: format!("{}{}", indent, entry.title),
+                    detail: Some(format!("Page {}", entry.page + 1)),
+                    is_action: false,
+                    data: entry.page.to_string(),
+                }
+            })
+            .collect()
+    }
+
+    fn goto_page_candidates(&self, input: &str) -> Vec<Candidate> {
+        let input = input.trim();
+        if input.is_empty() {
+            return Vec::new();
+        }
+        if let Ok(num) = input.parse::<usize>() {
+            if num >= 1 && num <= self.page_count {
+                return vec![Candidate {
+                    label: format!("Page {}", num),
+                    detail: Some(format!("of {}", self.page_count)),
+                    is_action: false,
+                    data: num.to_string(),
+                }];
+            }
+        }
+        Vec::new()
+    }
+
+    fn search_candidates(&self) -> Vec<Candidate> {
+        self.search_preview.iter().map(|(page, snippet)| {
+            Candidate {
+                label: format!("p{}: {}", page + 1, snippet),
+                detail: None,
+                is_action: false,
+                data: page.to_string(),
+            }
+        }).collect()
     }
 }
 

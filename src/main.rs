@@ -6,7 +6,7 @@ mod fs;
 mod keymap;
 mod markdown;
 mod minibuffer;
-mod mode;
+mod pane;
 mod pdf;
 mod plugin;
 mod state;
