@@ -29,6 +29,17 @@ struct PageLayout {
     width: f32,
     /// Y offset from top of the document
     y_offset: f32,
+    /// Scale factor from PDF coords to screen coords
+    scale: f32,
+}
+
+/// An internal link on a page, with bounds in PDF coordinates.
+#[derive(Clone)]
+pub struct PageLink {
+    /// Bounding rect in PDF page coordinates
+    pub bounds: mupdf::Rect,
+    /// Target page number (absolute)
+    pub target_page: usize,
 }
 
 /// State for an open PDF document.
@@ -42,6 +53,8 @@ pub struct PdfState {
     raw_bytes: Vec<u8>,
     page_layouts: Vec<PageLayout>,
     pub total_height: f32,
+    /// Internal links per page (only internal navigation links, not external URLs)
+    page_links: HashMap<usize, Vec<PageLink>>,
 }
 
 impl PdfState {
@@ -51,6 +64,7 @@ impl PdfState {
         let doc = Document::from_bytes(&raw_bytes, "")?;
         let page_count = doc.page_count()? as usize;
         let (page_layouts, total_height) = Self::compute_layouts(&doc, page_count, 1.0)?;
+        let page_links = Self::extract_links(&doc, page_count);
 
         Ok(Self {
             path,
@@ -62,7 +76,31 @@ impl PdfState {
             raw_bytes,
             page_layouts,
             total_height,
+            page_links,
         })
+    }
+
+    /// Extract internal links from all pages.
+    fn extract_links(doc: &Document, page_count: usize) -> HashMap<usize, Vec<PageLink>> {
+        let mut all_links = HashMap::new();
+        for i in 0..page_count {
+            if let Ok(page) = doc.load_page(i as i32) {
+                if let Ok(links) = page.links() {
+                    let page_links: Vec<PageLink> = links
+                        .filter_map(|link| {
+                            link.dest.map(|dest| PageLink {
+                                bounds: link.bounds,
+                                target_page: dest.loc.page_number as usize,
+                            })
+                        })
+                        .collect();
+                    if !page_links.is_empty() {
+                        all_links.insert(i, page_links);
+                    }
+                }
+            }
+        }
+        all_links
     }
 
     /// Compute page positions from bounds (no rendering — just reads dimensions).
@@ -84,6 +122,7 @@ impl PdfState {
                 height: h,
                 width: w,
                 y_offset: y,
+                scale,
             });
             y += h + PAGE_GAP;
         }
@@ -122,6 +161,35 @@ impl PdfState {
     pub fn page_layout(&self, page_index: usize) -> (f32, f32, f32) {
         let l = &self.page_layouts[page_index];
         (l.y_offset, l.width, l.height)
+    }
+
+    /// Hit-test a click at screen coordinates against links on a page.
+    /// `click_x` and `click_y` are relative to the page image's top-left corner.
+    pub fn hit_test_link(&self, page_index: usize, click_x: f32, click_y: f32) -> Option<usize> {
+        let links = self.page_links.get(&page_index)?;
+        let scale = self.page_layouts[page_index].scale;
+
+        // Convert screen coords back to PDF page coords
+        let pdf_x = click_x / scale;
+        let pdf_y = click_y / scale;
+
+        for link in links {
+            if pdf_x >= link.bounds.x0
+                && pdf_x <= link.bounds.x1
+                && pdf_y >= link.bounds.y0
+                && pdf_y <= link.bounds.y1
+            {
+                return Some(link.target_page);
+            }
+        }
+        None
+    }
+
+    /// Scroll to put a specific page at the top of the viewport.
+    pub fn goto_page(&mut self, page_index: usize) {
+        if page_index < self.page_count {
+            self.scroll_offset = px(self.page_layouts[page_index].y_offset - PADDING_Y);
+        }
     }
 
     /// Render a page to a PNG-encoded gpui Image. Results are cached.

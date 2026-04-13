@@ -66,19 +66,48 @@ impl Render for PdfView {
                 pages_column.child(div().id("pdf-spacer-top").h(px(top_spacer_height)));
         }
 
-        // Visible pages with rendered images
+        // Visible pages with rendered images and click handlers for links
+        let viewport_width: f32 = window.viewport_size().width.into();
         for (idx, image, w, h) in &visible_pages {
+            let page_idx = *idx;
+            let state = self.state.clone();
+            let page_w = *w;
+            let page_h = *h;
+            let vw = viewport_width;
+
             pages_column = pages_column.child(
                 div()
                     .id(ElementId::Name(format!("pdf-page-{}", idx).into()))
-                    .w(px(*w))
-                    .h(px(*h))
+                    .w(px(page_w))
+                    .h(px(page_h))
                     .bg(rgb(0xFFFFFF))
                     .shadow_md()
+                    .cursor_pointer()
+                    .on_mouse_down(MouseButton::Left, move |e, _window, cx| {
+                        state.update(cx, |s, cx| {
+                            let (page_y_offset, page_width, _) = s.page_layout(page_idx);
+                            let scroll: f32 = s.scroll_offset.into();
+                            let page_x_start = (vw - page_width) / 2.0;
+
+                            let click_x = f32::from(e.position.x) - page_x_start;
+                            let click_y =
+                                f32::from(e.position.y) + scroll - page_y_offset;
+
+                            if click_x >= 0.0 && click_x <= page_width && click_y >= 0.0
+                            {
+                                if let Some(target) =
+                                    s.hit_test_link(page_idx, click_x, click_y)
+                                {
+                                    s.goto_page(target);
+                                    cx.notify();
+                                }
+                            }
+                        });
+                    })
                     .child(
                         img(ImageSource::Image(image.clone()))
-                            .w(px(*w))
-                            .h(px(*h))
+                            .w(px(page_w))
+                            .h(px(page_h))
                             .object_fit(ObjectFit::Contain),
                     ),
             );
