@@ -64,6 +64,15 @@ impl Render for EditorView {
                         return;
                     }
 
+                    // Check for checkbox click
+                    if let Some(range) = this.state.read(cx).checkbox_at_offset(pos) {
+                        this.is_selecting = false;
+                        this.state.update(cx, |state, cx| {
+                            state.toggle_checkbox(range, cx);
+                        });
+                        return;
+                    }
+
                     this.state.update(cx, |state, cx| {
                         if e.modifiers.shift {
                             state.select_to(pos, cx);

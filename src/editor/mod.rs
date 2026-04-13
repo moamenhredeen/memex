@@ -135,6 +135,59 @@ impl EditorState {
         None
     }
 
+    /// Check if a byte offset falls on a checkbox (`- [ ] ` or `- [x] `).
+    /// Returns the byte range of the checkbox marker (`[ ]` or `[x]`) if found.
+    pub fn checkbox_at_offset(&self, offset: usize) -> Option<std::ops::Range<usize>> {
+        let content = self.content();
+        let line_idx = self.display_map.line_for_offset(offset);
+        let line_offset = self.display_map.line_offset(line_idx);
+        let line_end = content[line_offset..]
+            .find('\n')
+            .map(|i| line_offset + i)
+            .unwrap_or(content.len());
+        let line_text = &content[line_offset..line_end];
+        let trimmed_start = line_text.len() - line_text.trim_start().len();
+
+        // Check for `- [ ] ` or `- [x] ` or `- [X] ` at the start of the line
+        let trimmed = line_text.trim_start();
+        if trimmed.starts_with("- [ ] ") || trimmed.starts_with("- [x] ") || trimmed.starts_with("- [X] ") {
+            // The checkbox bracket range within the line: `[`, ` ` or `x`, `]`
+            let bracket_start = line_offset + trimmed_start + 2; // skip "- "
+            let bracket_end = bracket_start + 3; // "[ ]" or "[x]"
+            // Allow clicking anywhere on the checkbox prefix "- [ ] "
+            if offset >= line_offset + trimmed_start && offset < line_offset + trimmed_start + 6 {
+                return Some(bracket_start..bracket_end);
+            }
+        }
+        None
+    }
+
+    /// Toggle a checkbox at the given byte range between `[ ]` and `[x]`.
+    pub fn toggle_checkbox(&mut self, range: std::ops::Range<usize>, cx: &mut Context<Self>) {
+        let content = self.content();
+        if let Some(marker) = content.get(range.clone()) {
+            let new_marker = if marker == "[ ]" { "[x]" } else { "[ ]" };
+            let cursor_before = self.cursor;
+            let selection_before = self.selected_range.clone();
+
+            self.rope_replace(range.clone(), new_marker);
+
+            self.history.record(
+                crate::editor::undo::EditOp {
+                    range: range.clone(),
+                    old_text: marker.to_string(),
+                    new_text: new_marker.to_string(),
+                    cursor_before,
+                    cursor_after: cursor_before,
+                },
+                selection_before,
+            );
+
+            cx.emit(EditorEvent::Changed);
+            cx.notify();
+        }
+    }
+
     pub fn set_content(&mut self, content: String, _window: &mut Window, cx: &mut Context<Self>) {
         self.buffer = Rope::from_str(&content);
         self.cursor = 0;
