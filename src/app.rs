@@ -1327,13 +1327,8 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             .w_full()
             .items_center()
             .justify_between()
-            // Drag to move window
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|_this, _e: &MouseDownEvent, window, _cx| {
-                    window.start_window_move();
-                }),
-            )
+            // Register drag hitbox so Windows treats this area as a titlebar
+            .window_control_area(WindowControlArea::Drag)
             // Left: spacer for symmetry
             .child(div().w(px(72.)))
             // Center: title
@@ -1377,9 +1372,8 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 .text_color(rgba(0x00000010))
                 .bg(rgba(0xFF000040))
             )
-            .on_mouse_down(MouseButton::Left, |_e, _w, cx| {
-                cx.stop_propagation();
-            })
+            // Register close hitbox for Windows hit testing
+            .window_control_area(WindowControlArea::Close)
             .on_click(cx.listener(|_this, _e: &ClickEvent, _window, cx| {
                 cx.quit();
             }))
