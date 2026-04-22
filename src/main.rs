@@ -37,6 +37,13 @@ fn main() {
                 gpui::KeyBinding::new("shift-tab", editor::ShiftTabAction, Some("Editor")),
             ]);
 
+            cx.on_window_closed(|cx| {
+                if cx.windows().is_empty() {
+                    cx.quit();
+                }
+            })
+            .detach();
+
             cx.open_window(
                 gpui::WindowOptions {
                     titlebar: Some(gpui::TitlebarOptions {

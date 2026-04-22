@@ -1,7 +1,7 @@
 use fuzzy_matcher::FuzzyMatcher;
 use fuzzy_matcher::skim::SkimMatcherV2;
 use gpui::*;
-use gpui_component::{h_flex, v_flex};
+use gpui_component::{h_flex, v_flex, Icon, IconName};
 
 use crate::command::Command;
 use crate::editor::{EditorEvent, EditorState, EditorView};
@@ -1327,16 +1327,17 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             .w_full()
             .items_center()
             .justify_between()
-            // Register drag hitbox so Windows treats this area as a titlebar
-            .window_control_area(WindowControlArea::Drag)
-            // Left: spacer for symmetry
-            .child(div().w(px(72.)))
-            // Center: title
+            // Left: spacer for symmetry — part of the drag area
+            .child(div().w(px(72.)).h_full().window_control_area(WindowControlArea::Drag))
+            // Center: title — part of the drag area
             .child(
                 div()
                     .flex_1()
+                    .h_full()
                     .flex()
                     .justify_center()
+                    .items_center()
+                    .window_control_area(WindowControlArea::Drag)
                     .child(
                         div()
                             .text_size(px(12.))
@@ -1344,7 +1345,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                             .child(title_text),
                     ),
             )
-            // Right: window controls
+            // Right: window controls — NOT inside the drag area, so Close hitbox wins
             .child(
                 h_flex()
                     .gap(px(0.))
@@ -1377,7 +1378,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             .on_click(cx.listener(|_this, _e: &ClickEvent, _window, cx| {
                 cx.quit();
             }))
-            .child("✕")
+            .child(Icon::new(IconName::WindowClose))
     }
 
     fn render_mode_line(&self, cx: &mut Context<Self>) -> impl IntoElement {
