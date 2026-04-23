@@ -195,7 +195,7 @@
    scrollbar showing a thumb, unclamped values will look wrong.
    Clamp to ~(total_height - viewport_height).max(0.)~.
 
-* TODO [#A] Vault: org-roam-style knowledge graph
+* DONE [#A] Vault: org-roam-style knowledge graph
   :PROPERTIES:
   :ID: vault-knowledge-graph
   :END:
@@ -453,7 +453,7 @@
      every note with that tag.
    - Intended for writing MOCs without hunting for titles.
 
-** TODO [#B] Attachments handling
+** DONE [#B] Attachments handling
    :PROPERTIES:
    :ID: vault-attachments
    :END:

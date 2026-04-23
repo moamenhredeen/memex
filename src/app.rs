@@ -407,6 +407,101 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         cx.notify();
     }
 
+    /// Read the system clipboard. If it contains an image, save it under
+    /// `attachments/{timestamp}.{ext}` and insert `![[filename]]` at the
+    /// cursor. If it contains a file path that exists, copy the file into
+    /// `attachments/` and link to it. Otherwise shows an error message.
+    fn attach_from_clipboard(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        let Some(vault) = self.state.vault.as_ref() else {
+            self.minibuffer.set_message("No vault open");
+            cx.notify();
+            return;
+        };
+        let attachments_dir = vault.layout().attachments;
+        if let Err(e) = std::fs::create_dir_all(&attachments_dir) {
+            self.minibuffer.set_message(format!("attach: {}", e));
+            cx.notify();
+            return;
+        }
+
+        let Some(item) = cx.read_from_clipboard() else {
+            self.minibuffer.set_message("Clipboard is empty");
+            cx.notify();
+            return;
+        };
+
+        let timestamp = crate::vault::id::iso_now().replace(':', "").replace('-', "");
+        // Trim the trailing Z so the filename doesn't carry timezone noise.
+        let ts_clean = timestamp.trim_end_matches('Z');
+
+        // Try image first. Fall back to treating string content as a path.
+        let (filename, bytes) = if let Some(image) = item.entries().iter().find_map(|e| {
+            if let ClipboardEntry::Image(img) = e { Some(img.clone()) } else { None }
+        }) {
+            let ext = match image.format {
+                ImageFormat::Png => "png",
+                ImageFormat::Jpeg => "jpg",
+                ImageFormat::Webp => "webp",
+                ImageFormat::Gif => "gif",
+                ImageFormat::Bmp => "bmp",
+                ImageFormat::Tiff => "tiff",
+                ImageFormat::Svg => "svg",
+            };
+            (format!("{}.{}", ts_clean, ext), image.bytes.clone())
+        } else if let Some(text) = item.text() {
+            let src = std::path::PathBuf::from(text.trim());
+            if src.is_file() {
+                let bytes = match std::fs::read(&src) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        self.minibuffer.set_message(format!("attach: {}", e));
+                        cx.notify();
+                        return;
+                    }
+                };
+                let ext = src
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("bin");
+                let stem = src
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("attachment");
+                (format!("{}-{}.{}", ts_clean, stem, ext), bytes)
+            } else {
+                self.minibuffer.set_message("Clipboard has no image or file path");
+                cx.notify();
+                return;
+            }
+        } else {
+            self.minibuffer.set_message("Clipboard has no image");
+            cx.notify();
+            return;
+        };
+
+        let dest = attachments_dir.join(&filename);
+        if let Err(e) = std::fs::write(&dest, &bytes) {
+            self.minibuffer.set_message(format!("attach write failed: {}", e));
+            cx.notify();
+            return;
+        }
+
+        // Insert at the cursor. Use embed syntax `![[…]]` so eventual
+        // inline-image rendering can pick it up.
+        let snippet = format!("![[{}]]", filename);
+        self.editor_state.update(cx, |state, cx| {
+            state.edit_text(&snippet, cx);
+        });
+
+        // Refresh the vault so the attachment shows in contents.
+        if let Some(v) = self.state.vault.as_mut() {
+            let _ = v.refresh();
+        }
+        self.minibuffer
+            .set_message(format!("Attached {}", filename));
+        cx.notify();
+    }
+
     /// Insert a bullet list of wikilinks to every note with the given tag.
     /// The MOC helper — lets you build hub pages without hunting titles.
     fn insert_links_by_tag(&mut self, tag: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -846,6 +941,9 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             "toggle-backlinks" | "backlinks-panel" => {
                 self.show_backlinks = !self.show_backlinks;
                 cx.notify();
+            }
+            "attach" | "paste-image" => {
+                self.attach_from_clipboard(window, cx);
             }
             "vault-forget" | "forget-vault" => {
                 let arg = raw_input
@@ -1477,6 +1575,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             Command { id: "insert-links-by-tag", name: "Insert Links by Tag", description: "Insert wikilinks to all notes with a tag (MOC helper)", aliases: &["moc"], binding: Some(":moc <tag>") },
             Command { id: "vault-forget", name: "Forget Vault", description: "Remove a vault from the recent-vaults list", aliases: &["forget-vault"], binding: Some(":vault-forget <path>") },
             Command { id: "toggle-backlinks", name: "Toggle Backlinks Panel", description: "Show or hide the backlinks panel below the editor", aliases: &["backlinks-panel"], binding: Some("Ctrl+Shift+B") },
+            Command { id: "attach", name: "Attach from Clipboard", description: "Save clipboard image to attachments/ and insert a link", aliases: &["paste-image"], binding: None },
         ]
     }
 
