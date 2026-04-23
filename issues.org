@@ -352,10 +352,13 @@
 
 * Phase 2 — UI surfaces
 
-** TODO [#A] Backlinks panel
-   Deferred: the backlinks delegate already exists (~:backlinks~)
-   but as a modal minibuffer, not always-visible. Always-visible
-   requires a new pane-level UI below the editor.
+** DONE [#A] Backlinks panel
+   Toggleable panel below the editor. Ctrl+Shift+B,
+   ~:toggle-backlinks~, or ~:backlinks-panel~. Lists every note
+   that links to the current one via ~vault.find_backlinks~ (which
+   now goes through the index, not per-file re-reads). Click to
+   open. Hidden by default; persists across saves but not app
+   restarts (add a preference later if wanted).
    :PROPERTIES:
    :ID: vault-backlinks-panel
    :END:

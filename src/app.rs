@@ -15,7 +15,7 @@ const MAX_RESULTS: usize = 15;
 
 // App-wide actions. Registered as gpui actions so they work regardless of
 // which view has focus. Keybindings are wired up in `src/main.rs`.
-actions!(memex, [Save, FindNote, CommandPalette, ToggleVim, FocusLeftPane, FocusRightPane, SearchContent]);
+actions!(memex, [Save, FindNote, CommandPalette, ToggleVim, FocusLeftPane, FocusRightPane, SearchContent, ToggleBacklinks]);
 
 pub struct Memex {
     state: AppState,
@@ -33,6 +33,8 @@ pub struct Memex {
     /// every vault switch; a polling task spawned in `new` drains its
     /// event channel and calls `refresh` on the active vault.
     vault_watcher: Option<crate::vault::VaultWatcher>,
+    /// Whether the backlinks panel is visible below the editor.
+    show_backlinks: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -160,6 +162,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             minibuffer_focus: cx.focus_handle(),
             global_commands: Self::global_commands(),
             vault_watcher: None,
+            show_backlinks: false,
             _subscriptions: vec![editor_sub, editor_key_sub],
         };
 
@@ -840,6 +843,10 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     self.insert_links_by_tag(arg, window, cx);
                 }
             }
+            "toggle-backlinks" | "backlinks-panel" => {
+                self.show_backlinks = !self.show_backlinks;
+                cx.notify();
+            }
             "vault-forget" | "forget-vault" => {
                 let arg = raw_input
                     .strip_prefix("vault-forget ")
@@ -1469,6 +1476,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             Command { id: "rename", name: "Rename Note", description: "Update the current note's title (no file rename — IDs stay stable)", aliases: &["rn"], binding: Some(":rename <title>") },
             Command { id: "insert-links-by-tag", name: "Insert Links by Tag", description: "Insert wikilinks to all notes with a tag (MOC helper)", aliases: &["moc"], binding: Some(":moc <tag>") },
             Command { id: "vault-forget", name: "Forget Vault", description: "Remove a vault from the recent-vaults list", aliases: &["forget-vault"], binding: Some(":vault-forget <path>") },
+            Command { id: "toggle-backlinks", name: "Toggle Backlinks Panel", description: "Show or hide the backlinks panel below the editor", aliases: &["backlinks-panel"], binding: Some("Ctrl+Shift+B") },
         ]
     }
 
@@ -1910,6 +1918,96 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             .child(Icon::new(IconName::WindowClose))
     }
 
+    /// Backlinks panel — always-visible strip below the editor listing
+    /// every note that links to the current one. Toggled with
+    /// Ctrl+Shift+B. Empty state shows a subtle nudge.
+    fn render_backlinks_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
+        let current_title = self.state.current_title();
+        let backlinks = self
+            .state
+            .vault
+            .as_ref()
+            .filter(|_| !current_title.is_empty())
+            .map(|v| v.find_backlinks(&current_title))
+            .unwrap_or_default();
+
+        let mut header = h_flex()
+            .w_full()
+            .px(px(8.))
+            .py(px(3.))
+            .bg(rgb(0xEEE8D5))          // solarized base2
+            .items_center()
+            .gap(px(8.))
+            .child(
+                div()
+                    .text_size(px(11.))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(rgb(0x586E75)) // base01
+                    .child("Backlinks"),
+            );
+        header = header.child(
+            div()
+                .text_size(px(11.))
+                .text_color(rgb(0x93A1A1)) // base1
+                .child(format!("{}", backlinks.len())),
+        );
+
+        let mut list = v_flex()
+            .w_full()
+            .flex_1()
+            .overflow_hidden()
+            .bg(rgb(0xFDF6E3)); // base3
+
+        if backlinks.is_empty() {
+            list = list.child(
+                div()
+                    .px(px(10.))
+                    .py(px(6.))
+                    .text_size(px(12.))
+                    .text_color(rgb(0x93A1A1))
+                    .child(
+                        if current_title.is_empty() {
+                            "No note open."
+                        } else {
+                            "No backlinks yet. Link to this note from another note with [[…]]."
+                        },
+                    ),
+            );
+        } else {
+            for (title, path) in backlinks {
+                let path_for_click = path.clone();
+                list = list.child(
+                    div()
+                        .id(ElementId::Name(
+                            format!("bl-{}", path.to_string_lossy()).into(),
+                        ))
+                        .w_full()
+                        .px(px(10.))
+                        .py(px(3.))
+                        .text_size(px(12.))
+                        .text_color(rgb(0x268BD2)) // blue — links
+                        .cursor_pointer()
+                        .hover(|s| s.bg(rgba(0x00000010)))
+                        .child(title)
+                        .on_mouse_down(
+                            MouseButton::Left,
+                            cx.listener(move |this, _e: &MouseDownEvent, window, cx| {
+                                this.open_note_by_path(path_for_click.clone(), window, cx);
+                            }),
+                        ),
+                );
+            }
+        }
+
+        v_flex()
+            .w_full()
+            .h(px(160.))
+            .border_t_1()
+            .border_color(rgb(0xD3CBB8))
+            .child(header)
+            .child(list)
+    }
+
     fn render_mode_line(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let es = self.editor_state.read(cx);
         let ev = self.editor_view.read(cx);
@@ -2212,6 +2310,11 @@ impl Render for Memex {
                 if this.minibuffer.active { return; }
                 this.activate_content_search(window, cx);
             }))
+            .on_action(cx.listener(|this, _: &ToggleBacklinks, _window, cx| {
+                if this.minibuffer.active { return; }
+                this.show_backlinks = !this.show_backlinks;
+                cx.notify();
+            }))
             // Custom title bar with drag + window controls
             .child(self.render_title_bar(cx))
             // Main content area: active item's view + optional right split
@@ -2273,6 +2376,12 @@ impl Render for Memex {
                         .child(left_view)
                         .into_any_element()
                 }
+            })
+            // Optional backlinks panel below the content (Ctrl+Shift+B)
+            .children(if self.show_backlinks {
+                Some(self.render_backlinks_panel(cx).into_any_element())
+            } else {
+                None
             })
             // Mode line (always visible, like emacs mode-line)
             .child(self.render_mode_line(cx))
