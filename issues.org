@@ -324,16 +324,19 @@
    - Built on vault open. Updated incrementally by the file watcher.
    - ~NoteMeta~ holds frontmatter + outgoing-link list + file mtime.
 
-** TODO [#A] File watcher
+** DONE [#A] File watcher
    :PROPERTIES:
    :ID: vault-file-watcher
    :END:
 
-   Backend done (src/vault/watcher.rs + notify + debouncer deps).
-   Still needs a gpui task that reads ~VaultWatcher.events~ and
-   applies the diff to ~Vault.index~ on each change. Currently
-   ~Vault.refresh()~ is called after in-app mutations but not on
-   external edits.
+   - Backend: src/vault/watcher.rs wraps ~notify~ +
+     ~notify-debouncer-full~. Debounces events at 150ms.
+   - Pump: ~Memex::new~ spawns a gpui task that polls
+     ~vault_watcher.events~ every 250ms; any batch triggers
+     ~vault.refresh()~. Watcher is reseated on every vault switch
+     (~start_vault_watcher~).
+   - Current behaviour: full re-scan on any change. Incremental
+     per-file updates can come later if scan time becomes an issue.
 
    External edits (git pull, new file from terminal, another editor)
    must refresh the index without restart.

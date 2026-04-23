@@ -29,6 +29,10 @@ pub struct Memex {
     minibuffer: Minibuffer,
     minibuffer_focus: FocusHandle,
     global_commands: Vec<Command>,
+    /// Filesystem watcher for the currently-open vault. Reseated on
+    /// every vault switch; a polling task spawned in `new` drains its
+    /// event channel and calls `refresh` on the active vault.
+    vault_watcher: Option<crate::vault::VaultWatcher>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -142,7 +146,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             },
         );
 
-        Self {
+        let mut this = Self {
             state,
             editor_state: editor_state.clone(),
             editor_view: editor_view.clone(),
@@ -155,8 +159,49 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             minibuffer: Minibuffer::new(),
             minibuffer_focus: cx.focus_handle(),
             global_commands: Self::global_commands(),
+            vault_watcher: None,
             _subscriptions: vec![editor_sub, editor_key_sub],
-        }
+        };
+
+        // If a vault was restored, start watching it.
+        this.start_vault_watcher();
+
+        // Drain watcher events every 250ms on the foreground executor.
+        // try_recv is non-blocking so this stays cheap.
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(250))
+                    .await;
+                let should_refresh = cx
+                    .update(|cx| {
+                        this.update(cx, |memex, _| {
+                            let Some(watcher) = memex.vault_watcher.as_ref() else { return false; };
+                            let mut got_any = false;
+                            while let Ok(_batch) = watcher.events.try_recv() {
+                                got_any = true;
+                            }
+                            got_any
+                        })
+                        .unwrap_or(false)
+                    })
+                    .unwrap_or(false);
+                if should_refresh {
+                    let _ = cx.update(|cx| {
+                        this.update(cx, |memex, cx| {
+                            if let Some(v) = memex.state.vault.as_mut() {
+                                let _ = v.refresh();
+                                cx.notify();
+                            }
+                        })
+                        .ok();
+                    });
+                }
+            }
+        })
+        .detach();
+
+        this
     }
 
     /// Create a read-only snapshot of keymap state for item dispatch.
@@ -1676,7 +1721,22 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         self.editor_state.update(cx, |state, cx| {
             state.set_content(content, window, cx);
         });
+        self.start_vault_watcher();
         cx.notify();
+    }
+
+    /// Start (or restart) the filesystem watcher for the current vault.
+    /// The polling loop in `Memex::new` drains events from the stored
+    /// watcher and triggers `Vault::refresh` — this just reseats the
+    /// source.
+    fn start_vault_watcher(&mut self) {
+        // Drop the previous watcher first so its channel closes.
+        self.vault_watcher = None;
+        let Some(vault) = self.state.vault.as_ref() else { return; };
+        match crate::vault::VaultWatcher::start(&vault.path) {
+            Ok(w) => self.vault_watcher = Some(w),
+            Err(e) => eprintln!("vault watcher failed to start: {}", e),
+        }
     }
     fn search_notes(&self, query: &str) -> Vec<(String, std::path::PathBuf)> {
         let vault = match &self.state.vault {
