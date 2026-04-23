@@ -22,6 +22,8 @@ pub enum StyleKind {
     TableSyntax,
     BlockQuoteSyntax,
     Wikilink,
+    /// YAML frontmatter block — rendered dim to read as metadata, not body.
+    Frontmatter,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -33,6 +35,8 @@ pub enum LineKind {
     ListItem,
     TableRow,
     BlockQuote,
+    /// Line inside a YAML frontmatter block (including the `---` fences).
+    Frontmatter,
 }
 
 pub struct LineInfo {
@@ -160,6 +164,12 @@ fn build_line_info(line: &str, kind: LineKind) -> LineInfo {
                 kind: StyleKind::HrSyntax,
             }]
         }
+        LineKind::Frontmatter => {
+            vec![StyleSpan {
+                range: 0..line.len().max(1),
+                kind: StyleKind::Frontmatter,
+            }]
+        }
         LineKind::Heading(level) => heading_line_info(line, *level).spans,
         LineKind::ListItem => {
             let trimmed = line.trim_start();
@@ -212,7 +222,8 @@ fn determine_line_kinds(
 
     let options = Options::ENABLE_TABLES
         | Options::ENABLE_STRIKETHROUGH
-        | Options::ENABLE_TASKLISTS;
+        | Options::ENABLE_TASKLISTS
+        | Options::ENABLE_YAML_STYLE_METADATA_BLOCKS;
 
     let parser = Parser::new_ext(content, options).into_offset_iter();
 
@@ -240,6 +251,22 @@ fn determine_line_kinds(
                     }
                 }
                 code_block_range = None;
+            }
+            // Frontmatter: mark the `---` fences + every line between them so
+            // the first `---` isn't rendered as a thematic break, and so we
+            // can style the block dimly as metadata.
+            Event::Start(Tag::MetadataBlock(_)) => {
+                let start_line = byte_to_line(line_starts, range.start);
+                let end_line =
+                    byte_to_line(line_starts, range.end.saturating_sub(1).max(range.start));
+                for l in start_line..=end_line.min(num_lines - 1) {
+                    kinds[l] = LineKind::Frontmatter;
+                }
+                // Closing fence — pulldown-cmark's range covers the block
+                // contents, but the trailing `---` line is also part of it
+                // via the range end. Handled above; also ensure the line
+                // immediately after the covered range isn't falsely marked
+                // if it happened to be `---` (pulldown is consistent here).
             }
             Event::Start(Tag::Table(_)) => {
                 let start_line = byte_to_line(line_starts, range.start);

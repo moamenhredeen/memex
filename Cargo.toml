@@ -8,16 +8,20 @@ license = "AGPL-3.0"
 
 [dependencies]
 dirs = "6.0.0"
+fastrand = "2.3"
 fuzzy-matcher = "0.3.7"
 gpui = "0.2"
 gpui-component = "0.5"
 gpui-component-assets = "0.5"
 mupdf = { version = "0.6", default-features = false }
+notify = "7"
+notify-debouncer-full = "0.4"
 rhai = "1.24.0"
 pulldown-cmark = { version = "0.12", default-features = false, features = ["simd"] }
 ropey = "1"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
+serde_yaml = "0.9.34"
 
 # The profile that 'dist' will build with
 [profile.dist]

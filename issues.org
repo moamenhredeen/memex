@@ -195,6 +195,295 @@
    scrollbar showing a thumb, unclamped values will look wrong.
    Clamp to ~(total_height - viewport_height).max(0.)~.
 
+* TODO [#A] Vault: org-roam-style knowledge graph
+  :PROPERTIES:
+  :ID: vault-knowledge-graph
+  :END:
+
+  Direction chosen: flat notes folder, ID-based filenames, frontmatter
+  with tags / status / date / aliases, dedicated folders for
+  attachments and journal. Navigation is links + backlinks + search,
+  not folder trees. No nested tags, no path-based wikilinks, no file
+  explorer for notes (a notes list that filters by tag/title is
+  enough). Hierarchy is written as MOC notes.
+
+  Folder layout (fixed, created on vault init):
+  #+begin_src
+  my-vault/
+    notes/              # flat, ID-based filenames
+    attachments/        # PDFs, images, future drawings
+    journal/            # daily notes, YYYY-MM-DD.md
+    .memex/             # per-vault cache, config
+  #+end_src
+
+  ID scheme: ~YYYYMMDDTHHMMSS-XXXX~ (UTC timestamp + 4 chars base36).
+  20 chars. Sortable chronologically in the filesystem. Short random
+  suffix makes fast-capture and multi-device git merges collision-
+  free. Filename does NOT encode title or tags — those live in
+  frontmatter so edits don't rename files.
+
+  Frontmatter schema (YAML):
+  #+begin_src yaml
+  ---
+  id: 20260423T142301-k3n8
+  title: Unit testing
+  created: 2026-04-23T14:23:01Z
+  tags: [testing, engineering]
+  aliases: []
+  status: draft      # draft | active | archived (free-form string, recommended set)
+  ---
+  #+end_src
+
+  Wikilinks:
+  - ~[[title]]~ resolved via a title→ID index.
+  - ~[[alias]]~ resolved via aliases in frontmatter.
+  - ~[[id:20260423T142301-k3n8]]~ resolved directly (rename-safe).
+  - Rename-safe in practice: titles are mutable, IDs are not.
+    Renaming a title updates frontmatter but does NOT rename the
+    file, so no other note needs to be rewritten.
+
+  Scope is split into three phases. Phase 1 is the foundation
+  (ID/frontmatter/layout/index); Phase 2 surfaces it in the UI
+  (backlinks panel, tag search, full-text search); Phase 3 is
+  polish (rename safety, MOC helpers, attachments handling,
+  registry management).
+
+* Phase 1 — Foundation
+
+** DONE [#A] Frontmatter parser + writer
+   :PROPERTIES:
+   :ID: vault-frontmatter
+   :END:
+
+   Done in src/vault/frontmatter.rs. Also enabled
+   ~Options::ENABLE_YAML_STYLE_METADATA_BLOCKS~ in
+   src/markdown.rs:217 so pulldown-cmark emits
+   ~Tag::MetadataBlock~ events for the ~---~ fences; added
+   ~LineKind::Frontmatter~ + ~StyleKind::Frontmatter~ so the
+   block renders dim (base1) instead of as a thematic break.
+
+   ~Frontmatter~ struct has ~id~, ~title~, ~created~, ~tags~,
+   ~aliases~, ~status~ plus ~extra: BTreeMap~ for round-trip
+   preservation of unknown keys. 10 unit tests cover: no
+   frontmatter, basic parse, unknown keys, write, empty-write,
+   round-trip, unclosed block, fence-not-at-start, empty block,
+   CRLF line endings.
+
+** DONE [#A] ID generator + vault layout bootstrap
+   :PROPERTIES:
+   :ID: vault-id-and-layout
+   :END:
+
+   - src/vault/id.rs: ~generate()~ → ~YYYYMMDDTHHMMSS-XXXX~.
+     Timestamp is UTC, formatted via Howard Hinnant civil-from-days
+     (no chrono dep). Suffix is a process-local atomic counter
+     seeded with ~fastrand~ — guarantees uniqueness for 36^4
+     in-process calls, low cross-process collision probability.
+     6 tests including leap-year and 1k-call collision-free.
+   - src/vault/layout.rs: ~VaultLayout~ struct + ~ensure()~ creates
+     ~notes/~, ~attachments/~, ~journal/~, ~.memex/~ if missing.
+     Idempotent — never touches existing files. 4 tests.
+   - ~Vault::open~ now calls ~ensure()~. Existing flat ~*.md~
+     files at vault root stay put; the scanner (next ticket) picks
+     them up wherever they live.
+
+** DONE [#A] Vault scanner: notes vs attachments vs journal
+   :PROPERTIES:
+   :ID: vault-scanner
+   :END:
+
+   Replace ~fs::list_vault_files~ (src/fs.rs:69) with an aware
+   scanner.
+
+   - Scan ~notes/~, ~journal/~ for ~.md~ → parsed as notes
+     (frontmatter, tags, links).
+   - Scan ~attachments/~ for anything → attachments list
+     (PDFs, images, later drawings).
+   - Skip ~.memex/~, ~.git/~, hidden dirs.
+   - Output: ~Vault { notes: Vec<Note>, journal: Vec<Note>,
+     attachments: Vec<PathBuf> }~.
+   - ~Note~ carries the parsed frontmatter plus a handle to the
+     body (lazy-loaded on open to avoid reading N files at startup
+     beyond what's needed for the index).
+
+** DONE [#A] In-memory index
+   :PROPERTIES:
+   :ID: vault-index
+   :END:
+
+   Single source of truth used by wikilink resolution, backlinks,
+   tag search, title fuzzy-match.
+
+   - ~NoteIndex~:
+     * ~by_id: HashMap<Id, NoteMeta>~
+     * ~by_title: HashMap<String /* lowercase */, Id>~ (ambiguity
+       becomes a collision warning)
+     * ~by_alias: HashMap<String /* lowercase */, Id>~
+     * ~by_tag: HashMap<String, Vec<Id>>~
+     * ~backlinks: HashMap<Id, Vec<Id>>~ (outgoing links reversed)
+   - Built on vault open. Updated incrementally by the file watcher.
+   - ~NoteMeta~ holds frontmatter + outgoing-link list + file mtime.
+
+** TODO [#A] File watcher
+   :PROPERTIES:
+   :ID: vault-file-watcher
+   :END:
+
+   Backend done (src/vault/watcher.rs + notify + debouncer deps).
+   Still needs a gpui task that reads ~VaultWatcher.events~ and
+   applies the diff to ~Vault.index~ on each change. Currently
+   ~Vault.refresh()~ is called after in-app mutations but not on
+   external edits.
+
+   External edits (git pull, new file from terminal, another editor)
+   must refresh the index without restart.
+
+   - ~notify~ crate, recursive on the vault root.
+   - Debounce ~100ms; translate to ~VaultChange::{Added, Removed,
+     Modified, Renamed}~ events.
+   - On change: reparse the affected file's frontmatter, diff its
+     outgoing links, patch the index.
+   - If the changed file is currently open and the buffer isn't
+     dirty, reload it silently. If dirty, show a minibuffer warning
+     (no auto-clobber).
+
+* Phase 2 — UI surfaces
+
+** TODO [#A] Backlinks panel
+   Deferred: the backlinks delegate already exists (~:backlinks~)
+   but as a modal minibuffer, not always-visible. Always-visible
+   requires a new pane-level UI below the editor.
+   :PROPERTIES:
+   :ID: vault-backlinks-panel
+   :END:
+
+   The org-roam move: backlinks aren't behind a command, they're
+   always-visible when a note is open.
+
+   - Toggleable bottom or right panel below the editor. Setting
+     controls visible-by-default.
+   - Lists every note that links to the current one, pulled from
+     ~NoteIndex.backlinks~.
+   - Click = open in pane. Shows a 1-line context snippet around
+     the link (the surrounding sentence).
+   - Keybinding: gpui action ~ToggleBacklinks~ on Ctrl+Shift+B.
+
+** DONE [#A] Tag search and tag listing
+   :PROPERTIES:
+   :ID: vault-tag-search
+   :END:
+
+   - ~:tag <name>~ or a delegate opened via Ctrl+Shift+T: list all
+     notes with the given tag.
+   - ~:tags~ without an argument: list all tags with counts, pick
+     one to drill in.
+   - Tag source: frontmatter ~tags: [...]~ and inline ~#tag~ in
+     the body, union-merged.
+
+** DONE [#A] Full-text search
+   :PROPERTIES:
+   :ID: vault-full-text-search
+   :END:
+
+   Ctrl+P only fuzzy-matches titles. Org-roam-style vaults lean
+   hard on content search.
+
+   - Build a simple inverted index over note bodies on vault open.
+     Keep warm via the file watcher.
+   - New minibuffer delegate ~DelegateKind::ContentSearch~ with a
+     1-line context snippet per hit.
+   - Keybinding: gpui action ~SearchContent~ on Ctrl+Shift+F.
+   - Shares ingest pipeline with [[id:vault-index]] so we read each
+     file once.
+
+** DONE [#B] Daily note command
+   :PROPERTIES:
+   :ID: vault-daily-note
+   :END:
+
+   ~:today~ / ~:daily~ opens or creates ~journal/YYYY-MM-DD.md~,
+   pre-filled with a configurable template.
+
+** DONE [#B] Orphans list
+   :PROPERTIES:
+   :ID: vault-orphans
+   :END:
+
+   Safety net for the flat model. A note with zero incoming and
+   zero outgoing links is an orphan — easy to lose.
+
+   - Command ~:orphans~ lists notes with no links in either
+     direction.
+   - Future: a small badge in the mode-line when the current note
+     becomes/is an orphan, nudging the user to link it.
+
+* Phase 3 — Polish
+
+** DONE [#B] Rename title (safe by construction with IDs)
+   :PROPERTIES:
+   :ID: vault-rename-title
+   :END:
+
+   Because wikilinks resolve through the title index and IDs are
+   stable, a title rename is just a frontmatter update — no other
+   files need to change.
+
+   - ~:rename <new title>~ updates ~title:~ in frontmatter, no
+     filename change.
+   - ~[[old title]]~ links in other notes keep working *iff* we
+     also add the old title to ~aliases:~. Make that the default
+     behaviour with a toggle to disable.
+
+** DONE [#B] MOC quick-insert
+   :PROPERTIES:
+   :ID: vault-moc-insert
+   :END:
+
+   Make the MOC pattern cheap. A command that inserts a bullet
+   list of wikilinks to the current note's direct backlinks,
+   already-linked notes, or notes with a given tag.
+
+   - ~:insert-links-by-tag <tag>~ → bullet list of ~[[title]]~ for
+     every note with that tag.
+   - Intended for writing MOCs without hunting for titles.
+
+** TODO [#B] Attachments handling
+   :PROPERTIES:
+   :ID: vault-attachments
+   :END:
+
+   - PDFs open in the existing PDF view.
+   - Paste / drag an image onto the editor copies it into
+     ~attachments/~ with a unique filename and inserts
+     ~![[filename]]~.
+   - Future drawing type slots in here without further layout
+     changes.
+
+** TODO [#B] Registry: forget / rename vaults
+   :PROPERTIES:
+   :ID: vault-registry-management
+   :END:
+
+   Registry is write-only. Add ~:vault-forget~ and/or a UI action
+   in the vault-switch minibuffer to remove stale entries.
+
+** TODO [#C] Alias-triggered wikilink autocomplete
+   :PROPERTIES:
+   :ID: vault-alias-autocomplete
+   :END:
+
+   The ~[[~ autocomplete should offer aliases alongside canonical
+   titles (rendered differently so the user can tell).
+
+** TODO [#C] Tags + frontmatter inline syntax highlighting
+   :PROPERTIES:
+   :ID: vault-tags-highlight
+   :END:
+
+   Render ~#tag~ in the body with a distinct colour and make it
+   clickable (opens tag search). Colorise frontmatter separately
+   so it reads as metadata, not body.
+
 * DONE [#B] Clicking a pane does not switch focus / keymap layers
   :PROPERTIES:
   :ID: click-focus-bug

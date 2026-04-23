@@ -94,33 +94,43 @@ impl AppState {
         }
     }
 
-    /// Create a new note in the current vault.
+    /// Create a new note in the current vault. Generates a new ID,
+    /// writes frontmatter with `id`, `title`, `created`, and places the
+    /// file under `notes/{id}.md`.
     pub fn create_note(&mut self, title: &str) -> Result<PathBuf, std::io::Error> {
         let vault = self.vault.as_mut().ok_or_else(|| {
             std::io::Error::new(std::io::ErrorKind::NotFound, "no vault open")
         })?;
 
-        let filename = fs::slugify(title);
-        let path = vault.path.join(&filename);
+        let layout = vault.layout();
+        let id = crate::vault::id::generate();
+        let path = layout.note_path(&id);
 
         if path.exists() {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::AlreadyExists,
-                format!("note already exists: {}", filename),
+                format!("note already exists: {}", id),
             ));
         }
 
-        let initial_content = format!("# {}\n", title);
+        let mut fm = crate::vault::Frontmatter::default();
+        fm.id = Some(id.clone());
+        fm.title = Some(title.to_string());
+        fm.created = Some(crate::vault::id::iso_now());
+
+        let body = format!("# {}\n", title);
+        let initial_content = crate::vault::frontmatter::write(&fm, &body)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
+
         fs::save_note(&path, &initial_content)?;
 
-        // Refresh vault notes list
+        // Rescan so the index picks up the new note.
         vault.refresh()?;
 
         self.content = initial_content;
         self.current_note = Some(path.clone());
         self.dirty = false;
 
-        // Update registry
         self.registry.upsert_vault(&vault.path, Some(&path));
         let _ = self.registry.save();
 

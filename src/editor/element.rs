@@ -313,6 +313,15 @@ impl Element for EditorElement {
                                 None,
                                 false,
                             ),
+                            StyleKind::Frontmatter => (
+                                FontWeight::NORMAL,
+                                FontStyle::Normal,
+                                dim_color,  // base1 — reads as metadata, not body
+                                None,
+                                None,
+                                None,
+                                false,
+                            ),
                         };
 
                     let family = if use_mono || matches!(info.kind, LineKind::TableRow) {

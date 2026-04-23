@@ -15,7 +15,7 @@ const MAX_RESULTS: usize = 15;
 
 // App-wide actions. Registered as gpui actions so they work regardless of
 // which view has focus. Keybindings are wired up in `src/main.rs`.
-actions!(memex, [Save, FindNote, CommandPalette, ToggleVim, FocusLeftPane, FocusRightPane]);
+actions!(memex, [Save, FindNote, CommandPalette, ToggleVim, FocusLeftPane, FocusRightPane, SearchContent]);
 
 pub struct Memex {
     state: AppState,
@@ -226,6 +226,172 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         cx.notify();
     }
 
+    fn activate_tag_list(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let vim = self.vim_enabled(cx);
+        self.minibuffer.activate(DelegateKind::TagList, "Tag:", vim);
+        self.minibuffer_focus.focus(window);
+        cx.notify();
+    }
+
+    fn activate_tag_notes(&mut self, tag: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let vim = self.vim_enabled(cx);
+        self.minibuffer.activate(
+            DelegateKind::TagNotes(tag.to_string()),
+            &format!("#{}:", tag),
+            vim,
+        );
+        self.minibuffer_focus.focus(window);
+        cx.notify();
+    }
+
+    fn activate_orphans(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let vim = self.vim_enabled(cx);
+        self.minibuffer.activate(DelegateKind::Orphans, "Orphans:", vim);
+        self.minibuffer_focus.focus(window);
+        cx.notify();
+    }
+
+    fn activate_content_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let vim = self.vim_enabled(cx);
+        self.minibuffer.activate(DelegateKind::ContentSearch, "Search:", vim);
+        self.minibuffer_focus.focus(window);
+        cx.notify();
+    }
+
+    /// Open or create today's journal note at `journal/YYYY-MM-DD.md`.
+    fn open_or_create_journal(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let vault = match self.state.vault.as_ref() {
+            Some(v) => v,
+            None => {
+                self.minibuffer.set_message("No vault open");
+                cx.notify();
+                return;
+            }
+        };
+        let layout = vault.layout();
+        // ISO date prefix: first 10 chars of `YYYY-MM-DDTHH:MM:SSZ`.
+        let iso = crate::vault::id::iso_now();
+        let date = &iso[..10];
+        let path = layout.journal_path(date);
+
+        if !path.exists() {
+            let mut fm = crate::vault::Frontmatter::default();
+            fm.id = Some(crate::vault::id::generate());
+            fm.title = Some(date.to_string());
+            fm.created = Some(iso.clone());
+            let body = format!("# {}\n\n", date);
+            let content = match crate::vault::frontmatter::write(&fm, &body) {
+                Ok(c) => c,
+                Err(e) => {
+                    self.minibuffer.set_message(format!("journal write failed: {}", e));
+                    cx.notify();
+                    return;
+                }
+            };
+            if let Err(e) = crate::fs::save_note(&path, &content) {
+                self.minibuffer.set_message(format!("journal create failed: {}", e));
+                cx.notify();
+                return;
+            }
+            // Reflect the new file in the index.
+            if let Some(v) = self.state.vault.as_mut() {
+                let _ = v.refresh();
+            }
+        }
+
+        self.open_note_by_path(path, window, cx);
+    }
+
+    /// Rename the current note's title. Updates `title:` in frontmatter
+    /// and appends the previous title to `aliases:` so existing
+    /// `[[old title]]` wikilinks keep resolving. The filename does not
+    /// change — IDs stay stable.
+    fn rename_current_note(&mut self, new_title: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(path) = self.state.current_note.clone() else {
+            self.minibuffer.set_message("No note open");
+            cx.notify();
+            return;
+        };
+
+        // Use the editor's in-memory content (may have unsaved edits).
+        let content = self.editor_state.read(cx).content();
+        let parsed = match crate::vault::frontmatter::parse(&content) {
+            Ok(p) => p,
+            Err(e) => {
+                self.minibuffer.set_message(format!("rename: {}", e));
+                cx.notify();
+                return;
+            }
+        };
+        let mut fm = parsed.frontmatter.unwrap_or_default();
+        let old_title = fm.title.clone();
+        if let Some(old) = &old_title {
+            if !old.is_empty() && old != new_title && !fm.aliases.iter().any(|a| a == old) {
+                fm.aliases.push(old.clone());
+            }
+        }
+        fm.title = Some(new_title.to_string());
+
+        let new_content = match crate::vault::frontmatter::write(&fm, &parsed.body) {
+            Ok(s) => s,
+            Err(e) => {
+                self.minibuffer.set_message(format!("rename: {}", e));
+                cx.notify();
+                return;
+            }
+        };
+
+        // Write to disk and update the live editor buffer.
+        if let Err(e) = crate::fs::save_note(&path, &new_content) {
+            self.minibuffer.set_message(format!("rename: {}", e));
+            cx.notify();
+            return;
+        }
+        self.editor_state.update(cx, |state, cx| {
+            state.set_content(new_content.clone(), window, cx);
+        });
+        self.state.content = new_content;
+        self.state.dirty = false;
+        if let Some(v) = self.state.vault.as_mut() {
+            let _ = v.refresh();
+        }
+        self.minibuffer.set_message(format!("Renamed to '{}'", new_title));
+        cx.notify();
+    }
+
+    /// Insert a bullet list of wikilinks to every note with the given tag.
+    /// The MOC helper — lets you build hub pages without hunting titles.
+    fn insert_links_by_tag(&mut self, tag: &str, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(vault) = self.state.vault.as_ref() else {
+            self.minibuffer.set_message("No vault open");
+            cx.notify();
+            return;
+        };
+        let ids = vault.index.notes_with_tag(tag).to_vec();
+        if ids.is_empty() {
+            self.minibuffer.set_message(format!("No notes tagged #{}", tag));
+            cx.notify();
+            return;
+        }
+        let mut titles: Vec<String> = ids
+            .iter()
+            .filter_map(|id| vault.index.get(id).map(|m| m.title.clone()))
+            .collect();
+        titles.sort();
+        let block = titles
+            .iter()
+            .map(|t| format!("- [[{}]]\n", t))
+            .collect::<String>();
+
+        // Insert at the cursor via the editor's edit API.
+        self.editor_state.update(cx, |state, cx| {
+            state.edit_text(&block, cx);
+        });
+        let _ = window;
+        self.minibuffer.set_message(format!("Inserted {} links", titles.len()));
+        cx.notify();
+    }
+
     /// Follow a [[wikilink]]: open the note if it exists, create it otherwise.
     fn follow_wikilink(
         &mut self,
@@ -326,6 +492,18 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             }
             DelegateKind::VaultOpen => {
                 self.get_vault_open_candidates()
+            }
+            DelegateKind::TagList => {
+                self.get_tag_list_candidates()
+            }
+            DelegateKind::TagNotes(tag) => {
+                self.get_tag_notes_candidates(tag)
+            }
+            DelegateKind::Orphans => {
+                self.get_orphans_candidates()
+            }
+            DelegateKind::ContentSearch => {
+                self.get_content_search_candidates()
             }
             DelegateKind::Item(id) => {
                 self.active_item.get_candidates(id, &self.minibuffer.input, cx)
@@ -438,6 +616,34 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     }
                 }
             }
+            DelegateKind::TagList => {
+                if let Some(candidate) = candidates.get(selected) {
+                    let tag = candidate.data.clone();
+                    self.dismiss_minibuffer(window, cx);
+                    self.activate_tag_notes(&tag, window, cx);
+                }
+            }
+            DelegateKind::TagNotes(_) => {
+                if let Some(candidate) = candidates.get(selected) {
+                    let path = std::path::PathBuf::from(&candidate.data);
+                    self.dismiss_minibuffer(window, cx);
+                    self.open_note_by_path(path, window, cx);
+                }
+            }
+            DelegateKind::Orphans => {
+                if let Some(candidate) = candidates.get(selected) {
+                    let path = std::path::PathBuf::from(&candidate.data);
+                    self.dismiss_minibuffer(window, cx);
+                    self.open_note_by_path(path, window, cx);
+                }
+            }
+            DelegateKind::ContentSearch => {
+                if let Some(candidate) = candidates.get(selected) {
+                    let path = std::path::PathBuf::from(&candidate.data);
+                    self.dismiss_minibuffer(window, cx);
+                    self.open_note_by_path(path, window, cx);
+                }
+            }
             DelegateKind::Item(ref id) => {
                 let candidate = candidates.get(selected);
                 let id = id.clone();
@@ -543,6 +749,51 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             }
             "backlinks" => {
                 self.activate_backlinks(window, cx);
+            }
+            "today" | "daily" | "journal" => {
+                self.open_or_create_journal(window, cx);
+            }
+            "tags" => {
+                self.activate_tag_list(window, cx);
+            }
+            "tag" => {
+                // `:tag foo` drills straight in; bare `:tag` opens the picker.
+                let arg = raw_input.strip_prefix("tag ").unwrap_or("").trim();
+                if arg.is_empty() {
+                    self.activate_tag_list(window, cx);
+                } else {
+                    self.activate_tag_notes(arg, window, cx);
+                }
+            }
+            "orphans" => {
+                self.activate_orphans(window, cx);
+            }
+            "search-content" | "search" | "grep" => {
+                self.activate_content_search(window, cx);
+            }
+            "rename" | "rn" => {
+                let arg = raw_input
+                    .strip_prefix("rename ")
+                    .or_else(|| raw_input.strip_prefix("rn "))
+                    .unwrap_or("")
+                    .trim();
+                if arg.is_empty() {
+                    self.minibuffer.set_message("usage: :rename <new title>");
+                } else {
+                    self.rename_current_note(arg, window, cx);
+                }
+            }
+            "insert-links-by-tag" | "moc" => {
+                let arg = raw_input
+                    .strip_prefix("insert-links-by-tag ")
+                    .or_else(|| raw_input.strip_prefix("moc "))
+                    .unwrap_or("")
+                    .trim();
+                if arg.is_empty() {
+                    self.minibuffer.set_message("usage: :moc <tag>");
+                } else {
+                    self.insert_links_by_tag(arg, window, cx);
+                }
             }
             "notes" => {
                 self.activate_note_search(window, cx);
@@ -693,6 +944,163 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             .map(|(_, title, path)| Candidate {
                 label: title,
                 detail: None,
+                is_action: false,
+                data: path.to_string_lossy().to_string(),
+            })
+            .collect()
+    }
+
+    /// List all tags in the vault with counts. Fuzzy-filtered by input.
+    fn get_tag_list_candidates(&self) -> Vec<Candidate> {
+        let vault = match &self.state.vault {
+            Some(v) => v,
+            None => return vec![],
+        };
+        let query = &self.minibuffer.input;
+        let tags = vault.index.all_tags();
+
+        let build = |tag: &str, count: usize| Candidate {
+            label: format!("#{}", tag),
+            detail: Some(format!("{} note{}", count, if count == 1 { "" } else { "s" })),
+            is_action: false,
+            data: tag.to_string(),
+        };
+
+        if query.is_empty() {
+            return tags
+                .into_iter()
+                .take(MAX_RESULTS)
+                .map(|(t, c)| build(&t, c))
+                .collect();
+        }
+
+        let matcher = SkimMatcherV2::default();
+        let mut scored: Vec<(i64, String, usize)> = tags
+            .into_iter()
+            .filter_map(|(t, c)| matcher.fuzzy_match(&t, query).map(|s| (s, t, c)))
+            .collect();
+        scored.sort_by(|a, b| b.0.cmp(&a.0));
+        scored
+            .into_iter()
+            .take(MAX_RESULTS)
+            .map(|(_, t, c)| build(&t, c))
+            .collect()
+    }
+
+    /// Notes carrying a specific tag. Fuzzy-filtered by input on the title.
+    fn get_tag_notes_candidates(&self, tag: &str) -> Vec<Candidate> {
+        let vault = match &self.state.vault {
+            Some(v) => v,
+            None => return vec![],
+        };
+        let ids = vault.index.notes_with_tag(tag);
+        let query = &self.minibuffer.input;
+
+        let entries: Vec<(String, std::path::PathBuf)> = ids
+            .iter()
+            .filter_map(|id| vault.index.get(id))
+            .map(|m| (m.title.clone(), m.path.clone()))
+            .collect();
+
+        let build = |title: &str, path: &std::path::Path| Candidate {
+            label: title.to_string(),
+            detail: None,
+            is_action: false,
+            data: path.to_string_lossy().to_string(),
+        };
+
+        if query.is_empty() {
+            return entries
+                .iter()
+                .take(MAX_RESULTS)
+                .map(|(t, p)| build(t, p))
+                .collect();
+        }
+        let matcher = SkimMatcherV2::default();
+        let mut scored: Vec<(i64, &String, &std::path::PathBuf)> = entries
+            .iter()
+            .filter_map(|(t, p)| matcher.fuzzy_match(t, query).map(|s| (s, t, p)))
+            .collect();
+        scored.sort_by(|a, b| b.0.cmp(&a.0));
+        scored
+            .into_iter()
+            .take(MAX_RESULTS)
+            .map(|(_, t, p)| build(t, p))
+            .collect()
+    }
+
+    /// Notes with neither incoming nor outgoing links — the "lonely" list.
+    fn get_orphans_candidates(&self) -> Vec<Candidate> {
+        let vault = match &self.state.vault {
+            Some(v) => v,
+            None => return vec![],
+        };
+        let query = &self.minibuffer.input;
+        let orphans: Vec<&str> = vault.index.orphans();
+
+        let build_from = |id: &str| -> Option<Candidate> {
+            let m = vault.index.get(id)?;
+            Some(Candidate {
+                label: m.title.clone(),
+                detail: None,
+                is_action: false,
+                data: m.path.to_string_lossy().to_string(),
+            })
+        };
+
+        if query.is_empty() {
+            return orphans
+                .iter()
+                .take(MAX_RESULTS)
+                .filter_map(|id| build_from(id))
+                .collect();
+        }
+        let matcher = SkimMatcherV2::default();
+        let mut scored: Vec<(i64, &str)> = orphans
+            .into_iter()
+            .filter_map(|id| {
+                let m = vault.index.get(id)?;
+                matcher.fuzzy_match(&m.title, query).map(|s| (s, id))
+            })
+            .collect();
+        scored.sort_by(|a, b| b.0.cmp(&a.0));
+        scored
+            .into_iter()
+            .take(MAX_RESULTS)
+            .filter_map(|(_, id)| build_from(id))
+            .collect()
+    }
+
+    /// Full-text search across all note bodies. Returns matches sorted
+    /// by (hit count, title). Each candidate's `detail` shows a single
+    /// snippet of the first hit.
+    fn get_content_search_candidates(&self) -> Vec<Candidate> {
+        let vault = match &self.state.vault {
+            Some(v) => v,
+            None => return vec![],
+        };
+        let query = self.minibuffer.input.trim();
+        if query.is_empty() {
+            return vec![];
+        }
+        let needle = query.to_lowercase();
+
+        let mut hits: Vec<(usize, String, std::path::PathBuf, String)> = Vec::new();
+        for note in vault.contents.notes.iter().chain(vault.contents.journal.iter()) {
+            let Ok(body) = std::fs::read_to_string(&note.path) else { continue; };
+            let count = body.to_lowercase().matches(&needle).count();
+            if count == 0 {
+                continue;
+            }
+            let snippet = extract_snippet(&body, &needle, 60);
+            hits.push((count, note.title.clone(), note.path.clone(), snippet));
+        }
+        hits.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+        hits.into_iter()
+            .take(MAX_RESULTS)
+            .map(|(count, title, path, snippet)| Candidate {
+                label: format!("{}{}", title, if count > 1 { format!(" ({}×)", count) } else { String::new() }),
+                detail: Some(snippet),
                 is_action: false,
                 data: path.to_string_lossy().to_string(),
             })
@@ -938,6 +1346,13 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             Command { id: "split-open", name: "Split Open", description: "Open a note or PDF in the right split panel", aliases: &["vs", "vsplit", "split"], binding: None },
             Command { id: "close-split", name: "Close Split", description: "Close the right split panel", aliases: &[], binding: None },
             Command { id: "backlinks", name: "Backlinks", description: "Show notes that link to the current note", aliases: &["bl", "references"], binding: None },
+            Command { id: "today", name: "Today's Journal", description: "Open or create today's journal note", aliases: &["daily", "journal"], binding: None },
+            Command { id: "tags", name: "Tags", description: "List all tags in the vault", aliases: &[], binding: None },
+            Command { id: "tag", name: "Tag Search", description: "Notes with a specific tag", aliases: &[], binding: None },
+            Command { id: "orphans", name: "Orphan Notes", description: "Notes with no incoming or outgoing links", aliases: &[], binding: None },
+            Command { id: "search-content", name: "Search Content", description: "Full-text search across notes", aliases: &["search", "grep"], binding: Some("Ctrl+Shift+F") },
+            Command { id: "rename", name: "Rename Note", description: "Update the current note's title (no file rename — IDs stay stable)", aliases: &["rn"], binding: Some(":rename <title>") },
+            Command { id: "insert-links-by-tag", name: "Insert Links by Tag", description: "Insert wikilinks to all notes with a tag (MOC helper)", aliases: &["moc"], binding: Some(":moc <tag>") },
         ]
     }
 
@@ -1662,6 +2077,10 @@ impl Render for Memex {
                     this.focus_pane(PaneSide::Right, window, cx);
                 }
             }))
+            .on_action(cx.listener(|this, _: &SearchContent, window, cx| {
+                if this.minibuffer.active { return; }
+                this.activate_content_search(window, cx);
+            }))
             // Custom title bar with drag + window controls
             .child(self.render_title_bar(cx))
             // Main content area: active item's view + optional right split
@@ -1814,6 +2233,32 @@ fn snap_to_char(s: &str, idx: usize, ceil: bool) -> usize {
         while i > 0 && !s.is_char_boundary(i) { i -= 1; }
         i
     }
+}
+
+/// Extract a single-line snippet around the first match of `needle` in
+/// `body`, truncated to roughly `radius` chars on each side. Case-
+/// insensitive match. Returns `"…"` if nothing matches.
+fn extract_snippet(body: &str, needle: &str, radius: usize) -> String {
+    let lower = body.to_lowercase();
+    let Some(pos) = lower.find(needle) else { return "…".to_string(); };
+    // Align to char boundaries in the original body.
+    let start = body[..pos]
+        .char_indices()
+        .rev()
+        .take(radius)
+        .last()
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+    let end_target = pos + needle.len() + radius;
+    let mut end = end_target.min(body.len());
+    while end < body.len() && !body.is_char_boundary(end) {
+        end += 1;
+    }
+    let slice = &body[start..end];
+    let slice = slice.lines().next().unwrap_or(slice);
+    let prefix = if start > 0 { "…" } else { "" };
+    let suffix = if end < body.len() { "…" } else { "" };
+    format!("{}{}{}", prefix, slice.trim(), suffix)
 }
 
 fn command_to_candidate(cmd: &Command) -> Candidate {

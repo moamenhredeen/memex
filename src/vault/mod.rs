@@ -1,3 +1,16 @@
+pub mod frontmatter;
+pub mod id;
+pub mod index;
+pub mod layout;
+pub mod scanner;
+pub mod watcher;
+
+pub use frontmatter::{Frontmatter, ParsedNote};
+pub use index::{NoteIndex, NoteMeta, ResolveHit};
+pub use layout::VaultLayout;
+pub use scanner::{Note, VaultContents};
+pub use watcher::{VaultChange, VaultWatcher};
+
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -10,68 +23,97 @@ use crate::fs;
 pub struct Vault {
     pub path: PathBuf,
     pub name: String,
+    /// Flat list of note + attachment paths. Derived from `contents` and
+    /// kept as a convenience for consumers that still want one list of
+    /// paths. New code should query `contents` or `index` instead.
     pub notes: Vec<PathBuf>,
+    /// Parsed vault contents bucketed by kind (notes / journal / attachments).
+    pub contents: VaultContents,
+    /// In-memory index: wikilink resolution, backlinks, tags.
+    pub index: NoteIndex,
 }
 
 impl Vault {
-    /// Scan a directory and create a Vault from it.
+    /// Scan a directory and create a Vault from it. Also creates the
+    /// well-known ~notes/attachments/journal/.memex~ folders if they
+    /// don't already exist. Never touches existing files.
     pub fn open(path: PathBuf) -> Result<Self, std::io::Error> {
+        let layout = VaultLayout::at(&path);
+        layout.ensure()?;
         let name = path
             .file_name()
             .and_then(|s| s.to_str())
             .unwrap_or("vault")
             .to_string();
-        let notes = fs::list_vault_files(&path)?;
-        Ok(Self { path, name, notes })
+        let contents = scanner::scan(&layout)?;
+        let index = NoteIndex::build(&contents);
+        let notes = derive_paths(&contents);
+        Ok(Self { path, name, notes, contents, index })
+    }
+
+    /// Resolved paths for this vault's well-known folders.
+    pub fn layout(&self) -> VaultLayout {
+        VaultLayout::at(&self.path)
     }
 
     /// Refresh the note list by re-scanning the directory.
     pub fn refresh(&mut self) -> Result<(), std::io::Error> {
-        self.notes = fs::list_vault_files(&self.path)?;
+        let layout = self.layout();
+        self.contents = scanner::scan(&layout)?;
+        self.index = NoteIndex::build(&self.contents);
+        self.notes = derive_paths(&self.contents);
         Ok(())
     }
 
-    /// Get note titles for display/search.
+    /// Get note titles for display/search. Uses frontmatter titles when
+    /// available, falling back to the filename stem for legacy notes.
     pub fn note_titles(&self) -> Vec<(String, PathBuf)> {
-        self.notes
+        self.contents
+            .notes
             .iter()
-            .map(|p| (fs::title_from_path(p), p.clone()))
+            .chain(self.contents.journal.iter())
+            .map(|n| (n.title.clone(), n.path.clone()))
             .collect()
     }
 
-    /// Find notes that contain [[target]] wikilinks pointing to the given note title.
+    /// Find notes that link to the given target title via the index.
+    /// Returns `(display_title, path)` pairs.
     pub fn find_backlinks(&self, target_title: &str) -> Vec<(String, PathBuf)> {
-        let target_lower = target_title.to_lowercase();
+        // Resolve the target to its ID, then pull from the precomputed
+        // backlink map. Ambiguous titles link to all candidates — we
+        // collect backlinks for each.
+        let ids = match self.index.resolve_link(target_title) {
+            Some(ResolveHit::Unique(id)) => vec![id.to_string()],
+            Some(ResolveHit::Ambiguous(ids)) => ids.to_vec(),
+            None => return Vec::new(),
+        };
+
+        let mut seen = std::collections::HashSet::new();
         let mut results = Vec::new();
-
-        for note_path in &self.notes {
-            let note_title = fs::title_from_path(note_path);
-            // Skip self-references
-            if note_title.to_lowercase() == target_lower {
-                continue;
-            }
-
-            let full_path = if note_path.is_absolute() {
-                note_path.clone()
-            } else {
-                self.path.join(note_path)
-            };
-
-            if let Ok(content) = std::fs::read_to_string(&full_path) {
-                // Check for [[target_title]] (case-insensitive)
-                let content_lower = content.to_lowercase();
-                let patterns = [
-                    format!("[[{}]]", target_lower),
-                    format!("[[{}|", target_lower), // [[target|display text]]
-                ];
-                if patterns.iter().any(|p| content_lower.contains(p)) {
-                    results.push((note_title, note_path.clone()));
+        for target_id in &ids {
+            for source_id in self.index.backlinks_for(target_id) {
+                if !seen.insert(source_id.clone()) {
+                    continue;
+                }
+                if let Some(meta) = self.index.get(source_id) {
+                    results.push((meta.title.clone(), meta.path.clone()));
                 }
             }
         }
-
         results
     }
+}
+
+fn derive_paths(contents: &VaultContents) -> Vec<PathBuf> {
+    let mut v: Vec<PathBuf> = contents
+        .notes
+        .iter()
+        .chain(contents.journal.iter())
+        .map(|n| n.path.clone())
+        .collect();
+    v.extend(contents.attachments.iter().cloned());
+    v.sort();
+    v
 }
 
 /// Persisted registry of known vaults.
