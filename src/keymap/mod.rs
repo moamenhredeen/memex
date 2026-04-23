@@ -62,7 +62,7 @@ impl KeymapSystem {
             stack.activate_layer("vim:normal");
             stack.activate_layer("leader");
         }
-        stack.activate_layer("global");
+        stack.activate_layer("editor:base");
         stack.activate_layer("markdown");
 
         Self {
@@ -364,6 +364,46 @@ mod tests {
         match result {
             ResolvedKey::Action(Action::SelfInsert, _) => {}
             other => panic!("Expected SelfInsert fallback, got {:?}", other),
+        }
+    }
+
+    /// The editor's keymap has the pdf and graph layers *registered* (by
+    /// `register_defaults`) but never activated — their bindings must not
+    /// leak into editor-focused resolution. This is the test that locks in
+    /// the per-view-key-dispatch invariant from the editor's side.
+    #[test]
+    fn test_editor_keymap_does_not_resolve_pdf_bindings() {
+        let mut ks = KeymapSystem::new(true);
+        // 'j' in a PDF-only context maps to pdf-scroll-down. In the editor,
+        // vim:normal binds 'j' to Motion("down"). Make sure we get the
+        // motion, never the pdf command.
+        let result = ks.resolve_key("j", false, false, false);
+        match result {
+            ResolvedKey::Action(Action::Motion("down"), _) => {}
+            ResolvedKey::Action(Action::Command(cmd), _) if cmd.starts_with("pdf-") => {
+                panic!("editor keymap resolved to a pdf command: {}", cmd);
+            }
+            other => panic!("expected Motion(down), got {:?}", other),
+        }
+    }
+
+    /// In insert mode, the editor keymap must not consume `+` / `c` / `q` —
+    /// those are graph keys. An unbound key in insert mode should stay
+    /// unhandled so the OS input path can insert the character.
+    #[test]
+    fn test_editor_insert_does_not_eat_graph_keys() {
+        let mut ks = KeymapSystem::new(true);
+        ks.stack.activate_layer("vim:insert");
+        for key in ["+", "c", "q", "l"] {
+            let result = ks.resolve_key(key, false, false, false);
+            match result {
+                ResolvedKey::Unhandled => {}
+                ResolvedKey::Action(Action::Command(cmd), _)
+                    if cmd == "zoom-in" || cmd == "center-graph" || cmd == "close-graph" => {
+                    panic!("editor insert keymap leaked graph command {}", cmd);
+                }
+                _ => {} // fine — other bindings are editor-specific
+            }
         }
     }
 }

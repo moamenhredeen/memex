@@ -19,7 +19,7 @@ use crate::minibuffer::Candidate;
 use crate::pane::ItemAction;
 
 pub use blink::BlinkCursor;
-pub use view::EditorView;
+pub use view::{EditorView, EditorViewEvent};
 
 actions!(editor, [TabAction, ShiftTabAction]);
 

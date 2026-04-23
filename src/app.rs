@@ -4,15 +4,18 @@ use gpui::*;
 use gpui_component::{h_flex, v_flex, Icon, IconName};
 
 use crate::command::Command;
-use crate::editor::{EditorEvent, EditorState, EditorView};
-use crate::graph::{GraphEvent, GraphState, GraphView};
-use crate::keymap::{KeymapSystem, ResolvedKey, Action};
+use crate::editor::{EditorEvent, EditorState, EditorView, EditorViewEvent};
+use crate::graph::{GraphEvent, GraphState, GraphView, GraphViewEvent};
 use crate::minibuffer::{Candidate, DelegateKind, Minibuffer, MinibufferAction, MinibufferVimMode};
 use crate::pane::{ActiveItem, ItemAction, VimSnapshot};
-use crate::pdf::{PdfState, PdfView};
+use crate::pdf::{PdfState, PdfView, PdfViewEvent};
 use crate::state::AppState;
 
 const MAX_RESULTS: usize = 15;
+
+// App-wide actions. Registered as gpui actions so they work regardless of
+// which view has focus. Keybindings are wired up in `src/main.rs`.
+actions!(memex, [Save, FindNote, CommandPalette, ToggleVim, FocusLeftPane, FocusRightPane]);
 
 pub struct Memex {
     state: AppState,
@@ -23,7 +26,6 @@ pub struct Memex {
     right_pane: Option<ActiveItem>,
     /// Which pane has focus — Left is the main pane, Right is the split.
     focused_pane: PaneSide,
-    keymap: KeymapSystem,
     minibuffer: Minibuffer,
     minibuffer_focus: FocusHandle,
     global_commands: Vec<Command>,
@@ -76,6 +78,26 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         let editor_state = cx.new(|cx| EditorState::new(initial_content, window, cx));
         let editor_view = cx.new(|cx| EditorView::new(editor_state.clone(), cx));
 
+        // The editor owns its own keymap and dispatches keys internally.
+        // It only emits events for things the app shell must handle:
+        // commands that open the minibuffer, item actions that need clipboard /
+        // minibuffer access, and vim-state changes that refresh the mode-line.
+        let editor_key_sub = cx.subscribe_in(
+            &editor_view,
+            window,
+            |this, _view, ev: &EditorViewEvent, window, cx| match ev {
+                EditorViewEvent::Command(cmd_id, count) => {
+                    this.execute_command(cmd_id, "", *count, window, cx);
+                }
+                EditorViewEvent::ItemActions(actions) => {
+                    this.process_item_actions(actions.clone(), window, cx);
+                }
+                EditorViewEvent::VimStateChanged => {
+                    cx.notify();
+                }
+            },
+        );
+
         let editor_sub = cx.subscribe_in(
             &editor_state,
             window,
@@ -120,8 +142,6 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             },
         );
 
-        let keymap = KeymapSystem::new(true);
-
         Self {
             state,
             editor_state: editor_state.clone(),
@@ -132,55 +152,47 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             },
             right_pane: None,
             focused_pane: PaneSide::Left,
-            keymap,
             minibuffer: Minibuffer::new(),
             minibuffer_focus: cx.focus_handle(),
             global_commands: Self::global_commands(),
-            _subscriptions: vec![editor_sub],
+            _subscriptions: vec![editor_sub, editor_key_sub],
         }
     }
 
     /// Create a read-only snapshot of keymap state for item dispatch.
-    fn vim_snapshot(&self) -> VimSnapshot {
-        VimSnapshot {
-            vim_enabled: self.keymap.vim_enabled,
-            visual_active: self.keymap.is_visual_active(),
-            insert_active: self.keymap.is_insert_active(),
-        }
+    /// Reads from the editor view — the editor owns the vim state.
+    fn vim_snapshot(&self, cx: &App) -> VimSnapshot {
+        self.editor_view.read(cx).vim_snapshot()
     }
 
-    /// Sync vim flags from keymap to editor state.
-    fn sync_editor_vim_flags(&self, cx: &mut Context<Self>) {
-        let vim = self.keymap.vim_enabled;
-        let insert = self.keymap.is_insert_active();
-        self.editor_state.update(cx, |state, _cx| {
-            state.sync_vim_flags(vim, insert);
-        });
+    /// Returns whether vim mode is enabled. Editor-owned.
+    fn vim_enabled(&self, cx: &App) -> bool {
+        self.editor_view.read(cx).keymap.vim_enabled
     }
 
     fn activate_note_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let vim = self.keymap.vim_enabled;
+        let vim = self.vim_enabled(cx);
         self.minibuffer.activate(DelegateKind::NoteSearch, "Find note:", vim);
         self.minibuffer_focus.focus(window);
         cx.notify();
     }
 
     fn activate_split_note_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let vim = self.keymap.vim_enabled;
+        let vim = self.vim_enabled(cx);
         self.minibuffer.activate(DelegateKind::SplitNoteSearch, "Split open:", vim);
         self.minibuffer_focus.focus(window);
         cx.notify();
     }
 
     fn activate_vault_switch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let vim = self.keymap.vim_enabled;
+        let vim = self.vim_enabled(cx);
         self.minibuffer.activate(DelegateKind::VaultSwitch, "Switch vault:", vim);
         self.minibuffer_focus.focus(window);
         cx.notify();
     }
 
     fn activate_vault_open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let vim = self.keymap.vim_enabled;
+        let vim = self.vim_enabled(cx);
         self.minibuffer.activate(DelegateKind::VaultOpen, "Open vault:", vim);
         // Seed with home directory
         if let Some(home) = dirs::home_dir() {
@@ -193,7 +205,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
     }
 
     fn activate_command_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let vim = self.keymap.vim_enabled;
+        let vim = self.vim_enabled(cx);
         let prompt = if vim { ":" } else { "M-x" };
         self.minibuffer.activate(DelegateKind::Command, prompt, vim);
         self.minibuffer_focus.focus(window);
@@ -201,14 +213,14 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
     }
 
     fn activate_wikilink_autocomplete(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let vim = self.keymap.vim_enabled;
+        let vim = self.vim_enabled(cx);
         self.minibuffer.activate(DelegateKind::WikilinkAutocomplete, "Link to:", vim);
         self.minibuffer_focus.focus(window);
         cx.notify();
     }
 
     fn activate_backlinks(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let vim = self.keymap.vim_enabled;
+        let vim = self.vim_enabled(cx);
         self.minibuffer.activate(DelegateKind::Backlinks, "Backlinks:", vim);
         self.minibuffer_focus.focus(window);
         cx.notify();
@@ -341,7 +353,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 } else if !input.is_empty() {
                     // Try executing raw input as ex command
                     self.dismiss_minibuffer(window, cx);
-                    let vim = self.vim_snapshot();
+                    let vim = self.vim_snapshot(cx);
                     let editor = self.editor_state.clone();
                     let actions = editor.update(cx, |state, cx| {
                         state.execute_ex_command(&input, vim, window, cx)
@@ -452,7 +464,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     }
                 }
                 ItemAction::ActivateDelegate { id, prompt, highlight_input: _ } => {
-                    let vim = self.keymap.vim_enabled;
+                    let vim = self.vim_enabled(cx);
                     self.minibuffer.activate(DelegateKind::Item(id), &prompt, vim);
                     self.minibuffer_focus.focus(window);
                 }
@@ -463,15 +475,23 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     cx.write_to_clipboard(ClipboardItem::new_string(text));
                 }
                 ItemAction::ActivateLayer(layer_id) => {
-                    self.keymap.stack.activate_layer(layer_id);
-                    self.sync_editor_vim_flags(cx);
+                    // Editor-owned layers now — route into the editor view.
+                    self.editor_view.update(cx, |view, cx| {
+                        view.keymap.stack.activate_layer(layer_id);
+                        view.state.update(cx, |s, cx| s.on_layer_activated(layer_id, cx));
+                        view.sync_state_vim_flags(cx);
+                        cx.emit(EditorViewEvent::VimStateChanged);
+                    });
                 }
                 ItemAction::SetVimEnabled(enabled) => {
-                    self.keymap.set_vim_enabled(enabled);
-                    self.sync_editor_vim_flags(cx);
+                    self.editor_view.update(cx, |view, cx| {
+                        view.set_vim_enabled(enabled, cx);
+                    });
                 }
                 ItemAction::SyncVimFlags => {
-                    self.sync_editor_vim_flags(cx);
+                    self.editor_view.update(cx, |view, cx| {
+                        view.sync_state_vim_flags(cx);
+                    });
                 }
             }
         }
@@ -545,7 +565,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 // Dispatch to focused pane's item
                 let vw: f32 = window.viewport_size().width.into();
                 let vh: f32 = window.viewport_size().height.into();
-                let vim = self.vim_snapshot();
+                let vim = self.vim_snapshot(cx);
 
                 // Try right pane first if it's focused
                 if self.focused_pane == PaneSide::Right {
@@ -564,7 +584,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     self.process_item_actions(actions, window, cx);
                 } else if self.active_item.is_editor() && self.focused_pane == PaneSide::Left {
                     // Editor commands that need window access (editing, motions, etc.)
-                    let vim = self.vim_snapshot();
+                    let vim = self.vim_snapshot(cx);
                     let editor = self.editor_state.clone();
                     let item_actions = editor.update(cx, |state, ecx| {
                         state.execute_command_by_id(cmd_id, count, vim, window, ecx)
@@ -991,16 +1011,12 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         self.editor_state.update(cx, |state, cx| {
             state.set_content(content, window, cx);
         });
-        // Switch to editor item
+        // Switch to editor item. The editor keeps its own keymap state —
+        // vim-mode persists across item switches.
         self.switch_to_item(ActiveItem::Editor {
             state: self.editor_state.clone(),
             view: self.editor_view.clone(),
         });
-        // Re-activate vim layers if vim is enabled
-        if self.keymap.vim_enabled {
-            self.keymap.stack.activate_layer("vim:normal");
-            self.keymap.stack.activate_layer("vim:motion");
-        }
         cx.notify();
     }
 
@@ -1041,6 +1057,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
     fn create_pdf_item(
         &mut self,
         path: &std::path::Path,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<ActiveItem> {
         let raw_bytes = match std::fs::read(path) {
@@ -1062,6 +1079,17 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         let pdf_view = cx.new(|cx| PdfView::new(pdf_state.clone(), cx));
         let pdf_sub = cx.observe(&pdf_state, |_, _, cx| cx.notify());
         self._subscriptions.push(pdf_sub);
+        // Route PDF-local keybindings through the existing item-command dispatch.
+        let key_sub = cx.subscribe_in(
+            &pdf_view,
+            window,
+            |this, _view, ev: &PdfViewEvent, window, cx| match ev {
+                PdfViewEvent::Command(cmd) => {
+                    this.execute_command(cmd, "", 1, window, cx);
+                }
+            },
+        );
+        self._subscriptions.push(key_sub);
 
         Some(ActiveItem::Pdf {
             state: pdf_state,
@@ -1075,7 +1103,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let item = match self.create_pdf_item(&path, cx) {
+        let item = match self.create_pdf_item(&path, window, cx) {
             Some(it) => it,
             None => return,
         };
@@ -1091,7 +1119,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let item = match self.create_pdf_item(&path, cx) {
+        let item = match self.create_pdf_item(&path, window, cx) {
             Some(it) => it,
             None => return,
         };
@@ -1106,26 +1134,10 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // Deactivate right pane's old layers if it had one
-        if let Some(ref old) = self.right_pane {
-            for layer in old.keymap_layers() {
-                self.keymap.stack.deactivate_layer(layer);
-            }
-        }
-        // Deactivate left pane layers
-        for layer in self.active_item.keymap_layers() {
-            self.keymap.stack.deactivate_layer(layer);
-        }
-
+        // Keymaps are per-view now — no shared-stack choreography needed.
         self.right_pane = Some(item);
         self.focused_pane = PaneSide::Right;
-
-        // Focus and activate new right pane layers
         self.right_pane.as_ref().unwrap().focus(window, cx);
-        for layer in self.right_pane.as_ref().unwrap().keymap_layers() {
-            self.keymap.stack.activate_layer(layer);
-        }
-
         cx.notify();
     }
 
@@ -1162,6 +1174,18 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         );
         self._subscriptions.push(graph_sub);
 
+        // Route graph-local keybindings through the existing item-command dispatch.
+        let key_sub = cx.subscribe_in(
+            &graph_view,
+            window,
+            |this, _view, ev: &GraphViewEvent, window, cx| match ev {
+                GraphViewEvent::Command(cmd) => {
+                    this.execute_command(cmd, "", 1, window, cx);
+                }
+            },
+        );
+        self._subscriptions.push(key_sub);
+
         // Observe so we re-render on physics ticks
         let obs = cx.observe(&graph_state, |_, _, cx| cx.notify());
         self._subscriptions.push(obs);
@@ -1179,21 +1203,9 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Some(ref right) = self.right_pane {
-            // Deactivate right pane layers
-            for layer in right.keymap_layers() {
-                self.keymap.stack.deactivate_layer(layer);
-            }
-        }
         self.right_pane = None;
         self.focused_pane = PaneSide::Left;
-
-        // Re-activate left pane layers
-        for layer in self.active_item.keymap_layers() {
-            self.keymap.stack.activate_layer(layer);
-        }
         self.active_item.focus(window, cx);
-        self.sync_editor_vim_flags(cx);
         cx.notify();
     }
 
@@ -1206,48 +1218,19 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         if side == self.focused_pane {
             return;
         }
-        // Deactivate old focused pane layers
-        let old_item = match self.focused_pane {
-            PaneSide::Left => Some(&self.active_item),
-            PaneSide::Right => self.right_pane.as_ref(),
-        };
-        if let Some(item) = old_item {
-            for layer in item.keymap_layers() {
-                self.keymap.stack.deactivate_layer(layer);
-            }
-        }
         self.focused_pane = side;
-        // Activate new focused pane layers and focus
         let new_item = match side {
             PaneSide::Left => Some(&self.active_item),
             PaneSide::Right => self.right_pane.as_ref(),
         };
         if let Some(item) = new_item {
-            for layer in item.keymap_layers() {
-                self.keymap.stack.activate_layer(layer);
-            }
             item.focus(window, cx);
-        }
-        if side == PaneSide::Left {
-            self.sync_editor_vim_flags(cx);
         }
         cx.notify();
     }
 
-    /// Switch the active item, swapping keymap layers accordingly.
+    /// Switch the active item. Each view owns its own keymap.
     fn switch_to_item(&mut self, new_item: ActiveItem) {
-        // Deactivate old item's layers
-        for layer in self.active_item.keymap_layers() {
-            self.keymap.stack.deactivate_layer(layer);
-        }
-        // Deactivate layers the new item wants off
-        for layer in new_item.deactivate_layers() {
-            self.keymap.stack.deactivate_layer(layer);
-        }
-        // Activate new item's layers
-        for layer in new_item.keymap_layers() {
-            self.keymap.stack.activate_layer(layer);
-        }
         self.active_item = new_item;
     }
 
@@ -1383,8 +1366,9 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
 
     fn render_mode_line(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let es = self.editor_state.read(cx);
-        let vim_enabled = self.keymap.vim_enabled;
-        let vim_state = self.keymap.active_vim_state().map(|s| s.to_string());
+        let ev = self.editor_view.read(cx);
+        let vim_enabled = ev.keymap.vim_enabled;
+        let vim_state = ev.keymap.active_vim_state().map(|s| s.to_string());
         let _ = es;
 
         let vault_name = self.state.vault_name();
@@ -1645,101 +1629,37 @@ impl Render for Memex {
             .size_full()
             .bg(rgb(0xFDF6E3))  // solarized base3
             .font_family("FiraCode Nerd Font")
-            .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
-                // Don't intercept keys when minibuffer is active
-                if this.minibuffer.active {
-                    return;
-                }
-
-                let key = e.keystroke.key.as_str();
-                let ctrl = e.keystroke.modifiers.control;
-                let shift = e.keystroke.modifiers.shift;
-                let alt = e.keystroke.modifiers.alt;
-
-                // Global shortcuts (bypass keymap system)
-                if ctrl && key == "p" {
-                    this.activate_note_search(window, cx);
-                    return;
-                }
-                if ctrl && key == "s" {
-                    this.save(window, cx);
-                    return;
-                }
-                if alt && key == "x" {
-                    this.activate_command_palette(window, cx);
-                    return;
-                }
-                // Split focus switching: Ctrl+W h/l
-                if ctrl && key == "w" {
-                    // Ctrl+W prefix — mark pending, next key will be h or l
-                    this.editor_state.update(cx, |state, _cx| {
-                        state.suppress_next_input = true;
-                    });
-                    // We use the keymap system for ctrl-w bindings, so fall through
-                }
-                // Quick split navigation: Ctrl+H / Ctrl+L to switch panes
-                if ctrl && key == "h" && this.right_pane.is_some() {
+            // App-wide actions — work regardless of which view has focus.
+            .on_action(cx.listener(|this, _: &Save, window, cx| {
+                if this.minibuffer.active { return; }
+                this.save(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &FindNote, window, cx| {
+                if this.minibuffer.active { return; }
+                this.activate_note_search(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &CommandPalette, window, cx| {
+                if this.minibuffer.active { return; }
+                this.activate_command_palette(window, cx);
+            }))
+            .on_action(cx.listener(|this, _: &ToggleVim, _window, cx| {
+                if this.minibuffer.active { return; }
+                let new_enabled = !this.vim_enabled(cx);
+                this.editor_view.update(cx, |view, cx| {
+                    view.set_vim_enabled(new_enabled, cx);
+                });
+                cx.notify();
+            }))
+            .on_action(cx.listener(|this, _: &FocusLeftPane, window, cx| {
+                if this.minibuffer.active { return; }
+                if this.right_pane.is_some() {
                     this.focus_pane(PaneSide::Left, window, cx);
-                    return;
                 }
-                if ctrl && key == "l" && this.right_pane.is_some() {
+            }))
+            .on_action(cx.listener(|this, _: &FocusRightPane, window, cx| {
+                if this.minibuffer.active { return; }
+                if this.right_pane.is_some() {
                     this.focus_pane(PaneSide::Right, window, cx);
-                    return;
-                }
-
-                // Central key dispatch through the keymap system
-                let resolved = this.keymap.resolve_key(key, ctrl, shift, alt);
-                match resolved {
-                    ResolvedKey::Action(action, count) => {
-                        match &action {
-                            Action::Command(cmd_id) => {
-                                this.execute_command(cmd_id, "", count, window, cx);
-                            }
-                            Action::ActivateLayer(layer_id) => {
-                                this.keymap.stack.activate_layer(layer_id);
-                                if this.active_item.is_editor() {
-                                    this.editor_state.update(cx, |state, cx| {
-                                        state.on_layer_activated(layer_id, cx);
-                                    });
-                                }
-                                this.sync_editor_vim_flags(cx);
-                                cx.notify();
-                            }
-                            _ => {
-                                // Motion, Operator, SelfInsert, etc. — editor-specific
-                                if this.active_item.is_editor() {
-                                    let vim = this.vim_snapshot();
-                                    let editor = this.editor_state.clone();
-                                    let item_actions = editor.update(cx, |state, ecx| {
-                                        state.process_vim_action(
-                                            action, key, count, vim,
-                                            &mut this.keymap.stack,
-                                            window, ecx,
-                                        )
-                                    });
-                                    this.process_item_actions(item_actions, window, cx);
-                                }
-                            }
-                        }
-                    }
-                    ResolvedKey::TransientCapture { transient_id, ch, count } => {
-                        if this.active_item.is_editor() {
-                            this.editor_state.update(cx, |state, ecx| {
-                                state.handle_transient_capture(&transient_id, ch, count, window, ecx);
-                            });
-                        }
-                    }
-                    ResolvedKey::Pending => {
-                        if this.active_item.is_editor() {
-                            this.editor_state.update(cx, |state, _cx| {
-                                state.suppress_next_input = true;
-                            });
-                        }
-                    }
-                    ResolvedKey::Unhandled => {
-                        // Key not bound — in editor insert mode, let OS handle it
-                        // In normal mode or PDF mode, nothing to do
-                    }
                 }
             }))
             // Custom title bar with drag + window controls
@@ -1757,12 +1677,19 @@ impl Render for Memex {
                         .flex_1()
                         .w_full()
                         .overflow_hidden()
-                        // Left pane
+                        // Left pane — click anywhere to make it the focused pane.
                         .child(
                             div()
+                                .id("pane-left")
                                 .flex_1()
                                 .h_full()
                                 .overflow_hidden()
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _e: &MouseDownEvent, window, cx| {
+                                        this.focus_pane(PaneSide::Left, window, cx);
+                                    }),
+                                )
                                 .child(left_view),
                         )
                         // Divider
@@ -1772,12 +1699,19 @@ impl Render for Memex {
                                 .h_full()
                                 .bg(rgba(0x00000010)), // solarized base1
                         )
-                        // Right pane
+                        // Right pane — click anywhere to make it the focused pane.
                         .child(
                             div()
+                                .id("pane-right")
                                 .flex_1()
                                 .h_full()
                                 .overflow_hidden()
+                                .on_mouse_down(
+                                    MouseButton::Left,
+                                    cx.listener(|this, _e: &MouseDownEvent, window, cx| {
+                                        this.focus_pane(PaneSide::Right, window, cx);
+                                    }),
+                                )
                                 .child(right_view),
                         )
                         .into_any_element()

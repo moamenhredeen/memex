@@ -35,6 +35,13 @@ fn main() {
             cx.bind_keys([
                 gpui::KeyBinding::new("tab", editor::TabAction, Some("Editor")),
                 gpui::KeyBinding::new("shift-tab", editor::ShiftTabAction, Some("Editor")),
+                // App-wide shortcuts — dispatched regardless of focused view.
+                gpui::KeyBinding::new("ctrl-s", app::Save, None),
+                gpui::KeyBinding::new("ctrl-p", app::FindNote, None),
+                gpui::KeyBinding::new("alt-x", app::CommandPalette, None),
+                gpui::KeyBinding::new("ctrl-shift-v", app::ToggleVim, None),
+                gpui::KeyBinding::new("ctrl-h", app::FocusLeftPane, None),
+                gpui::KeyBinding::new("ctrl-l", app::FocusRightPane, None),
             ]);
 
             cx.on_window_closed(|cx| {

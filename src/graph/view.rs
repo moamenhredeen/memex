@@ -1,14 +1,34 @@
 use gpui::*;
 
 use super::{GraphEvent, GraphState};
+use crate::keymap::{Action, KeyCombo, KeyTrie, Layer, build_graph_layer};
+
+/// Emitted by [`GraphView`] when a keybinding resolves to a command.
+#[derive(Clone, Debug)]
+pub enum GraphViewEvent {
+    Command(&'static str),
+}
+
+impl EventEmitter<GraphViewEvent> for GraphView {}
 
 pub struct GraphView {
     state: Entity<GraphState>,
     /// Track drag state for panning.
     drag_start: Option<(f32, f32, f32, f32)>, // (mouse_x, mouse_y, pan_x, pan_y)
+    /// Graph-local keymap layer. Only resolves when this view has focus.
+    keymap: Layer,
 }
 
 impl GraphView {
+    /// Resolve a keystroke against the graph layer. Pure function — useful for tests.
+    pub fn resolve_command(&self, key: &str, ctrl: bool, shift: bool, alt: bool) -> Option<&'static str> {
+        let combo = KeyCombo::from_keystroke(key, ctrl, shift, alt);
+        match self.keymap.lookup(&combo)? {
+            KeyTrie::Leaf(Action::Command(id)) => Some(*id),
+            _ => None,
+        }
+    }
+
     pub fn new(state: Entity<GraphState>, cx: &mut Context<Self>) -> Self {
         // Tick the physics simulation periodically
         let state_clone = state.clone();
@@ -38,6 +58,7 @@ impl GraphView {
         Self {
             state,
             drag_start: None,
+            keymap: build_graph_layer(),
         }
     }
 }
@@ -60,6 +81,18 @@ impl Render for GraphView {
             .size_full()
             .bg(rgb(0xFDF6E3)) // solarized base3
             .track_focus(&focus)
+            .on_key_down(cx.listener(|this, e: &KeyDownEvent, _window, cx| {
+                let k = &e.keystroke;
+                if let Some(cmd) = this.resolve_command(
+                    k.key.as_str(),
+                    k.modifiers.control,
+                    k.modifiers.shift,
+                    k.modifiers.alt,
+                ) {
+                    cx.emit(GraphViewEvent::Command(cmd));
+                    cx.stop_propagation();
+                }
+            }))
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(move |this, e: &MouseDownEvent, _window, cx| {

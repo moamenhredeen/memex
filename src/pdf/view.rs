@@ -4,10 +4,23 @@ use gpui::*;
 
 use super::PdfState;
 use super::scrollbar::PdfScrollbar;
+use crate::keymap::{Action, KeyCombo, KeyTrie, Layer, build_pdf_layer};
+
+/// Emitted by [`PdfView`] when a keybinding resolves to a command.
+/// The app shell subscribes and runs the command through
+/// `ActiveItem::execute_command`.
+#[derive(Clone, Debug)]
+pub enum PdfViewEvent {
+    Command(&'static str),
+}
+
+impl EventEmitter<PdfViewEvent> for PdfView {}
 
 pub struct PdfView {
     pub state: Entity<PdfState>,
     focus_handle: FocusHandle,
+    /// PDF-local keymap layer. Only resolves when this view has focus.
+    keymap: Layer,
     _observe_state: Subscription,
 }
 
@@ -18,7 +31,18 @@ impl PdfView {
         Self {
             state,
             focus_handle,
+            keymap: build_pdf_layer(),
             _observe_state,
+        }
+    }
+
+    /// Resolve a keystroke against the PDF layer. Pure function — useful for
+    /// tests. Returns the bound command id, if any.
+    pub fn resolve_command(&self, key: &str, ctrl: bool, shift: bool, alt: bool) -> Option<&'static str> {
+        let combo = KeyCombo::from_keystroke(key, ctrl, shift, alt);
+        match self.keymap.lookup(&combo)? {
+            KeyTrie::Leaf(Action::Command(id)) => Some(*id),
+            _ => None,
         }
     }
 }
@@ -212,6 +236,18 @@ impl Render for PdfView {
             .key_context("PdfView")
             .bg(rgb(0xE8E4DA))
             .overflow_hidden()
+            .on_key_down(cx.listener(|this, e: &KeyDownEvent, _window, cx| {
+                let k = &e.keystroke;
+                if let Some(cmd) = this.resolve_command(
+                    k.key.as_str(),
+                    k.modifiers.control,
+                    k.modifiers.shift,
+                    k.modifiers.alt,
+                ) {
+                    cx.emit(PdfViewEvent::Command(cmd));
+                    cx.stop_propagation();
+                }
+            }))
             .child(
                 div()
                     .id("pdf-scroll-container")

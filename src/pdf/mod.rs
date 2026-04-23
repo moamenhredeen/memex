@@ -1,7 +1,7 @@
 mod scrollbar;
 mod view;
 
-pub use view::PdfView;
+pub use view::{PdfView, PdfViewEvent};
 
 use std::collections::{HashMap, HashSet};
 use std::io::Cursor;

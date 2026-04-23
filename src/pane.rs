@@ -88,30 +88,6 @@ impl ActiveItem {
         }
     }
 
-    /// Keymap layers to activate when this item gains focus.
-    pub fn keymap_layers(&self) -> Vec<&'static str> {
-        match self {
-            Self::Editor { .. } => vec!["vim:normal", "vim:motion", "leader", "markdown"],
-            Self::Pdf { .. } => vec!["pdf"],
-            Self::Graph { .. } => vec!["graph"],
-        }
-    }
-
-    /// Keymap layers to deactivate when this item gains focus.
-    pub fn deactivate_layers(&self) -> Vec<&'static str> {
-        match self {
-            Self::Editor { .. } => vec!["pdf", "graph"],
-            Self::Pdf { .. } => vec![
-                "vim:normal", "vim:motion", "vim:insert", "vim:visual",
-                "vim:operator-pending", "leader", "markdown", "graph",
-            ],
-            Self::Graph { .. } => vec![
-                "vim:normal", "vim:motion", "vim:insert", "vim:visual",
-                "vim:operator-pending", "leader", "markdown", "pdf",
-            ],
-        }
-    }
-
     /// Commands available in the command palette when this item is active.
     pub fn commands(&self) -> Vec<Command> {
         match self {

@@ -1,0 +1,147 @@
+#+title: Issues
+
+* DONE [#A] Move key dispatch into each view (per-view key dispatch refactor)
+  :PROPERTIES:
+  :ID: per-view-key-dispatch
+  :END:
+
+  Today every keystroke goes through one ~on_key_down~ at ~Memex::render~
+  (src/app.rs:1648) and one shared ~KeymapSystem~ with one shared
+  ~LayerStack~. Pane focus and keymap layers are kept in sync by hand in
+  ~open_item_in_split~ / ~close_split~ / ~focus_pane~ / ~switch_to_item~
+  (src/app.rs:1108–1252). When gpui focus diverges from
+  ~self.focused_pane~ (e.g. clicking a pane), keys resolve against the
+  wrong layer set and either run the wrong view's command or get silently
+  dropped by the ~!is_editor()~ guards at src/app.rs:1710/1726/1733.
+
+  Target model: each view owns its own ~FocusHandle~ and its own
+  ~KeymapSystem~, and handles its own ~on_key_down~ with
+  ~track_focus(...)~. gpui routes key events only to the focused view, so
+  the keymap is scoped naturally. The app shell handles only truly
+  app-wide shortcuts, registered as gpui ~Action~ s.
+
+  Deliverables:
+  - ~EditorView~, ~PdfView~, ~GraphView~ each own focus + keymap + key
+    handler.
+  - ~Memex~ no longer has an ~on_key_down~, no ~focused_pane~ layer
+    choreography, no ~KeymapSystem~ field (or keeps a minimal one for
+    window-level bindings only).
+  - ~ActiveItem::keymap_layers~ / ~deactivate_layers~ (src/pane.rs:92,
+    101) removed.
+  - Layer-mutation variants of ~ItemAction~ (~ActivateLayer~,
+    ~SetVimEnabled~, ~SyncVimFlags~, src/pane.rs:54–58) removed; each
+    view mutates its own keymap directly.
+  - Clicking a pane switches focus (and thus key dispatch) with no
+    additional app logic.
+
+** DONE [#A] Split the "global" layer — stepping stone, do first
+   The ~global~ layer (src/keymap/defaults.rs:446–484) mixes three
+   scopes: app-wide shortcuts, editor-universal bindings (arrows,
+   backspace, enter, Ctrl-Z, shift-selection), and dead entries already
+   short-circuited at src/app.rs:1660–1669.
+
+   - Rename ~global~ → ~editor:base~.
+   - Move ~editor:base~ out of ~KeymapSystem::new~ 's always-on
+     activation (src/keymap/mod.rs:65) and into
+     ~ActiveItem::Editor::keymap_layers~ (src/pane.rs:94).
+   - Delete the four app-level entries (Ctrl-S/P, Alt-X, Ctrl-Shift-V)
+     from the renamed layer — they're already intercepted hardcoded.
+   - Verify arrows / Ctrl-Z no longer "work" (silently no-op) in PDF
+     and graph views — that's the correct behaviour.
+
+   Low risk, no ~app.rs~ architectural change. Good pre-flight check
+   that nothing relied on those bindings being global.
+
+** DONE [#A] Register app-wide shortcuts as gpui Actions
+   Replace the hardcoded ~if ctrl && key == "p"~ block at
+   src/app.rs:1660–1687 with gpui ~Action~ types and ~KeyBinding::new~
+   registrations in src/main.rs (next to ~TabAction~ at line 36).
+
+   Candidates: save, find-note, command-palette, toggle-vim,
+   focus-left-pane, focus-right-pane, close-split. ~cx.on_action~
+   handlers in ~Memex~ dispatch them.
+
+   Benefit: works regardless of focused view without a shared layer
+   stack; automatically shows up for a future command palette via
+   ~cx.available_actions~.
+
+** DONE [#A] Give each view its own FocusHandle + KeymapSystem
+   - [X] PDF: owns ~Layer~ from ~build_pdf_layer~ (src/pdf/view.rs)
+   - [X] Graph: owns ~Layer~ from ~build_graph_layer~ (src/graph/view.rs)
+   - [X] Editor: owns a full ~KeymapSystem~ (src/editor/view.rs).
+     Vim state, counts, pending tries, layer mutations, transient
+     captures all editor-local.
+   Each view entity grows:
+   - ~focus_handle: FocusHandle~
+   - ~keymap: KeymapSystem~ (or the subset it needs)
+
+   For the editor, ~keymap~ owns the vim layers + ~editor:base~ +
+   ~markdown~ + ~leader~. For PDF, only ~pdf~. For graph, only
+   ~graph~. Layer construction moves from
+   ~defaults::register_defaults~ (single dumping ground) into per-view
+   constructors that build just what they need.
+
+** DONE [#A] Move the on_key_down body into each view
+   - [X] PDF: ~on_key_down~ + ~track_focus~ + ~Layer~ resolve, emits
+     ~PdfViewEvent::Command~, ~cx.stop_propagation()~. App subscribes
+     in ~create_pdf_item~ and dispatches through ~execute_command~.
+   - [X] Graph: same pattern, ~GraphViewEvent::Command~. App
+     subscribes in ~open_graph~.
+   - [X] Editor: full vim pipeline now lives in
+     ~EditorView::dispatch_key~. Resolves in the view's own
+     ~KeymapSystem~, mutates its own layer stack, calls
+     ~process_vim_action~ with ~&mut self.keymap.stack~, emits
+     ~EditorViewEvent::{Command,ItemActions,VimStateChanged}~ for
+     things the app shell must handle. ~Memex~ no longer has a
+     ~keymap~ field and no longer intercepts any keystrokes.
+   Lift the match at src/app.rs:1691–1743 into each view's own
+   ~on_key_down~ handler:
+   - Editor handler keeps the full vim pipeline: ~process_vim_action~,
+     transient capture, pending, ~suppress_next_input~ coordination.
+   - PDF and graph handlers only need ~Action~ / ~Pending~ /
+     ~Unhandled~.
+
+   Each view's root element becomes
+   ~div().track_focus(&self.focus).on_key_down(...)~. gpui guarantees
+   only the focused view receives the event.
+
+** DONE [#A] Make vim state editor-local
+   ~vim_enabled~, ~is_insert_active()~, ~active_vim_state()~ currently
+   live on the app's single ~KeymapSystem~ (src/keymap/mod.rs:49, 205,
+   223) and are read by the mode-line at src/app.rs:1386–1387 and by
+   many ~is_editor()~ -gated branches.
+
+   - Move these onto ~EditorView~ (or its ~KeymapSystem~).
+   - Mode-line reads from ~editor_state~ directly.
+   - Drop the ~VimSnapshot~ struct (src/pane.rs:29) — the editor has
+     the real state, no snapshot needed.
+
+** DONE [#B] Remove ActiveItem layer-choreography
+   After the above, delete:
+   - ~ActiveItem::keymap_layers~ and ~ActiveItem::deactivate_layers~
+     (src/pane.rs:92, 101).
+   - The activate/deactivate blocks in ~open_item_in_split~
+     (src/app.rs:1109–1127), ~close_split~ (1183–1194), ~focus_pane~
+     (1210–1229), ~switch_to_item~ (1240–1250).
+   - The layer-mutation variants of ~ItemAction~ and their handlers in
+     ~process_item_actions~.
+
+   ~focused_pane~ may survive purely for visual purposes (pane border
+   highlight), updated via a focus observer on each view.
+
+* DONE [#B] Clicking a pane does not switch focus / keymap layers
+  :PROPERTIES:
+  :ID: click-focus-bug
+  :END:
+
+  Reported symptom that motivated [[id:per-view-key-dispatch]]: with
+  editor + PDF split open, clicking on the editor leaves
+  ~self.focused_pane = Right~ and leaves the ~pdf~ layer on top of the
+  stack, so typing in the editor either runs PDF commands or is
+  silently dropped.
+
+  [[id:per-view-key-dispatch]] fixes this structurally. If that refactor
+  is deferred, the minimum fix is an ~on_mouse_down~ on each pane
+  wrapper calling ~Memex::focus_pane(side, ...)~ — ~focus_pane~ already
+  swaps layers correctly (src/app.rs:1200). ~20 lines. Leave this
+  ticket open until the refactor lands or this minimum fix is applied.

@@ -12,7 +12,7 @@ use crate::markdown::{self, StyleKind};
 use crate::minibuffer::Candidate;
 use crate::pane::ItemAction;
 
-pub use view::GraphView;
+pub use view::{GraphView, GraphViewEvent};
 
 // ─── Data ───────────────────────────────────────────────────────────────────
 

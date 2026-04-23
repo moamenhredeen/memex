@@ -5,7 +5,7 @@ use super::layer::{Layer, LayerStack};
 pub fn register_defaults(stack: &mut LayerStack) {
     register_motions(stack);
     register_operators(stack);
-    register_global_layer(stack);
+    register_editor_base_layer(stack);
     register_vim_layers(stack);
     register_leader_layer(stack);
     register_markdown_layer(stack);
@@ -443,8 +443,11 @@ fn op_dedent(_content: &str, _start: usize, _end: usize) -> OperatorOutput {
 
 // ─── Layer definitions ──────────────────────────────────────────────────────
 
-fn register_global_layer(stack: &mut LayerStack) {
-    let mut layer = Layer::new("global");
+// Editor-universal bindings: active whenever the editor is focused,
+// in both normal and insert mode. Not truly global — PDF and graph
+// views do not use these.
+fn register_editor_base_layer(stack: &mut LayerStack) {
+    let mut layer = Layer::new("editor:base");
 
     // Movement
     layer = layer
@@ -473,13 +476,6 @@ fn register_global_layer(stack: &mut LayerStack) {
         .bind("shift-right", Action::Command("select-right"))
         .bind("shift-up", Action::Command("select-up"))
         .bind("shift-down", Action::Command("select-down"));
-
-    // App-level
-    layer = layer
-        .bind("ctrl-s", Action::Command("save"))
-        .bind("ctrl-p", Action::Command("find-note"))
-        .bind("alt-x", Action::Command("command-palette"))
-        .bind("ctrl-shift-v", Action::Command("toggle-vim"));
 
     stack.register_layer(layer);
 }
@@ -702,8 +698,10 @@ fn register_minibuffer_layer(stack: &mut LayerStack) {
     stack.register_layer(layer);
 }
 
-fn register_pdf_layer(stack: &mut LayerStack) {
-    let layer = Layer::new("pdf")
+/// Build the PDF view's keymap layer. Owned by `PdfView`, not by the app
+/// shell — PDF keybindings only apply when the PDF view has focus.
+pub fn build_pdf_layer() -> Layer {
+    Layer::new("pdf")
         // Navigation
         .bind("j", Action::Command("pdf-scroll-down"))
         .bind("k", Action::Command("pdf-scroll-up"))
@@ -729,22 +727,27 @@ fn register_pdf_layer(stack: &mut LayerStack) {
         // Search
         .bind("/", Action::Command("pdf-search"))
         .bind("n", Action::Command("pdf-search-next"))
-        .bind("N", Action::Command("pdf-search-prev"));
-
-    stack.register_layer(layer);
+        .bind("N", Action::Command("pdf-search-prev"))
 }
 
-fn register_graph_layer(stack: &mut LayerStack) {
-    let layer = Layer::new("graph")
+fn register_pdf_layer(stack: &mut LayerStack) {
+    stack.register_layer(build_pdf_layer());
+}
+
+/// Build the graph view's keymap layer. Owned by `GraphView`.
+pub fn build_graph_layer() -> Layer {
+    Layer::new("graph")
         .bind("+", Action::Command("zoom-in"))
         .bind("=", Action::Command("zoom-in"))
         .bind("-", Action::Command("zoom-out"))
         .bind("0", Action::Command("reset-zoom"))
         .bind("c", Action::Command("center-graph"))
         .bind("l", Action::Command("toggle-local-graph"))
-        .bind("q", Action::Command("close-graph"));
+        .bind("q", Action::Command("close-graph"))
+}
 
-    stack.register_layer(layer);
+fn register_graph_layer(stack: &mut LayerStack) {
+    stack.register_layer(build_graph_layer());
 }
 mod tests {
     use super::*;
@@ -756,9 +759,9 @@ mod tests {
         register_defaults(&mut stack);
 
         // Check key layers exist and can activate
-        stack.activate_layer("global");
+        stack.activate_layer("editor:base");
         stack.activate_layer("vim:normal");
-        assert!(stack.is_active("global"));
+        assert!(stack.is_active("editor:base"));
         assert!(stack.is_active("vim:normal"));
     }
 
@@ -766,7 +769,7 @@ mod tests {
     fn test_vim_normal_h_resolves_to_motion() {
         let mut stack = LayerStack::new();
         register_defaults(&mut stack);
-        stack.activate_layer("global");
+        stack.activate_layer("editor:base");
         stack.activate_layer("vim:normal");
 
         let combo = super::super::action::KeyCombo::parse("h");
@@ -778,7 +781,7 @@ mod tests {
     fn test_vim_insert_escape_resolves() {
         let mut stack = LayerStack::new();
         register_defaults(&mut stack);
-        stack.activate_layer("global");
+        stack.activate_layer("editor:base");
         stack.activate_layer("vim:insert");
 
         let combo = super::super::action::KeyCombo::parse("escape");
@@ -787,10 +790,10 @@ mod tests {
     }
 
     #[test]
-    fn test_global_ctrl_z_resolves() {
+    fn test_editor_base_ctrl_z_resolves() {
         let mut stack = LayerStack::new();
         register_defaults(&mut stack);
-        stack.activate_layer("global");
+        stack.activate_layer("editor:base");
 
         let combo = super::super::action::KeyCombo::parse("ctrl-z");
         let action = stack.resolve(&combo);
@@ -852,7 +855,7 @@ mod tests {
     fn test_g_prefix_trie() {
         let mut stack = LayerStack::new();
         register_defaults(&mut stack);
-        stack.activate_layer("global");
+        stack.activate_layer("editor:base");
         stack.activate_layer("vim:normal");
 
         // "g" should resolve to a Node (multi-key prefix)
@@ -872,7 +875,7 @@ mod tests {
     fn test_leader_space_bindings() {
         let mut stack = LayerStack::new();
         register_defaults(&mut stack);
-        stack.activate_layer("global");
+        stack.activate_layer("editor:base");
         stack.activate_layer("vim:normal");
         stack.activate_layer("leader");
 
@@ -899,5 +902,67 @@ mod tests {
                 assert!(matches!(result, Some(KeyTrie::Leaf(Action::Command("vault-switch")))));
             }
         }
+    }
+
+    // ── View-local layer builders ─────────────────────────────────────────
+
+    fn pdf_cmd_for(key: &str) -> Option<&'static str> {
+        let layer = build_pdf_layer();
+        let combo = super::super::action::KeyCombo::parse(key);
+        match layer.lookup(&combo)? {
+            KeyTrie::Leaf(Action::Command(id)) => Some(*id),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn test_pdf_layer_resolves_navigation() {
+        assert_eq!(pdf_cmd_for("j"), Some("pdf-scroll-down"));
+        assert_eq!(pdf_cmd_for("k"), Some("pdf-scroll-up"));
+        assert_eq!(pdf_cmd_for("ctrl-d"), Some("pdf-half-page-down"));
+        assert_eq!(pdf_cmd_for("ctrl-u"), Some("pdf-half-page-up"));
+        assert_eq!(pdf_cmd_for("g"), Some("pdf-goto-first"));
+        assert_eq!(pdf_cmd_for("G"), Some("pdf-goto-last"));
+    }
+
+    #[test]
+    fn test_pdf_layer_resolves_commands() {
+        assert_eq!(pdf_cmd_for("/"), Some("pdf-search"));
+        assert_eq!(pdf_cmd_for("o"), Some("pdf-toc"));
+        assert_eq!(pdf_cmd_for("P"), Some("pdf-goto-page"));
+    }
+
+    #[test]
+    fn test_pdf_layer_ignores_unbound() {
+        // Editor keys must not be in the pdf layer — that was the whole point of
+        // moving editor:base out of the shared "global" layer.
+        assert_eq!(pdf_cmd_for("ctrl-z"), None);
+        assert_eq!(pdf_cmd_for("backspace"), None);
+        assert_eq!(pdf_cmd_for("enter"), None);
+    }
+
+    fn graph_cmd_for(key: &str) -> Option<&'static str> {
+        let layer = build_graph_layer();
+        let combo = super::super::action::KeyCombo::parse(key);
+        match layer.lookup(&combo)? {
+            KeyTrie::Leaf(Action::Command(id)) => Some(*id),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn test_graph_layer_resolves_bindings() {
+        assert_eq!(graph_cmd_for("+"), Some("zoom-in"));
+        assert_eq!(graph_cmd_for("-"), Some("zoom-out"));
+        assert_eq!(graph_cmd_for("0"), Some("reset-zoom"));
+        assert_eq!(graph_cmd_for("c"), Some("center-graph"));
+        assert_eq!(graph_cmd_for("l"), Some("toggle-local-graph"));
+        assert_eq!(graph_cmd_for("q"), Some("close-graph"));
+    }
+
+    #[test]
+    fn test_graph_layer_ignores_unbound() {
+        assert_eq!(graph_cmd_for("j"), None); // j is a PDF key, not graph
+        assert_eq!(graph_cmd_for("ctrl-z"), None);
     }
 }
