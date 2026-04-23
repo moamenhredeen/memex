@@ -270,11 +270,19 @@ impl EditorState {
         }
     }
 
+    /// Move the cursor to `offset`. If the target sits on a folded
+    /// (hidden) line, snap to the nearest visible line in the direction
+    /// of travel — forward when the user moved forward, backward when
+    /// the user moved backward. This is what makes `j` jump past a fold
+    /// instead of bouncing back to the heading.
     pub fn move_to(&mut self, offset: usize, cx: &mut Context<Self>) {
-        self.move_to_inner(offset, false, cx);
+        let prefer_forward = offset > self.cursor;
+        self.move_to_inner(offset, prefer_forward, cx);
     }
 
-    /// Move cursor, preferring forward direction when landing on hidden line.
+    /// Explicit "prefer forward on hidden line" version. Kept for callers
+    /// (e.g. `next_grapheme`) that want to force forward regardless of
+    /// the numeric comparison above.
     pub fn move_to_forward(&mut self, offset: usize, cx: &mut Context<Self>) {
         self.move_to_inner(offset, true, cx);
     }
