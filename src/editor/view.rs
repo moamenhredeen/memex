@@ -235,10 +235,14 @@ impl Render for EditorView {
                         ScrollDelta::Lines(lines) => lines.y * px(20.),
                         ScrollDelta::Pixels(pixels) => pixels.y,
                     };
-                    state.scroll_offset = (state.scroll_offset - delta).max(px(0.));
+                    let total = <EditorState as crate::ui::Scrollable>::total_height(state);
+                    let viewport: f32 = state.viewport_height.into();
+                    let max = px((total - viewport).max(0.0));
+                    state.scroll_offset = (state.scroll_offset - delta).clamp(px(0.), max);
                     cx.notify();
                 });
             }))
             .child(EditorElement::new(&self.state))
+            .child(crate::ui::Scrollbar::new(self.state.clone()).with_id("editor-scrollbar"))
     }
 }

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use gpui::*;
 
 use super::PdfState;
-use super::scrollbar::PdfScrollbar;
+use crate::ui::Scrollbar;
 use crate::keymap::{Action, KeyCombo, KeyTrie, Layer, build_pdf_layer};
 
 /// Emitted by [`PdfView`] when a keybinding resolves to a command.
@@ -260,7 +260,7 @@ impl Render for PdfView {
                     .child(pages_column),
             )
             // Custom scrollbar element — uses actual rendered bounds
-            .child(PdfScrollbar::new(self.state.clone()))
+            .child(Scrollbar::new(self.state.clone()).with_id("pdf-scrollbar"))
             .on_scroll_wheel(cx.listener(|this, e: &ScrollWheelEvent, window, cx| {
                 let vh: f32 = window.viewport_size().height.into();
                 this.state.update(cx, |state, cx| {

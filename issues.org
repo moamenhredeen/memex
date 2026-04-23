@@ -129,6 +129,72 @@
    ~focused_pane~ may survive purely for visual purposes (pane border
    highlight), updated via a focus observer on each view.
 
+* DONE [#A] Editor: scrollbar + follow-cursor [4/4]
+  :PROPERTIES:
+  :ID: editor-scrollbar-follow-cursor
+  :END:
+
+  The editor has no scrollbar and doesn't scroll to keep the cursor in
+  view. Typing past the bottom of the viewport hides the cursor. Scroll
+  wheel works (src/editor/view.rs:232) but there's no visual indicator
+  of scroll position or document size.
+
+  PDF already has a working scrollbar at src/pdf/scrollbar.rs
+  (~285 lines). It reads ~total_height~/~scroll_offset~ from
+  ~PdfState~ and stores drag state on ~PdfState.drag_state~. The
+  drawing, hit-testing, drag, and track-click logic are generic —
+  only the data source is ~PdfState~-specific. Good candidate for
+  reuse.
+
+** DONE [#A] Extract a generic ~Scrollbar<S: Scrollable>~ element
+   - New module ~src/ui/scrollbar.rs~ (create ~src/ui/mod.rs~).
+   - Define ~Scrollable~ trait:
+     ~total_height(&self) -> f32~,
+     ~scroll_offset(&self) -> Pixels~,
+     ~set_scroll_offset(&mut self, Pixels)~,
+     ~drag_state(&self) -> Option<DragState>~,
+     ~set_drag_state(&mut self, Option<DragState>)~.
+   - Generalise ~PdfScrollbar~ to ~Scrollbar<S>~ taking ~Entity<S>~.
+   - Implement ~Scrollable~ for ~PdfState~. Delete
+     ~src/pdf/scrollbar.rs~. ~PdfView~ swaps to the shared element.
+   - Tests: unit test that thumb position tracks scroll offset for a
+     toy ~Scrollable~ impl.
+
+** DONE [#A] Implement ~Scrollable~ for ~EditorState~ + add the scrollbar
+   - Add ~drag_state: Option<DragState>~ field.
+   - ~total_height~ comes from ~display_map.total_height()~ plus
+     vertical padding.
+   - Render ~Scrollbar::new(state.clone())~ on ~EditorView~'s root.
+
+** DONE [#A] Follow-cursor auto-scroll
+   - Add ~viewport_height: Pixels~ cache on ~EditorState~, updated
+     from ~EditorElement::prepaint~.
+   - Add ~needs_scroll_to_cursor: bool~ flag. Set to ~true~ by:
+     ~move_to_inner~, ~replace_text_in_range~ (insert / delete),
+     ~on_layer_activated~ (mode changes), grammar motion/operator
+     execution.
+   - Add method ~scroll_cursor_into_view~ that, given viewport
+     height and cursor line y / line height, adjusts
+     ~scroll_offset~ if the cursor falls outside the visible band.
+     Use a small margin (e.g. 2 line heights) so the cursor
+     doesn't sit exactly on the edge.
+   - Call it from ~EditorElement::prepaint~ when the flag is set,
+     then clear the flag.
+   - Intentionally *not* called when the user scroll-wheels — we
+     only re-center on cursor changes, so manual scrolling is
+     sticky until the next edit or motion.
+   - Tests:
+     * cursor at bottom past viewport → scroll increases
+     * cursor at top above viewport → scroll decreases
+     * cursor already visible → scroll unchanged
+     * overscroll past end → clamped to ~(total - viewport)~
+
+** DONE [#B] Scroll commands should clamp
+   ~scroll-half-down~ / ~scroll-half-up~ at src/editor/mod.rs:1381
+   currently use ~.max(px(0.))~ but don't clamp to max. With the
+   scrollbar showing a thumb, unclamped values will look wrong.
+   Clamp to ~(total_height - viewport_height).max(0.)~.
+
 * DONE [#B] Clicking a pane does not switch focus / keymap layers
   :PROPERTIES:
   :ID: click-focus-bug

@@ -47,6 +47,13 @@ pub struct EditorState {
     pub vim_enabled: bool,
     /// Whether insert mode is active (mirrored from KeymapSystem for input handler)
     pub insert_mode: bool,
+    /// Scrollbar drag state (survives across frames).
+    pub drag_state: Option<crate::ui::DragState>,
+    /// Viewport height from last frame, used by follow-cursor scrolling.
+    pub viewport_height: Pixels,
+    /// Set by any cursor-moving operation; cleared by `EditorElement` after
+    /// it scrolls the cursor into view.
+    pub needs_scroll_to_cursor: bool,
     _blink_sub: Subscription,
 }
 
@@ -89,6 +96,9 @@ impl EditorState {
             suppress_next_input: false,
             vim_enabled: true,
             insert_mode: false,
+            drag_state: None,
+            viewport_height: px(0.),
+            needs_scroll_to_cursor: false,
             _blink_sub,
         }
     }
@@ -246,6 +256,7 @@ impl EditorState {
         self.selected_range = new_cursor..new_cursor;
         self.cursor = new_cursor;
         self.marked_range.take();
+        self.needs_scroll_to_cursor = true;
         self.blink_cursor.update(cx, |bc, cx| bc.pause(cx));
         cx.emit(EditorEvent::Changed);
         cx.notify();
@@ -286,6 +297,7 @@ impl EditorState {
         }
         self.selected_range = offset..offset;
         self.cursor = offset;
+        self.needs_scroll_to_cursor = true;
         self.blink_cursor.update(cx, |bc, cx| bc.pause(cx));
         cx.notify();
     }
@@ -1377,13 +1389,21 @@ impl EditorState {
                     }
                 }
             }
-            // Scrolling
+            // Scrolling — clamp to `(total - viewport).max(0)` so we don't
+            // overscroll past the last line and leave the scrollbar thumb
+            // stranded at the bottom.
             "scroll-half-down" => {
-                self.scroll_offset = (self.scroll_offset + px(200.)).max(px(0.));
+                let total = <EditorState as crate::ui::Scrollable>::total_height(self);
+                let viewport: f32 = self.viewport_height.into();
+                let max = px((total - viewport).max(0.0));
+                self.scroll_offset = (self.scroll_offset + px(200.)).clamp(px(0.), max);
                 cx.notify();
             }
             "scroll-half-up" => {
-                self.scroll_offset = (self.scroll_offset - px(200.)).max(px(0.));
+                let total = <EditorState as crate::ui::Scrollable>::total_height(self);
+                let viewport: f32 = self.viewport_height.into();
+                let max = px((total - viewport).max(0.0));
+                self.scroll_offset = (self.scroll_offset - px(200.)).clamp(px(0.), max);
                 cx.notify();
             }
             // Go-to commands (from g prefix trie)
@@ -1660,6 +1680,118 @@ impl EditorState {
     ) -> Vec<ItemAction> {
         vec![]
     }
+
+    /// Adjust `scroll_offset` so the cursor is visible in the viewport.
+    /// A small margin keeps the cursor from sitting flush against the edge.
+    /// No-op if the viewport height hasn't been recorded yet.
+    pub fn scroll_cursor_into_view(&mut self) {
+        let viewport: f32 = self.viewport_height.into();
+        if viewport <= 0.0 {
+            return;
+        }
+        let cursor_line = self.display_map.line_for_offset(self.cursor);
+        let line_y: f32 = self.display_map.line_y(cursor_line).into();
+        let line_h: f32 = self.display_map.line_height(cursor_line).into();
+        let total: f32 = f32::from(self.display_map.total_height()) + 48.0;
+        let scroll: f32 = self.scroll_offset.into();
+        let new_scroll = scroll_cursor_into_view_math(scroll, viewport, total, line_y, line_h);
+        self.scroll_offset = px(new_scroll);
+    }
+}
+
+/// Pure helper for `scroll_cursor_into_view` — exposed for unit tests.
+///
+/// - Input `scroll` is the current scroll offset.
+/// - `viewport` is the visible area height.
+/// - `total` is the total document height (including chrome padding).
+/// - `line_y` / `line_h` describe the cursor line in document coordinates.
+/// Returns the new scroll offset, with a 2-line margin and clamped to
+/// `[0, total - viewport]`.
+pub fn scroll_cursor_into_view_math(
+    scroll: f32,
+    viewport: f32,
+    total: f32,
+    line_y: f32,
+    line_h: f32,
+) -> f32 {
+    let padding: f32 = 24.0; // matches `EditorElement` top padding.
+    let margin = line_h * 2.0;
+    let top = line_y - margin;
+    let bottom = line_y + line_h + margin;
+    let new_scroll = if top < scroll {
+        top.max(0.0)
+    } else if bottom > scroll + viewport - padding {
+        bottom - viewport + padding
+    } else {
+        scroll
+    };
+    let max_scroll = (total - viewport).max(0.0);
+    new_scroll.clamp(0.0, max_scroll)
+}
+
+#[cfg(test)]
+mod scroll_tests {
+    use super::scroll_cursor_into_view_math;
+
+    // Helper: 100-line doc, 20px lines, 500px viewport, 24+24px padding.
+    // TOTAL (2048) > VIEWPORT (500) so max_scroll > 0 and we can exercise clamping.
+    const LINE_H: f32 = 20.0;
+    const VIEWPORT: f32 = 500.0;
+    const TOTAL: f32 = 100.0 * 20.0 + 48.0;
+    const PADDING: f32 = 24.0;
+
+    #[test]
+    fn cursor_above_viewport_scrolls_up() {
+        // Cursor at line 2 (y = 40), scroll is 300 (viewing lines ~15..40).
+        let out = scroll_cursor_into_view_math(300.0, VIEWPORT, TOTAL, 40.0, LINE_H);
+        assert!(out < 300.0, "expected scroll to move up, got {}", out);
+        // Cursor should fit in view: line_y - 2*line_h must be >= out.
+        assert!(40.0 - 2.0 * LINE_H >= out);
+    }
+
+    #[test]
+    fn cursor_below_viewport_scrolls_down() {
+        // Cursor near doc end at y=480 (viewport is 0..476 usable), scroll 0.
+        // cursor bottom = 480 + 20 + 40 = 540, which is > 0 + 500 - 24 = 476.
+        let out = scroll_cursor_into_view_math(0.0, VIEWPORT, TOTAL, 480.0, LINE_H);
+        assert!(out > 0.0, "expected scroll to move down, got {}", out);
+        // Cursor bottom must fit: line_y + line_h + 2*line_h must be <= out + viewport - padding.
+        let bottom = 480.0 + LINE_H + 2.0 * LINE_H;
+        assert!(bottom <= out + VIEWPORT - PADDING + 0.001);
+    }
+
+    #[test]
+    fn cursor_already_visible_no_change() {
+        // Viewport shows 0..500; cursor mid-way at y=200. No change.
+        let out = scroll_cursor_into_view_math(0.0, VIEWPORT, TOTAL, 200.0, LINE_H);
+        assert_eq!(out, 0.0);
+    }
+
+    #[test]
+    fn overscroll_clamps_to_max() {
+        // Cursor at end of doc, current scroll past max.
+        let max = (TOTAL - VIEWPORT).max(0.0);
+        let out = scroll_cursor_into_view_math(9999.0, VIEWPORT, TOTAL, TOTAL - LINE_H, LINE_H);
+        assert!(out <= max + 0.001);
+        assert!(out >= 0.0);
+    }
+
+    #[test]
+    fn viewport_bigger_than_document_stays_at_zero() {
+        let out = scroll_cursor_into_view_math(0.0, 10_000.0, 400.0, 100.0, LINE_H);
+        assert_eq!(out, 0.0);
+    }
+}
+
+impl crate::ui::Scrollable for EditorState {
+    fn total_height(&self) -> f32 {
+        // Match the chrome added by `EditorElement`: 24px top + 24px bottom padding.
+        f32::from(self.display_map.total_height()) + 48.0
+    }
+    fn scroll_offset(&self) -> Pixels { self.scroll_offset }
+    fn set_scroll_offset(&mut self, offset: Pixels) { self.scroll_offset = offset; }
+    fn drag_state(&self) -> Option<crate::ui::DragState> { self.drag_state }
+    fn set_drag_state(&mut self, drag: Option<crate::ui::DragState>) { self.drag_state = drag; }
 }
 
 pub enum EditorEvent {

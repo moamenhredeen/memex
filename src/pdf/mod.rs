@@ -1,4 +1,3 @@
-mod scrollbar;
 mod view;
 
 pub use view::{PdfView, PdfViewEvent};
@@ -67,7 +66,7 @@ pub struct SearchHit {
     pub quad: mupdf::Quad,
 }
 
-use crate::pdf::scrollbar::DragState;
+use crate::ui::{DragState, Scrollable};
 
 /// State for an open PDF document.
 pub struct PdfState {
@@ -1053,6 +1052,14 @@ impl PdfState {
             }
         }).collect()
     }
+}
+
+impl Scrollable for PdfState {
+    fn total_height(&self) -> f32 { self.total_height }
+    fn scroll_offset(&self) -> Pixels { self.scroll_offset }
+    fn set_scroll_offset(&mut self, offset: Pixels) { self.scroll_offset = offset; }
+    fn drag_state(&self) -> Option<DragState> { self.drag_state }
+    fn set_drag_state(&mut self, drag: Option<DragState>) { self.drag_state = drag; }
 }
 
 /// Extract text from all pages (runs on background thread on PDF open).

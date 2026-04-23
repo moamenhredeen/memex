@@ -97,6 +97,7 @@ impl EntityInputHandler for EditorState {
         self.selected_range = new_cursor..new_cursor;
         self.cursor = new_cursor;
         self.marked_range.take();
+        self.needs_scroll_to_cursor = true;
         self.blink_cursor.update(cx, |bc, cx| bc.pause(cx));
         cx.emit(EditorEvent::Changed);
 

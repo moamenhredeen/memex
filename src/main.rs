@@ -13,6 +13,7 @@ mod pane;
 mod pdf;
 mod plugin;
 mod state;
+mod ui;
 mod vault;
 
 use gpui::AppContext;
