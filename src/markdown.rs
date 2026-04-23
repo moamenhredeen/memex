@@ -24,6 +24,8 @@ pub enum StyleKind {
     Wikilink,
     /// YAML frontmatter block — rendered dim to read as metadata, not body.
     Frontmatter,
+    /// Inline `#tag` reference.
+    Tag,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -524,6 +526,33 @@ pub fn parse_inline_styles(text: &str) -> Vec<StyleSpan> {
                 i = end + 2;
                 normal_start = i;
                 continue;
+            }
+        }
+        // #tag detection: `#` at line start or after whitespace,
+        // followed by one or more tag chars. Reject headings — those
+        // have a space right after the `#`.
+        if bytes[i] == b'#' {
+            let at_boundary = i == 0 || bytes[i - 1].is_ascii_whitespace();
+            if at_boundary {
+                let start_tag = i + 1;
+                let mut j = start_tag;
+                while j < len
+                    && (bytes[j].is_ascii_alphanumeric() || bytes[j] == b'_' || bytes[j] == b'-')
+                {
+                    j += 1;
+                }
+                // Require at least one char and at least one non-digit
+                // (so `#1` stays plain text).
+                if j > start_tag && text[start_tag..j].bytes().any(|b| !b.is_ascii_digit()) {
+                    push_normal(&mut spans, normal_start, i);
+                    spans.push(StyleSpan {
+                        range: i..j,
+                        kind: StyleKind::Tag,
+                    });
+                    i = j;
+                    normal_start = i;
+                    continue;
+                }
             }
         }
         i += 1;

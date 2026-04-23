@@ -322,6 +322,15 @@ impl Element for EditorElement {
                                 None,
                                 false,
                             ),
+                            StyleKind::Tag => (
+                                FontWeight::NORMAL,
+                                FontStyle::Normal,
+                                hsla(0.083, 0.756, 0.429, 1.0), // solarized orange
+                                None,
+                                None,
+                                None,
+                                false,
+                            ),
                         };
 
                     let family = if use_mono || matches!(info.kind, LineKind::TableRow) {

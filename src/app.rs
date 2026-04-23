@@ -840,6 +840,26 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     self.insert_links_by_tag(arg, window, cx);
                 }
             }
+            "vault-forget" | "forget-vault" => {
+                let arg = raw_input
+                    .strip_prefix("vault-forget ")
+                    .or_else(|| raw_input.strip_prefix("forget-vault "))
+                    .unwrap_or("")
+                    .trim();
+                if arg.is_empty() {
+                    self.minibuffer.set_message("usage: :vault-forget <path>");
+                } else {
+                    let path = std::path::PathBuf::from(arg);
+                    let removed = self.state.registry.forget_vault(&path);
+                    let _ = self.state.registry.save();
+                    if removed {
+                        self.minibuffer.set_message(format!("Forgot vault: {}", arg));
+                    } else {
+                        self.minibuffer.set_message(format!("Not in registry: {}", arg));
+                    }
+                    cx.notify();
+                }
+            }
             "notes" => {
                 self.activate_note_search(window, cx);
             }
@@ -935,15 +955,65 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
 
     /// Build candidates for wikilink autocomplete — vault note titles only (no PDFs, no "create").
     fn get_wikilink_candidates(&self) -> Vec<Candidate> {
-        let results = self.search_notes(&self.minibuffer.input);
-        results
+        let vault = match &self.state.vault {
+            Some(v) => v,
+            None => return vec![],
+        };
+        let query = &self.minibuffer.input;
+        let matcher = SkimMatcherV2::default();
+
+        // Titles — canonical names.
+        let mut entries: Vec<(i64, String, Option<String>, String)> = Vec::new();
+        for note in vault.contents.notes.iter().chain(vault.contents.journal.iter()) {
+            if note.path.extension().and_then(|e| e.to_str()) == Some("pdf") {
+                continue;
+            }
+            let score = if query.is_empty() {
+                0
+            } else if let Some(s) = matcher.fuzzy_match(&note.title, query) {
+                s
+            } else {
+                // Try aliases before giving up on this note.
+                let mut best = None;
+                for a in &note.aliases {
+                    if let Some(s) = matcher.fuzzy_match(a, query) {
+                        best = Some(best.map_or(s, |b: i64| b.max(s)));
+                    }
+                }
+                match best {
+                    Some(s) => s,
+                    None => continue,
+                }
+            };
+            // Prefer the canonical title but allow alias hints in detail.
+            entries.push((score, note.title.clone(), None, note.title.clone()));
+            for alias in &note.aliases {
+                let alias_score = if query.is_empty() {
+                    0
+                } else {
+                    matcher.fuzzy_match(alias, query).unwrap_or(i64::MIN / 2)
+                };
+                entries.push((
+                    alias_score,
+                    alias.clone(),
+                    Some(format!("alias of {}", note.title)),
+                    note.title.clone(),
+                ));
+            }
+        }
+
+        if !query.is_empty() {
+            entries.sort_by(|a, b| b.0.cmp(&a.0));
+        }
+
+        entries
             .into_iter()
-            .filter(|(_, path)| path.extension().and_then(|e| e.to_str()) != Some("pdf"))
-            .map(|(title, _path)| Candidate {
-                label: title.clone(),
-                detail: None,
+            .take(MAX_RESULTS)
+            .map(|(_, label, detail, data)| Candidate {
+                label,
+                detail,
                 is_action: false,
-                data: title,
+                data,
             })
             .collect()
     }
@@ -1398,6 +1468,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             Command { id: "search-content", name: "Search Content", description: "Full-text search across notes", aliases: &["search", "grep"], binding: Some("Ctrl+Shift+F") },
             Command { id: "rename", name: "Rename Note", description: "Update the current note's title (no file rename — IDs stay stable)", aliases: &["rn"], binding: Some(":rename <title>") },
             Command { id: "insert-links-by-tag", name: "Insert Links by Tag", description: "Insert wikilinks to all notes with a tag (MOC helper)", aliases: &["moc"], binding: Some(":moc <tag>") },
+            Command { id: "vault-forget", name: "Forget Vault", description: "Remove a vault from the recent-vaults list", aliases: &["forget-vault"], binding: Some(":vault-forget <path>") },
         ]
     }
 

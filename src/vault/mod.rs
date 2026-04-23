@@ -194,6 +194,18 @@ impl VaultRegistry {
         self.vaults.iter().map(|e| PathBuf::from(&e.path)).collect()
     }
 
+    /// Remove a vault entry from the registry. No-op if the path isn't
+    /// registered. Returns whether an entry was actually removed.
+    pub fn forget_vault(&mut self, vault_path: &Path) -> bool {
+        let path_str = vault_path.to_string_lossy().to_string();
+        let before = self.vaults.len();
+        self.vaults.retain(|e| e.path != path_str);
+        if self.last_vault.as_deref() == Some(path_str.as_str()) {
+            self.last_vault = None;
+        }
+        self.vaults.len() != before
+    }
+
     /// Get registered vaults sorted by most-recently-used (newest first).
     /// Excludes the currently active vault if `exclude` is provided.
     pub fn recent_vaults(&self, exclude: Option<&Path>) -> Vec<&VaultEntry> {

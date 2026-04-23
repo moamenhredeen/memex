@@ -462,7 +462,7 @@
    - Future drawing type slots in here without further layout
      changes.
 
-** TODO [#B] Registry: forget / rename vaults
+** DONE [#B] Registry: forget / rename vaults
    :PROPERTIES:
    :ID: vault-registry-management
    :END:
@@ -470,7 +470,7 @@
    Registry is write-only. Add ~:vault-forget~ and/or a UI action
    in the vault-switch minibuffer to remove stale entries.
 
-** TODO [#C] Alias-triggered wikilink autocomplete
+** DONE [#C] Alias-triggered wikilink autocomplete
    :PROPERTIES:
    :ID: vault-alias-autocomplete
    :END:
@@ -478,7 +478,7 @@
    The ~[[~ autocomplete should offer aliases alongside canonical
    titles (rendered differently so the user can tell).
 
-** TODO [#C] Tags + frontmatter inline syntax highlighting
+** DONE [#C] Tags + frontmatter inline syntax highlighting
    :PROPERTIES:
    :ID: vault-tags-highlight
    :END:
