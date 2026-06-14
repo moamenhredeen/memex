@@ -16,6 +16,7 @@ mod plugin;
 mod state;
 mod ui;
 mod vault;
+mod workspace;
 
 use gpui::AppContext;
 
