@@ -14,9 +14,7 @@ impl EntityInputHandler for EditorState {
     ) -> Option<String> {
         let range = self.range_from_utf16(&range_utf16);
         actual_range.replace(self.range_to_utf16(&range));
-        let char_start = self.buffer.document.buffer.byte_to_char(range.start);
-        let char_end = self.buffer.document.buffer.byte_to_char(range.end);
-        Some(self.buffer.document.buffer.slice(char_start..char_end).to_string())
+        Some(self.buffer.slice_bytes(range))
     }
 
     fn selected_text_range(
@@ -70,11 +68,7 @@ impl EntityInputHandler for EditorState {
             .unwrap_or(self.selected_range.clone());
 
         // Capture old text for undo before mutating
-        let old_text = {
-            let char_start = self.buffer.document.buffer.byte_to_char(range.start);
-            let char_end = self.buffer.document.buffer.byte_to_char(range.end);
-            self.buffer.document.buffer.slice(char_start..char_end).to_string()
-        };
+        let old_text = self.buffer.slice_bytes(range.clone());
         let cursor_before = self.cursor;
         let selection_before = self.selected_range.clone();
 
@@ -83,7 +77,7 @@ impl EntityInputHandler for EditorState {
         let new_cursor = range.start + new_text.len();
 
         // Record undo
-        self.buffer.history.record(
+        self.buffer.record_edit(
             super::undo::EditOp {
                 range: range.clone(),
                 old_text,
@@ -138,11 +132,7 @@ impl EntityInputHandler for EditorState {
             .unwrap_or(self.selected_range.clone());
 
         // Capture old text for undo before mutating
-        let old_text = {
-            let char_start = self.buffer.document.buffer.byte_to_char(range.start);
-            let char_end = self.buffer.document.buffer.byte_to_char(range.end);
-            self.buffer.document.buffer.slice(char_start..char_end).to_string()
-        };
+        let old_text = self.buffer.slice_bytes(range.clone());
         let cursor_before = self.cursor;
         let selection_before = self.selected_range.clone();
 
@@ -151,7 +141,7 @@ impl EntityInputHandler for EditorState {
         let new_cursor_pos = range.start + new_text.len();
 
         // Record undo
-        self.buffer.history.record(
+        self.buffer.record_edit(
             super::undo::EditOp {
                 range: range.clone(),
                 old_text,

@@ -149,7 +149,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         let editor_resource = editor_state
             .read(cx)
             .document_path()
-            .map(|path| ResourceKey::Markdown(path.to_path_buf()))
+            .map(ResourceKey::Markdown)
             .unwrap_or(ResourceKey::Scratch);
         let workspace = Workspace::new(
             editor_resource,
@@ -228,12 +228,12 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         self.editor_view.read(cx).keymap.vim_enabled
     }
 
-    fn current_document_path<'a>(&'a self, cx: &'a App) -> Option<&'a std::path::Path> {
+    fn current_document_path(&self, cx: &App) -> Option<std::path::PathBuf> {
         self.editor_state.read(cx).document_path()
     }
 
     fn current_document_title(&self, cx: &App) -> String {
-        self.state.document_title(self.current_document_path(cx))
+        self.state.document_title(self.current_document_path(cx).as_deref())
     }
 
     fn current_document_dirty(&self, cx: &App) -> bool {
@@ -243,7 +243,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
     fn sync_editor_resource(&mut self, cx: &App) {
         let resource = self
             .current_document_path(cx)
-            .map(|path| ResourceKey::Markdown(path.to_path_buf()))
+            .map(ResourceKey::Markdown)
             .unwrap_or(ResourceKey::Scratch);
         self.workspace
             .buffers
@@ -478,7 +478,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
     /// `[[old title]]` wikilinks keep resolving. The filename does not
     /// change — IDs stay stable.
     fn rename_current_note(&mut self, new_title: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(path) = self.current_document_path(cx).map(std::path::Path::to_path_buf) else {
+        let Some(path) = self.current_document_path(cx) else {
             self.minibuffer.set_message("No note open");
             cx.notify();
             return;
@@ -1470,7 +1470,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     state.rope_replace(range.clone(), &replacement);
                     let new_cursor = range.start + replacement.len();
 
-                    state.buffer.history.record(
+                    state.buffer.record_edit(
                         crate::editor::undo::EditOp {
                             range,
                             old_text,
@@ -1768,8 +1768,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             .editor_state
             .read(cx)
             .document_path()
-            .expect("opened document must have a path")
-            .to_path_buf();
+            .expect("opened document must have a path");
         self.workspace
             .buffers
             .rekey(self.editor_buffer, ResourceKey::Markdown(path));
@@ -1922,7 +1921,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             }
             // Set local root to current note if one is open
             if let Some(current) = self.current_document_path(cx) {
-                gs.set_local_root_by_path(current);
+                gs.set_local_root_by_path(&current);
             }
             gs
         });

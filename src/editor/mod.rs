@@ -70,12 +70,17 @@ impl EditorState {
     }
 
     pub fn from_document(document: Document, cx: &mut Context<Self>) -> Self {
+        Self::from_buffer(EditorBuffer::new(document), cx)
+    }
+
+    /// Create independent window state for an existing shared buffer.
+    pub fn from_buffer(buffer: EditorBuffer, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
         let blink_cursor = cx.new(|_cx| BlinkCursor::new());
         let _blink_sub = cx.observe(&blink_cursor, |_, _, cx| cx.notify());
 
         let mut display = display_map::DisplayMap::new(px(24.));
-        let content = document.content();
+        let content = buffer.content();
         display.update(&content);
 
         Self {
@@ -83,7 +88,7 @@ impl EditorState {
             selected_range: 0..0,
             selection_reversed: false,
             marked_range: None,
-            buffer: EditorBuffer::new(document),
+            buffer,
             focus_handle,
             blink_cursor,
             scroll_offset: px(0.),
@@ -106,23 +111,23 @@ impl EditorState {
     /// Snapshot the buffer as a String (allocates). Use for read-heavy operations
     /// that need string slicing. Mutations should use the rope API directly.
     pub fn content(&self) -> String {
-        self.buffer.document.content()
+        self.buffer.content()
     }
 
     pub fn content_len(&self) -> usize {
-        self.buffer.document.buffer.len_bytes()
+        self.buffer.len_bytes()
     }
 
-    pub fn document_path(&self) -> Option<&std::path::Path> {
-        self.buffer.document.path()
+    pub fn document_path(&self) -> Option<std::path::PathBuf> {
+        self.buffer.document_path()
     }
 
     pub fn is_dirty(&self) -> bool {
-        self.buffer.document.is_dirty()
+        self.buffer.is_dirty()
     }
 
     pub fn save_document(&mut self) -> Result<(), std::io::Error> {
-        self.buffer.document.save()
+        self.buffer.save()
     }
 
     /// Check if a byte offset falls within a [[wikilink]] span.
@@ -194,7 +199,7 @@ impl EditorState {
 
             self.rope_replace(range.clone(), new_marker);
 
-            self.buffer.history.record(
+            self.buffer.record_edit(
                 crate::editor::undo::EditOp {
                     range: range.clone(),
                     old_text: marker.to_string(),
@@ -211,11 +216,10 @@ impl EditorState {
     }
 
     pub fn set_content(&mut self, content: String, _window: &mut Window, cx: &mut Context<Self>) {
-        self.buffer.document.replace_content(content.clone());
+        self.buffer.replace_content(content.clone());
         self.cursor = 0;
         self.selected_range = 0..0;
         self.marked_range = None;
-        self.buffer.history.clear();
         self.display_map.update(&content);
         cx.notify();
     }
@@ -236,15 +240,7 @@ impl EditorState {
 
     /// Replace a byte range in the rope buffer with new text. O(log n).
     pub(crate) fn rope_replace(&mut self, range: Range<usize>, new_text: &str) {
-        let char_start = self.buffer.document.buffer.byte_to_char(range.start);
-        let char_end = self.buffer.document.buffer.byte_to_char(range.end);
-        if char_start != char_end {
-            self.buffer.document.buffer.remove(char_start..char_end);
-        }
-        if !new_text.is_empty() {
-            self.buffer.document.buffer.insert(char_start, new_text);
-        }
-        self.buffer.document.mark_dirty();
+        self.buffer.replace_range(range, new_text);
         self.display_map.invalidate();
     }
 
@@ -253,11 +249,7 @@ impl EditorState {
     pub(crate) fn edit_text(&mut self, new_text: &str, cx: &mut Context<Self>) {
         let range = self.marked_range.clone().unwrap_or(self.selected_range.clone());
 
-        let old_text = {
-            let char_start = self.buffer.document.buffer.byte_to_char(range.start);
-            let char_end = self.buffer.document.buffer.byte_to_char(range.end);
-            self.buffer.document.buffer.slice(char_start..char_end).to_string()
-        };
+        let old_text = self.buffer.slice_bytes(range.clone());
         let cursor_before = self.cursor;
         let selection_before = self.selected_range.clone();
 
@@ -265,7 +257,7 @@ impl EditorState {
 
         let new_cursor = range.start + new_text.len();
 
-        self.buffer.history.record(
+        self.buffer.record_edit(
             undo::EditOp {
                 range: range.clone(),
                 old_text,
@@ -394,7 +386,7 @@ impl EditorState {
     }
 
     pub fn undo(&mut self, cx: &mut Context<Self>) {
-        let txn = match self.buffer.history.undo() {
+        let txn = match self.buffer.undo() {
             Some(t) => t,
             None => return,
         };
@@ -417,7 +409,7 @@ impl EditorState {
     }
 
     pub fn redo(&mut self, cx: &mut Context<Self>) {
-        let txn = match self.buffer.history.redo() {
+        let txn = match self.buffer.redo() {
             Some(t) => t,
             None => return,
         };
@@ -569,9 +561,7 @@ impl EditorState {
             }
             YankSelection => {
                 if !self.selected_range.is_empty() {
-                    let char_start = self.buffer.document.buffer.byte_to_char(self.selected_range.start);
-                    let char_end = self.buffer.document.buffer.byte_to_char(self.selected_range.end);
-                    let text = self.buffer.document.buffer.slice(char_start..char_end).to_string();
+                    let text = self.buffer.slice_bytes(self.selected_range.clone());
                     self.grammar.register_content = text;
                     // Collapse selection
                     let pos = self.selected_range.start;
@@ -896,7 +886,7 @@ impl EditorState {
                 if enter_insert {
                     actions.push(ItemAction::ActivateLayer("vim:insert"));
                     self.insert_mode = true;
-                    self.buffer.history.break_coalescing();
+                    self.buffer.break_undo_coalescing();
                     cx.notify();
                 }
             }
@@ -926,14 +916,14 @@ impl EditorState {
                 // Handle side effects of layer change
                 match layer_id {
                     "vim:insert" => {
-                        self.buffer.history.break_coalescing();
+                        self.buffer.break_undo_coalescing();
                     }
                     "vim:normal" => {
                         if !self.selected_range.is_empty() {
                             let pos = self.selected_range.start;
                             self.move_to(pos, cx);
                         }
-                        self.buffer.history.break_coalescing();
+                        self.buffer.break_undo_coalescing();
                     }
                     "vim:visual" | "vim:visual-line" => {
                         if self.selected_range.is_empty() {
@@ -975,7 +965,7 @@ impl EditorState {
                 let content = self.content();
                 let cursor = self.cursor;
                 let sel = (self.selected_range.start, self.selected_range.end);
-                if let Some(cmds) = self.buffer.plugins.run_command(&name, &content, cursor, sel) {
+                if let Some(cmds) = self.buffer.run_plugin_command(&name, &content, cursor, sel) {
                     for cmd in cmds {
                         match cmd {
                             commands::EditorCommand::EnterMode(mode_str) => {
@@ -993,7 +983,7 @@ impl EditorState {
                             commands::EditorCommand::ToggleVimMode => {
                                 actions.push(ItemAction::SetVimEnabled(!vim.vim_enabled));
                                 actions.push(ItemAction::SyncVimFlags);
-                                self.buffer.history.break_coalescing();
+                                self.buffer.break_undo_coalescing();
                                 cx.notify();
                             }
                             _ => self.dispatch(cmd, window, cx),
@@ -1011,7 +1001,7 @@ impl EditorState {
         self.suppress_next_input = true;
         match layer_id {
             "vim:insert" => {
-                self.buffer.history.break_coalescing();
+                self.buffer.break_undo_coalescing();
             }
             "vim:normal" => {
                 if !self.selected_range.is_empty() {
@@ -1019,7 +1009,7 @@ impl EditorState {
                     self.selected_range = pos..pos;
                     self.cursor = pos;
                 }
-                self.buffer.history.break_coalescing();
+                self.buffer.break_undo_coalescing();
             }
             "vim:visual" | "vim:visual-line" => {
                 if self.selected_range.is_empty() {
@@ -1137,7 +1127,7 @@ impl EditorState {
             "toggle-vim" => {
                 actions.push(ItemAction::SetVimEnabled(!vim.vim_enabled));
                 actions.push(ItemAction::SyncVimFlags);
-                self.buffer.history.break_coalescing();
+                self.buffer.break_undo_coalescing();
                 cx.notify();
             }
             // Visual mode operations
@@ -1168,7 +1158,7 @@ impl EditorState {
                 }
                 self.dispatch(EditorCommand::DeleteSelection, window, cx);
                 actions.push(ItemAction::ActivateLayer("vim:insert"));
-                self.buffer.history.break_coalescing();
+                self.buffer.break_undo_coalescing();
                 cx.notify();
             }
             "indent-selection" => self.dispatch(EditorCommand::IndentSelection, window, cx),
@@ -1237,7 +1227,7 @@ impl EditorState {
                 let pos = self.next_grapheme(self.cursor);
                 self.move_to(pos, cx);
                 actions.push(ItemAction::ActivateLayer("vim:insert"));
-                self.buffer.history.break_coalescing();
+                self.buffer.break_undo_coalescing();
                 cx.notify();
             }
             "insert-at-line-start" => {
@@ -1246,7 +1236,7 @@ impl EditorState {
                 let target = crate::keymap::motion_first_non_whitespace(&content, self.cursor, 1);
                 self.move_to(target, cx);
                 actions.push(ItemAction::ActivateLayer("vim:insert"));
-                self.buffer.history.break_coalescing();
+                self.buffer.break_undo_coalescing();
                 cx.notify();
             }
             "insert-at-line-end" => {
@@ -1255,7 +1245,7 @@ impl EditorState {
                 let target = crate::keymap::motion_line_end(&content, self.cursor, 1);
                 self.move_to(target, cx);
                 actions.push(ItemAction::ActivateLayer("vim:insert"));
-                self.buffer.history.break_coalescing();
+                self.buffer.break_undo_coalescing();
                 cx.notify();
             }
             "open-line-below" => {
@@ -1266,7 +1256,7 @@ impl EditorState {
                 self.move_to(line_end, cx);
                 self.edit_text("\n", cx);
                 actions.push(ItemAction::ActivateLayer("vim:insert"));
-                self.buffer.history.break_coalescing();
+                self.buffer.break_undo_coalescing();
                 cx.notify();
             }
             "open-line-above" => {
@@ -1279,7 +1269,7 @@ impl EditorState {
                 let new_pos = line_start;
                 self.move_to(new_pos, cx);
                 actions.push(ItemAction::ActivateLayer("vim:insert"));
-                self.buffer.history.break_coalescing();
+                self.buffer.break_undo_coalescing();
                 cx.notify();
             }
             "paste-after" => {
@@ -1359,7 +1349,7 @@ impl EditorState {
                     self.edit_text("", cx);
                 }
                 actions.push(ItemAction::ActivateLayer("vim:insert"));
-                self.buffer.history.break_coalescing();
+                self.buffer.break_undo_coalescing();
                 cx.notify();
             }
             "change-line" => {
@@ -1372,7 +1362,7 @@ impl EditorState {
                 self.selected_range = line_start..line_end;
                 self.edit_text("", cx);
                 actions.push(ItemAction::ActivateLayer("vim:insert"));
-                self.buffer.history.break_coalescing();
+                self.buffer.break_undo_coalescing();
                 cx.notify();
             }
             "toggle-case" => {
@@ -1484,7 +1474,7 @@ impl EditorState {
                 let content = self.content();
                 let cursor = self.cursor;
                 let sel = (self.selected_range.start, self.selected_range.end);
-                if let Some(cmds) = self.buffer.plugins.run_command(cmd_id, &content, cursor, sel) {
+                if let Some(cmds) = self.buffer.run_plugin_command(cmd_id, &content, cursor, sel) {
                     for cmd in cmds {
                         self.dispatch(cmd, window, cx);
                     }
@@ -1551,7 +1541,7 @@ impl EditorState {
                 let content = self.content();
                 let cursor = self.cursor;
                 let sel = (self.selected_range.start, self.selected_range.end);
-                let result = self.buffer.plugins.run_command(cmd, &content, cursor, sel);
+                let result = self.buffer.run_plugin_command(cmd, &content, cursor, sel);
                 match result {
                     Some(cmds) => {
                         for c in cmds {
