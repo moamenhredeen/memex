@@ -16,7 +16,7 @@ use ropey::Rope;
 
 use crate::command::Command;
 use crate::minibuffer::Candidate;
-use crate::pane::ItemAction;
+use crate::pane::{CommandOutcome, ItemAction};
 
 pub use blink::BlinkCursor;
 pub use view::{EditorView, EditorViewEvent};
@@ -1643,7 +1643,7 @@ impl EditorState {
         _viewport: (f32, f32),
         vim: crate::pane::VimSnapshot,
         _cx: &mut Context<Self>,
-    ) -> Vec<ItemAction> {
+    ) -> CommandOutcome {
         // Editor needs a window for dispatch — but we don't have one here.
         // Commands that need window go through execute_command_by_id which
         // is called from the key dispatch path. For command palette dispatch,
@@ -1658,19 +1658,15 @@ impl EditorState {
                 let (msg, set_actions) = self.handle_set_command("", &vim);
                 let mut actions = vec![ItemAction::SetMessage(msg)];
                 actions.extend(set_actions);
-                actions
+                CommandOutcome::handled(actions)
             }
             "toggle-vim" => {
-                vec![
+                CommandOutcome::handled(vec![
                     ItemAction::SetVimEnabled(!vim.vim_enabled),
                     ItemAction::SyncVimFlags,
-                ]
+                ])
             }
-            _ => {
-                // Return empty — the full command will be dispatched via
-                // process_editor_key which has window access
-                vec![]
-            }
+            _ => CommandOutcome::Unhandled,
         }
     }
 

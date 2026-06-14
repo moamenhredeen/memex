@@ -14,7 +14,7 @@ use mupdf::{Colorspace, Document, Matrix as MuMatrix};
 
 use crate::command::Command;
 use crate::minibuffer::Candidate;
-use crate::pane::ItemAction;
+use crate::pane::{CommandOutcome, ItemAction};
 
 const PAGE_GAP: f32 = 8.0;
 pub(crate) const PADDING_Y: f32 = 16.0;
@@ -742,9 +742,9 @@ impl PdfState {
         viewport: (f32, f32),
         vim_enabled: bool,
         cx: &mut Context<Self>,
-    ) -> Vec<ItemAction> {
+    ) -> CommandOutcome {
         let (vw, vh) = viewport;
-        match cmd_id {
+        let actions = match cmd_id {
             "pdf-toc" | "pdf-bookmarks" => {
                 vec![ItemAction::ActivateDelegate {
                     id: "pdf-toc".into(),
@@ -900,8 +900,9 @@ impl PdfState {
                     vec![]
                 }
             }
-            _ => vec![] // unknown command
-        }
+            _ => return CommandOutcome::Unhandled,
+        };
+        CommandOutcome::handled(actions)
     }
 
     /// Get candidates for a PDF-owned minibuffer delegate.

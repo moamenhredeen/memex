@@ -16,8 +16,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::fs;
-
 /// A vault is a directory containing markdown notes.
 #[derive(Debug, Clone)]
 pub struct Vault {
@@ -74,6 +72,21 @@ impl Vault {
             .chain(self.contents.journal.iter())
             .map(|n| (n.title.clone(), n.path.clone()))
             .collect()
+    }
+
+    /// First editable note in deterministic scan order.
+    /// Attachments are intentionally excluded.
+    pub fn first_note_path(&self) -> Option<PathBuf> {
+        self.contents
+            .notes
+            .first()
+            .or_else(|| self.contents.journal.first())
+            .map(|note| note.path.clone())
+    }
+
+    /// Canonical display title for a note path.
+    pub fn title_for_path(&self, path: &Path) -> Option<&str> {
+        self.index.by_path(path).map(|note| note.title.as_str())
     }
 
     /// Find notes that link to the given target title via the index.
@@ -252,6 +265,26 @@ mod tests {
         let titles = vault.note_titles();
         assert!(titles.iter().any(|(t, _)| t == "note-a"));
         assert!(titles.iter().any(|(t, _)| t == "note-b"));
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn first_note_excludes_attachments() {
+        let dir = std::env::temp_dir().join("memex-test-vault-first-note");
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(dir.join("attachments")).unwrap();
+        std::fs::write(dir.join("attachments").join("manual.pdf"), b"pdf").unwrap();
+
+        let vault = Vault::open(dir.clone()).unwrap();
+        assert_eq!(vault.first_note_path(), None);
+
+        std::fs::write(vault.layout().notes.join("note.md"), "# Note").unwrap();
+        let vault = Vault::open(dir.clone()).unwrap();
+        assert_eq!(
+            vault.first_note_path(),
+            Some(vault.layout().notes.join("note.md"))
+        );
 
         std::fs::remove_dir_all(&dir).ok();
     }

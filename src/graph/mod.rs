@@ -2,7 +2,7 @@
 
 mod view;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use gpui::*;
@@ -10,7 +10,8 @@ use gpui::*;
 use crate::command::Command;
 use crate::markdown::{self, StyleKind};
 use crate::minibuffer::Candidate;
-use crate::pane::ItemAction;
+use crate::pane::{CommandOutcome, ItemAction};
+use crate::vault::{ResolveHit, Vault};
 
 pub use view::{GraphView, GraphViewEvent};
 
@@ -45,8 +46,8 @@ pub struct GraphState {
     pub local_mode: bool,
     pub local_root: Option<usize>,
     pub focus_handle: FocusHandle,
-    /// Map from note stem (lowercase, no extension) → node index for fast lookup.
-    title_index: HashMap<String, usize>,
+    /// Map from canonical note path to node index for local graph lookup.
+    path_index: HashMap<PathBuf, usize>,
     /// Whether physics simulation is active.
     sim_active: bool,
     sim_steps: usize,
@@ -65,7 +66,7 @@ impl GraphState {
             local_mode: false,
             local_root: None,
             focus_handle: cx.focus_handle(),
-            title_index: HashMap::new(),
+            path_index: HashMap::new(),
             sim_active: true,
             sim_steps: 0,
         }
@@ -77,66 +78,62 @@ impl GraphState {
 
     // ─── Graph building ─────────────────────────────────────────────────
 
-    /// Build graph from vault notes by scanning files for [[wikilinks]].
-    pub fn build_from_vault(&mut self, vault_path: &Path, notes: &[PathBuf]) {
+    /// Build graph from the vault's parsed notes and canonical link index.
+    pub fn build_from_vault(&mut self, vault: &Vault) {
         self.nodes.clear();
         self.edges.clear();
-        self.title_index.clear();
+        self.path_index.clear();
         self.selected = None;
         self.hovered = None;
         self.sim_active = true;
         self.sim_steps = 0;
 
-        // Create nodes
-        for (i, note_path) in notes.iter().enumerate() {
-            let title = note_path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or("untitled")
-                .to_string();
-            let key = title.to_lowercase();
+        let notes: Vec<_> = vault
+            .contents
+            .notes
+            .iter()
+            .chain(vault.contents.journal.iter())
+            .collect();
+        let mut id_index = HashMap::new();
+
+        for (i, note) in notes.iter().enumerate() {
 
             // Scatter initial positions in a circle
             let angle = (i as f32 / notes.len().max(1) as f32) * std::f32::consts::TAU;
             let radius = 150.0 + (notes.len() as f32).sqrt() * 30.0;
 
             self.nodes.push(GraphNode {
-                title: title.clone(),
-                path: note_path.clone(),
+                title: note.title.clone(),
+                path: note.path.clone(),
                 x: angle.cos() * radius,
                 y: angle.sin() * radius,
                 vx: 0.0,
                 vy: 0.0,
             });
-            self.title_index.insert(key, i);
+            self.path_index.insert(note.path.clone(), i);
+            id_index.insert(note.id.clone(), i);
         }
 
-        // Scan each note for [[wikilinks]] and create edges
-        for (source_idx, note_path) in notes.iter().enumerate() {
-            let full_path = if note_path.is_absolute() {
-                note_path.clone()
-            } else {
-                vault_path.join(note_path)
-            };
-
-            if let Ok(content) = std::fs::read_to_string(&full_path) {
-                let links = extract_wikilinks(&content);
-                for link_target in links {
-                    let key = link_target.to_lowercase();
-                    if let Some(&target_idx) = self.title_index.get(&key) {
-                        if source_idx != target_idx {
-                            // Avoid duplicate edges
-                            let exists = self.edges.iter().any(|e| {
-                                (e.source == source_idx && e.target == target_idx)
-                                    || (e.source == target_idx && e.target == source_idx)
-                            });
-                            if !exists {
-                                self.edges.push(GraphEdge {
-                                    source: source_idx,
-                                    target: target_idx,
-                                });
-                            }
-                        }
+        let mut seen_edges = HashSet::new();
+        for (source_idx, note) in notes.iter().enumerate() {
+            for target in &note.outgoing_links {
+                let Some(ResolveHit::Unique(target_id)) = vault.index.resolve_link(target) else {
+                    continue;
+                };
+                let Some(&target_idx) = id_index.get(target_id) else {
+                    continue;
+                };
+                if source_idx != target_idx {
+                    let edge = if source_idx < target_idx {
+                        (source_idx, target_idx)
+                    } else {
+                        (target_idx, source_idx)
+                    };
+                    if seen_edges.insert(edge) {
+                        self.edges.push(GraphEdge {
+                            source: edge.0,
+                            target: edge.1,
+                        });
                     }
                 }
             }
@@ -260,12 +257,7 @@ impl GraphState {
 
     /// Set local mode centered on a specific note (by path).
     pub fn set_local_root_by_path(&mut self, path: &Path) {
-        let stem = path
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or("")
-            .to_lowercase();
-        self.local_root = self.title_index.get(&stem).copied();
+        self.local_root = self.path_index.get(path).copied();
         self.local_mode = self.local_root.is_some();
     }
 
@@ -324,8 +316,8 @@ impl GraphState {
         _viewport: (f32, f32),
         _vim_enabled: bool,
         _cx: &mut Context<Self>,
-    ) -> Vec<ItemAction> {
-        match cmd_id {
+    ) -> CommandOutcome {
+        let actions = match cmd_id {
             "zoom-in" => {
                 self.zoom = (self.zoom * 1.2).min(5.0);
                 vec![]
@@ -358,8 +350,9 @@ impl GraphState {
                 // The app handles this by checking for the close action
                 vec![ItemAction::SetMessage("__close_split__".into())]
             }
-            _ => vec![],
-        }
+            _ => return CommandOutcome::Unhandled,
+        };
+        CommandOutcome::handled(actions)
     }
 
     pub fn get_candidates(&self, _delegate_id: &str, _input: &str) -> Vec<Candidate> {

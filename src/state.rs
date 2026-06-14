@@ -49,7 +49,7 @@ impl AppState {
                         .registry
                         .last_note_for(&vault_path)
                         .filter(|p| p.exists())
-                        .or_else(|| vault.notes.first().cloned());
+                        .or_else(|| vault.first_note_path());
 
                     state.vault = Some(vault);
 
@@ -149,7 +149,7 @@ impl AppState {
             .registry
             .last_note_for(&path)
             .filter(|p| p.exists())
-            .or_else(|| vault.notes.first().cloned());
+            .or_else(|| vault.first_note_path());
 
         self.vault = Some(vault);
 
@@ -177,10 +177,15 @@ impl AppState {
 
     /// Get display title of current note.
     pub fn current_title(&self) -> String {
-        self.current_note
+        let Some(path) = self.current_note.as_ref() else {
+            return "untitled".to_string();
+        };
+
+        self.vault
             .as_ref()
-            .map(|p| fs::title_from_path(p))
-            .unwrap_or_else(|| "untitled".to_string())
+            .and_then(|vault| vault.title_for_path(path))
+            .map(str::to_owned)
+            .unwrap_or_else(|| fs::title_from_path(path))
     }
 
     /// Get display name of current vault.

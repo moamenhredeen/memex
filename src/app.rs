@@ -7,7 +7,7 @@ use crate::command::Command;
 use crate::editor::{EditorEvent, EditorState, EditorView, EditorViewEvent};
 use crate::graph::{GraphEvent, GraphState, GraphView, GraphViewEvent};
 use crate::minibuffer::{Candidate, DelegateKind, Minibuffer, MinibufferAction, MinibufferVimMode};
-use crate::pane::{ActiveItem, ItemAction, VimSnapshot};
+use crate::pane::{ActiveItem, CommandOutcome, ItemAction, VimSnapshot};
 use crate::pdf::{PdfState, PdfView, PdfViewEvent};
 use crate::state::AppState;
 
@@ -991,8 +991,9 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 // Try right pane first if it's focused
                 if self.focused_pane == PaneSide::Right {
                     if let Some(ref right) = self.right_pane {
-                        let actions = right.execute_command(cmd_id, (vw, vh), vim, cx);
-                        if !actions.is_empty() {
+                        if let CommandOutcome::Handled(actions) =
+                            right.execute_command(cmd_id, (vw, vh), vim, cx)
+                        {
                             self.process_item_actions(actions, window, cx);
                             cx.notify();
                             return;
@@ -1000,8 +1001,8 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     }
                 }
 
-                let actions = self.active_item.execute_command(cmd_id, (vw, vh), vim, cx);
-                if !actions.is_empty() {
+                let outcome = self.active_item.execute_command(cmd_id, (vw, vh), vim, cx);
+                if let CommandOutcome::Handled(actions) = outcome {
                     self.process_item_actions(actions, window, cx);
                 } else if self.active_item.is_editor() && self.focused_pane == PaneSide::Left {
                     // Editor commands that need window access (editing, motions, etc.)
@@ -1788,7 +1789,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         let graph_state = cx.new(|cx| {
             let mut gs = GraphState::new(cx);
             if let Some(vault) = &self.state.vault {
-                gs.build_from_vault(&vault.path, &vault.notes);
+                gs.build_from_vault(vault);
             }
             // Set local root to current note if one is open
             if let Some(ref current) = self.state.current_note {

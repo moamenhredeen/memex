@@ -58,6 +58,18 @@ pub enum ItemAction {
     SyncVimFlags,
 }
 
+#[derive(Clone, Debug)]
+pub enum CommandOutcome {
+    Handled(Vec<ItemAction>),
+    Unhandled,
+}
+
+impl CommandOutcome {
+    pub fn handled(actions: Vec<ItemAction>) -> Self {
+        Self::Handled(actions)
+    }
+}
+
 /// The active content in a pane. Each variant wraps a state+view entity pair.
 ///
 /// When you add a new item type (graph view, backlinks, etc.), add a variant
@@ -104,7 +116,7 @@ impl ActiveItem {
         viewport: (f32, f32),
         vim: VimSnapshot,
         cx: &mut Context<crate::app::Memex>,
-    ) -> Vec<ItemAction> {
+    ) -> CommandOutcome {
         match self {
             Self::Editor { state, .. } => {
                 let state = state.clone();
