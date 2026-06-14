@@ -14,9 +14,9 @@ impl EntityInputHandler for EditorState {
     ) -> Option<String> {
         let range = self.range_from_utf16(&range_utf16);
         actual_range.replace(self.range_to_utf16(&range));
-        let char_start = self.buffer.byte_to_char(range.start);
-        let char_end = self.buffer.byte_to_char(range.end);
-        Some(self.buffer.slice(char_start..char_end).to_string())
+        let char_start = self.document.buffer.byte_to_char(range.start);
+        let char_end = self.document.buffer.byte_to_char(range.end);
+        Some(self.document.buffer.slice(char_start..char_end).to_string())
     }
 
     fn selected_text_range(
@@ -71,9 +71,9 @@ impl EntityInputHandler for EditorState {
 
         // Capture old text for undo before mutating
         let old_text = {
-            let char_start = self.buffer.byte_to_char(range.start);
-            let char_end = self.buffer.byte_to_char(range.end);
-            self.buffer.slice(char_start..char_end).to_string()
+            let char_start = self.document.buffer.byte_to_char(range.start);
+            let char_end = self.document.buffer.byte_to_char(range.end);
+            self.document.buffer.slice(char_start..char_end).to_string()
         };
         let cursor_before = self.cursor;
         let selection_before = self.selected_range.clone();
@@ -139,9 +139,9 @@ impl EntityInputHandler for EditorState {
 
         // Capture old text for undo before mutating
         let old_text = {
-            let char_start = self.buffer.byte_to_char(range.start);
-            let char_end = self.buffer.byte_to_char(range.end);
-            self.buffer.slice(char_start..char_end).to_string()
+            let char_start = self.document.buffer.byte_to_char(range.start);
+            let char_end = self.document.buffer.byte_to_char(range.end);
+            self.document.buffer.slice(char_start..char_end).to_string()
         };
         let cursor_before = self.cursor;
         let selection_before = self.selected_range.clone();

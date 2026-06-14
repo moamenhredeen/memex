@@ -10,11 +10,11 @@ impl EditorState {
             return 0;
         }
         let offset = offset.min(self.content_len());
-        let char_idx = self.buffer.byte_to_char(offset);
+        let char_idx = self.document.buffer.byte_to_char(offset);
         if char_idx == 0 {
             return 0;
         }
-        self.buffer.char_to_byte(char_idx - 1)
+        self.document.buffer.char_to_byte(char_idx - 1)
     }
 
     pub fn next_grapheme(&self, offset: usize) -> usize {
@@ -22,11 +22,11 @@ impl EditorState {
         if offset >= len {
             return len;
         }
-        let char_idx = self.buffer.byte_to_char(offset);
-        if char_idx + 1 >= self.buffer.len_chars() {
+        let char_idx = self.document.buffer.byte_to_char(offset);
+        if char_idx + 1 >= self.document.buffer.len_chars() {
             return len;
         }
-        self.buffer.char_to_byte(char_idx + 1)
+        self.document.buffer.char_to_byte(char_idx + 1)
     }
 
     pub(crate) fn index_for_mouse_position(&self, position: Point<Pixels>) -> usize {
@@ -65,7 +65,7 @@ impl EditorState {
     pub(crate) fn offset_from_utf16(&self, utf16_offset: usize) -> usize {
         let mut utf8_offset = 0;
         let mut utf16_count = 0;
-        for ch in self.buffer.chars() {
+        for ch in self.document.buffer.chars() {
             if utf16_count >= utf16_offset {
                 break;
             }

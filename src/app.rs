@@ -4,6 +4,7 @@ use gpui::*;
 use gpui_component::{h_flex, v_flex, Icon, IconName};
 
 use crate::command::Command;
+use crate::document::Document;
 use crate::editor::{EditorEvent, EditorState, EditorView, EditorViewEvent};
 use crate::graph::{GraphEvent, GraphState, GraphView, GraphViewEvent};
 use crate::minibuffer::{Candidate, DelegateKind, Minibuffer, MinibufferAction, MinibufferVimMode};
@@ -46,10 +47,10 @@ pub enum PaneSide {
 
 impl Memex {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let state = AppState::new();
+        let mut state = AppState::new();
 
-        let initial_content = if state.content.is_empty() {
-            "# Welcome to Memex
+        let initial_document = state.restore_document().unwrap_or_else(|| {
+            Document::scratch("# Welcome to Memex
 
 Open or create a vault to get started.
 Use **Ctrl+P** to search and create notes.
@@ -75,13 +76,10 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
 | Name | Role | Status |
 |------|------|--------|
 | Alice | Dev | Active |
-| Bob | Design | Away |"
-                .to_string()
-        } else {
-            state.content.clone()
-        };
+| Bob | Design | Away |".to_string())
+        });
 
-        let editor_state = cx.new(|cx| EditorState::new(initial_content, window, cx));
+        let editor_state = cx.new(|cx| EditorState::from_document(initial_document, cx));
         let editor_view = cx.new(|cx| EditorView::new(editor_state.clone(), cx));
 
         // The editor owns its own keymap and dispatches keys internally.
@@ -110,7 +108,6 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             |this, _entity, ev: &EditorEvent, window, cx| {
                 match ev {
                     EditorEvent::Changed => {
-                        this.state.dirty = true;
                         // Clear stale minibuffer messages on editor activity
                         this.minibuffer.message = None;
                         cx.notify();
@@ -216,6 +213,18 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
     /// Returns whether vim mode is enabled. Editor-owned.
     fn vim_enabled(&self, cx: &App) -> bool {
         self.editor_view.read(cx).keymap.vim_enabled
+    }
+
+    fn current_document_path<'a>(&'a self, cx: &'a App) -> Option<&'a std::path::Path> {
+        self.editor_state.read(cx).document_path()
+    }
+
+    fn current_document_title(&self, cx: &App) -> String {
+        self.state.document_title(self.current_document_path(cx))
+    }
+
+    fn current_document_dirty(&self, cx: &App) -> bool {
+        self.editor_state.read(cx).is_dirty()
     }
 
     fn activate_note_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -355,7 +364,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
     /// `[[old title]]` wikilinks keep resolving. The filename does not
     /// change — IDs stay stable.
     fn rename_current_note(&mut self, new_title: &str, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(path) = self.state.current_note.clone() else {
+        let Some(path) = self.current_document_path(cx).map(std::path::Path::to_path_buf) else {
             self.minibuffer.set_message("No note open");
             cx.notify();
             return;
@@ -398,8 +407,6 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         self.editor_state.update(cx, |state, cx| {
             state.set_content(new_content.clone(), window, cx);
         });
-        self.state.content = new_content;
-        self.state.dirty = false;
         if let Some(v) = self.state.vault.as_mut() {
             let _ = v.refresh();
         }
@@ -628,7 +635,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 self.get_wikilink_candidates()
             }
             DelegateKind::Backlinks => {
-                self.get_backlink_candidates()
+                self.get_backlink_candidates(cx)
             }
             DelegateKind::VaultSwitch => {
                 self.get_vault_switch_candidates()
@@ -1125,8 +1132,8 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
     }
 
     /// Build candidates for backlinks — notes that link to the current note.
-    fn get_backlink_candidates(&self) -> Vec<Candidate> {
-        let current_title = self.state.current_title();
+    fn get_backlink_candidates(&self, cx: &App) -> Vec<Candidate> {
+        let current_title = self.current_document_title(cx);
         if current_title.is_empty() {
             return vec![];
         }
@@ -1618,9 +1625,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
     }
 
     fn save(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        let text = self.editor_state.read(cx).content();
-        self.state.content = text;
-        if let Err(e) = self.state.save() {
+        if let Err(e) = self.editor_state.update(cx, |state, _| state.save_document()) {
             eprintln!("save error: {}", e);
         }
         cx.notify();
@@ -1642,13 +1647,15 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             return;
         }
 
-        if let Err(e) = self.state.open_note(path) {
-            eprintln!("failed to open note: {}", e);
-            return;
-        }
-        let content = self.state.content.clone();
+        let document = match self.state.open_document(path) {
+            Ok(document) => document,
+            Err(e) => {
+                eprintln!("failed to open note: {}", e);
+                return;
+            }
+        };
         self.editor_state.update(cx, |state, cx| {
-            state.set_content(content, window, cx);
+            state.set_document(document, window, cx);
         });
         // Switch to editor item. The editor keeps its own keymap state —
         // vim-mode persists across item switches.
@@ -1671,15 +1678,15 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         } else {
             // For markdown notes, create a second editor in split
             // For now, load the note and show editor as split
-            let content = match std::fs::read_to_string(&path) {
-                Ok(c) => c,
+            let document = match Document::open(path.clone()) {
+                Ok(document) => document,
                 Err(e) => {
                     self.minibuffer.set_message(format!("Failed to read: {}", e));
                     return;
                 }
             };
             let editor_state = cx.new(|cx| {
-                crate::editor::EditorState::new(content, window, cx)
+                crate::editor::EditorState::from_document(document, cx)
             });
             let editor_view = cx.new(|cx| {
                 crate::editor::EditorView::new(editor_state.clone(), cx)
@@ -1746,7 +1753,6 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             Some(it) => it,
             None => return,
         };
-        self.state.current_note = Some(path);
         item.focus(window, cx);
         self.switch_to_item(item);
         cx.notify();
@@ -1762,7 +1768,6 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             Some(it) => it,
             None => return,
         };
-        self.state.current_note = Some(path);
         self.open_item_in_split(item, window, cx);
     }
 
@@ -1792,7 +1797,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 gs.build_from_vault(vault);
             }
             // Set local root to current note if one is open
-            if let Some(ref current) = self.state.current_note {
+            if let Some(current) = self.current_document_path(cx) {
                 gs.set_local_root_by_path(current);
             }
             gs
@@ -1875,10 +1880,9 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
 
     fn create_note_by_title(&mut self, title: &str, window: &mut Window, cx: &mut Context<Self>) {
         match self.state.create_note(title) {
-            Ok(_) => {
-                let content = self.state.content.clone();
+            Ok(document) => {
                 self.editor_state.update(cx, |state, cx| {
-                    state.set_content(content, window, cx);
+                    state.set_document(document, window, cx);
                 });
             }
             Err(e) => eprintln!("failed to create note: {}", e),
@@ -1892,14 +1896,22 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let Err(e) = self.state.open_vault(path) {
-            eprintln!("failed to open vault: {}", e);
-            return;
+        match self.state.open_vault(path) {
+            Ok(Some(document)) => {
+                self.editor_state.update(cx, |state, cx| {
+                    state.set_document(document, window, cx);
+                });
+            }
+            Ok(None) => {
+                self.editor_state.update(cx, |state, cx| {
+                    state.set_document(Document::scratch(String::new()), window, cx);
+                });
+            }
+            Err(e) => {
+                eprintln!("failed to open vault: {}", e);
+                return;
+            }
         }
-        let content = self.state.content.clone();
-        self.editor_state.update(cx, |state, cx| {
-            state.set_content(content, window, cx);
-        });
         self.start_vault_watcher();
         cx.notify();
     }
@@ -1949,10 +1961,10 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
 
     fn render_title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let title = {
-            let t = self.state.current_title();
+            let t = self.current_document_title(cx);
             if t.is_empty() { "Memex".to_string() } else { t }
         };
-        let dirty = self.state.dirty;
+        let dirty = self.current_document_dirty(cx);
         let title_text = if dirty {
             format!("{} ●", title)
         } else {
@@ -2033,7 +2045,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
     /// every note that links to the current one. Toggled with
     /// Ctrl+Shift+B. Empty state shows a subtle nudge.
     fn render_backlinks_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let current_title = self.state.current_title();
+        let current_title = self.current_document_title(cx);
         let backlinks = self
             .state
             .vault
@@ -2127,8 +2139,8 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         let _ = es;
 
         let vault_name = self.state.vault_name();
-        let note_title = self.state.current_title();
-        let dirty = self.state.dirty;
+        let note_title = self.current_document_title(cx);
+        let dirty = self.current_document_dirty(cx);
         let dirty_indicator = if dirty { " ●" } else { "" };
 
         // Position info depends on focused pane

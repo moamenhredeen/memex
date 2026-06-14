@@ -12,9 +12,8 @@ mod view;
 use std::ops::Range;
 
 use gpui::*;
-use ropey::Rope;
-
 use crate::command::Command;
+use crate::document::Document;
 use crate::minibuffer::Candidate;
 use crate::pane::{CommandOutcome, ItemAction};
 
@@ -24,7 +23,7 @@ pub use view::{EditorView, EditorViewEvent};
 actions!(editor, [TabAction, ShiftTabAction]);
 
 pub struct EditorState {
-    pub buffer: Rope,
+    pub document: Document,
     pub cursor: usize,
     pub selected_range: Range<usize>,
     pub selection_reversed: bool,
@@ -67,11 +66,16 @@ pub struct LinePaintInfo {
 
 impl EditorState {
     pub fn new(content: String, _window: &mut Window, cx: &mut Context<Self>) -> Self {
+        Self::from_document(Document::scratch(content), cx)
+    }
+
+    pub fn from_document(document: Document, cx: &mut Context<Self>) -> Self {
         let focus_handle = cx.focus_handle();
         let blink_cursor = cx.new(|_cx| BlinkCursor::new());
         let _blink_sub = cx.observe(&blink_cursor, |_, _, cx| cx.notify());
 
         let mut display = display_map::DisplayMap::new(px(24.));
+        let content = document.content();
         display.update(&content);
 
         let plugins = crate::plugin::PluginEngine::new();
@@ -81,7 +85,7 @@ impl EditorState {
             selected_range: 0..0,
             selection_reversed: false,
             marked_range: None,
-            buffer: Rope::from_str(&content),
+            document,
             focus_handle,
             blink_cursor,
             scroll_offset: px(0.),
@@ -106,11 +110,23 @@ impl EditorState {
     /// Snapshot the buffer as a String (allocates). Use for read-heavy operations
     /// that need string slicing. Mutations should use the rope API directly.
     pub fn content(&self) -> String {
-        self.buffer.to_string()
+        self.document.content()
     }
 
     pub fn content_len(&self) -> usize {
-        self.buffer.len_bytes()
+        self.document.buffer.len_bytes()
+    }
+
+    pub fn document_path(&self) -> Option<&std::path::Path> {
+        self.document.path()
+    }
+
+    pub fn is_dirty(&self) -> bool {
+        self.document.is_dirty()
+    }
+
+    pub fn save_document(&mut self) -> Result<(), std::io::Error> {
+        self.document.save()
     }
 
     /// Check if a byte offset falls within a [[wikilink]] span.
@@ -199,7 +215,18 @@ impl EditorState {
     }
 
     pub fn set_content(&mut self, content: String, _window: &mut Window, cx: &mut Context<Self>) {
-        self.buffer = Rope::from_str(&content);
+        self.document.replace_content(content.clone());
+        self.cursor = 0;
+        self.selected_range = 0..0;
+        self.marked_range = None;
+        self.history.clear();
+        self.display_map.update(&content);
+        cx.notify();
+    }
+
+    pub fn set_document(&mut self, document: Document, _window: &mut Window, cx: &mut Context<Self>) {
+        let content = document.content();
+        self.document = document;
         self.cursor = 0;
         self.selected_range = 0..0;
         self.marked_range = None;
@@ -214,14 +241,15 @@ impl EditorState {
 
     /// Replace a byte range in the rope buffer with new text. O(log n).
     pub(crate) fn rope_replace(&mut self, range: Range<usize>, new_text: &str) {
-        let char_start = self.buffer.byte_to_char(range.start);
-        let char_end = self.buffer.byte_to_char(range.end);
+        let char_start = self.document.buffer.byte_to_char(range.start);
+        let char_end = self.document.buffer.byte_to_char(range.end);
         if char_start != char_end {
-            self.buffer.remove(char_start..char_end);
+            self.document.buffer.remove(char_start..char_end);
         }
         if !new_text.is_empty() {
-            self.buffer.insert(char_start, new_text);
+            self.document.buffer.insert(char_start, new_text);
         }
+        self.document.mark_dirty();
         self.display_map.invalidate();
     }
 
@@ -231,9 +259,9 @@ impl EditorState {
         let range = self.marked_range.clone().unwrap_or(self.selected_range.clone());
 
         let old_text = {
-            let char_start = self.buffer.byte_to_char(range.start);
-            let char_end = self.buffer.byte_to_char(range.end);
-            self.buffer.slice(char_start..char_end).to_string()
+            let char_start = self.document.buffer.byte_to_char(range.start);
+            let char_end = self.document.buffer.byte_to_char(range.end);
+            self.document.buffer.slice(char_start..char_end).to_string()
         };
         let cursor_before = self.cursor;
         let selection_before = self.selected_range.clone();
@@ -546,9 +574,9 @@ impl EditorState {
             }
             YankSelection => {
                 if !self.selected_range.is_empty() {
-                    let char_start = self.buffer.byte_to_char(self.selected_range.start);
-                    let char_end = self.buffer.byte_to_char(self.selected_range.end);
-                    let text = self.buffer.slice(char_start..char_end).to_string();
+                    let char_start = self.document.buffer.byte_to_char(self.selected_range.start);
+                    let char_end = self.document.buffer.byte_to_char(self.selected_range.end);
+                    let text = self.document.buffer.slice(char_start..char_end).to_string();
                     self.grammar.register_content = text;
                     // Collapse selection
                     let pos = self.selected_range.start;

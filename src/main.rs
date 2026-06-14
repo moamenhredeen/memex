@@ -3,6 +3,7 @@
 mod app;
 mod command;
 mod config;
+mod document;
 mod editor;
 mod fs;
 mod graph;

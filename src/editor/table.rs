@@ -102,17 +102,18 @@ impl EditorState {
 
         // Replace table text in the rope buffer with undo tracking
         let old_table_text = {
-            let char_start = self.buffer.byte_to_char(table_start);
-            let char_end = self.buffer.byte_to_char(table_end);
-            self.buffer.slice(char_start..char_end).to_string()
+            let char_start = self.document.buffer.byte_to_char(table_start);
+            let char_end = self.document.buffer.byte_to_char(table_end);
+            self.document.buffer.slice(char_start..char_end).to_string()
         };
         let cursor_before = self.cursor;
         let selection_before = self.selected_range.clone();
 
-        let char_start = self.buffer.byte_to_char(table_start);
-        let char_end = self.buffer.byte_to_char(table_end);
-        self.buffer.remove(char_start..char_end);
-        self.buffer.insert(char_start, &new_table);
+        let char_start = self.document.buffer.byte_to_char(table_start);
+        let char_end = self.document.buffer.byte_to_char(table_end);
+        self.document.buffer.remove(char_start..char_end);
+        self.document.buffer.insert(char_start, &new_table);
+        self.document.mark_dirty();
 
         // Record as a single undo unit (suppress coalescing)
         self.history.begin_group(selection_before);
