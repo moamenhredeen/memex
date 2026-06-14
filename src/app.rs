@@ -1964,7 +1964,15 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             .items_center()
             .justify_between()
             // Left: spacer for symmetry — part of the drag area
-            .child(div().w(px(72.)).h_full().window_control_area(WindowControlArea::Drag))
+            .child(
+                div()
+                    .w(px(72.))
+                    .h_full()
+                    .window_control_area(WindowControlArea::Drag)
+                    .on_mouse_down(MouseButton::Left, |_, window, _| {
+                        window.start_window_move();
+                    }),
+            )
             // Center: title — part of the drag area
             .child(
                 div()
@@ -1974,6 +1982,9 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     .justify_center()
                     .items_center()
                     .window_control_area(WindowControlArea::Drag)
+                    .on_mouse_down(MouseButton::Left, |_, window, _| {
+                        window.start_window_move();
+                    })
                     .child(
                         div()
                             .text_size(px(12.))
