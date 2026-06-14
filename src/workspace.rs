@@ -169,6 +169,10 @@ impl<K, B> Default for BufferStore<K, B> {
 }
 
 impl<K: Eq + Hash, B> BufferStore<K, B> {
+    pub fn id_for_resource(&self, resource: &K) -> Option<BufferId> {
+        self.resources.get(resource).copied()
+    }
+
     pub fn open_with(&mut self, resource: K, create: impl FnOnce() -> B) -> BufferId {
         if let Some(&id) = self.resources.get(&resource) {
             self.touch(id);
@@ -196,6 +200,15 @@ impl<K: Eq + Hash, B> BufferStore<K, B> {
         self.resources.retain(|_, buffer_id| *buffer_id != id);
         self.mru.retain(|buffer_id| *buffer_id != id);
         self.buffers.remove(&id)
+    }
+
+    pub fn rekey(&mut self, id: BufferId, resource: K) -> bool {
+        if !self.buffers.contains_key(&id) {
+            return false;
+        }
+        self.resources.retain(|_, buffer_id| *buffer_id != id);
+        self.resources.insert(resource, id);
+        true
     }
 
     pub fn mru(&self) -> &[BufferId] {
@@ -241,6 +254,27 @@ impl<K: Eq + Hash, B> Workspace<K, B> {
         self.next_window_id += 1;
         self.focused_window = id;
         Some(id)
+    }
+
+    pub fn buffer_for_window(&self, window: WindowId) -> Option<BufferId> {
+        self.layout.window(window).map(|window| window.buffer)
+    }
+
+    pub fn focused_buffer(&self) -> BufferId {
+        self.buffer_for_window(self.focused_window)
+            .expect("focused window must be live")
+    }
+
+    pub fn switch_window_buffer(&mut self, window: WindowId, buffer: BufferId) -> bool {
+        if self.buffers.get(buffer).is_none() {
+            return false;
+        }
+        let Some(window) = self.layout.window_mut(window) else {
+            return false;
+        };
+        window.buffer = buffer;
+        self.buffers.touch(buffer);
+        true
     }
 
     pub fn focus(&mut self, id: WindowId) -> bool {
@@ -341,5 +375,20 @@ mod tests {
         assert_eq!(workspace.layout.window_ids().len(), 1);
         assert_eq!(workspace.buffers.get(pdf), Some(&"pdf"));
         assert_eq!(workspace.buffers.mru()[0], pdf);
+    }
+
+    #[test]
+    fn switching_window_buffer_keeps_previous_buffer_open() {
+        let mut workspace = Workspace::new("note.md", "note");
+        let pdf = workspace.buffers.open_with("manual.pdf", || "pdf");
+        let graph = workspace.buffers.open_with("graph", || "graph");
+        let tool_window = workspace
+            .split_focused(SplitAxis::Horizontal, pdf)
+            .unwrap();
+
+        assert!(workspace.switch_window_buffer(tool_window, graph));
+        assert_eq!(workspace.buffer_for_window(tool_window), Some(graph));
+        assert_eq!(workspace.buffers.get(pdf), Some(&"pdf"));
+        assert_eq!(workspace.buffers.get(graph), Some(&"graph"));
     }
 }

@@ -11,6 +11,7 @@ use crate::minibuffer::{Candidate, DelegateKind, Minibuffer, MinibufferAction, M
 use crate::pane::{ActiveItem, CommandOutcome, ItemAction, VimSnapshot};
 use crate::pdf::{PdfState, PdfView, PdfViewEvent};
 use crate::state::AppState;
+use crate::workspace::{BufferId, SplitAxis, WindowId, WindowLayout, Workspace};
 
 const MAX_RESULTS: usize = 15;
 
@@ -22,11 +23,9 @@ pub struct Memex {
     state: AppState,
     editor_state: Entity<EditorState>,
     editor_view: Entity<EditorView>,
-    active_item: ActiveItem,
-    /// Optional right split pane (e.g., graph view).
-    right_pane: Option<ActiveItem>,
-    /// Which pane has focus — Left is the main pane, Right is the split.
-    focused_pane: PaneSide,
+    workspace: Workspace<ResourceKey, ActiveItem>,
+    editor_buffer: BufferId,
+    editor_window: WindowId,
     minibuffer: Minibuffer,
     minibuffer_focus: FocusHandle,
     global_commands: Vec<Command>,
@@ -39,10 +38,12 @@ pub struct Memex {
     _subscriptions: Vec<Subscription>,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum PaneSide {
-    Left,
-    Right,
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+enum ResourceKey {
+    Scratch,
+    Markdown(std::path::PathBuf),
+    Pdf(std::path::PathBuf),
+    Graph(std::path::PathBuf),
 }
 
 impl Memex {
@@ -145,16 +146,28 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             },
         );
 
+        let editor_resource = editor_state
+            .read(cx)
+            .document_path()
+            .map(|path| ResourceKey::Markdown(path.to_path_buf()))
+            .unwrap_or(ResourceKey::Scratch);
+        let workspace = Workspace::new(
+            editor_resource,
+            ActiveItem::Editor {
+                state: editor_state.clone(),
+                view: editor_view.clone(),
+            },
+        );
+        let editor_buffer = workspace.focused_buffer();
+        let editor_window = workspace.focused_window;
+
         let mut this = Self {
             state,
             editor_state: editor_state.clone(),
             editor_view: editor_view.clone(),
-            active_item: ActiveItem::Editor {
-                state: editor_state,
-                view: editor_view,
-            },
-            right_pane: None,
-            focused_pane: PaneSide::Left,
+            workspace,
+            editor_buffer,
+            editor_window,
             minibuffer: Minibuffer::new(),
             minibuffer_focus: cx.focus_handle(),
             global_commands: Self::global_commands(),
@@ -225,6 +238,107 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
 
     fn current_document_dirty(&self, cx: &App) -> bool {
         self.editor_state.read(cx).is_dirty()
+    }
+
+    fn sync_editor_resource(&mut self, cx: &App) {
+        let resource = self
+            .current_document_path(cx)
+            .map(|path| ResourceKey::Markdown(path.to_path_buf()))
+            .unwrap_or(ResourceKey::Scratch);
+        self.workspace
+            .buffers
+            .rekey(self.editor_buffer, resource);
+    }
+
+    fn item_for_window(&self, window: WindowId) -> &ActiveItem {
+        let buffer = self
+            .workspace
+            .buffer_for_window(window)
+            .expect("live window must reference a buffer");
+        self.workspace
+            .buffers
+            .get(buffer)
+            .expect("window buffer must be open")
+    }
+
+    fn focused_item(&self) -> &ActiveItem {
+        self.item_for_window(self.workspace.focused_window)
+    }
+
+    fn secondary_window(&self) -> Option<WindowId> {
+        self.workspace
+            .layout
+            .window_ids()
+            .into_iter()
+            .find(|id| *id != self.editor_window)
+    }
+
+    fn ensure_editor_window(&mut self) {
+        if self.workspace.layout.window(self.editor_window).is_some() {
+            return;
+        }
+        self.editor_window = self
+            .workspace
+            .split_focused(SplitAxis::Horizontal, self.editor_buffer)
+            .expect("focused window must be splittable");
+    }
+
+    fn focus_workspace_window(
+        &mut self,
+        id: WindowId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.workspace.focus(id) {
+            self.item_for_window(id).focus(window, cx);
+            cx.notify();
+        }
+    }
+
+    fn render_window_layout(
+        &self,
+        layout: &WindowLayout,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        match layout {
+            WindowLayout::Window(workspace_window) => {
+                let id = workspace_window.id;
+                let view = self.item_for_window(id).view_element();
+                div()
+                    .id(ElementId::Name(format!("workspace-window-{:?}", id).into()))
+                    .flex_1()
+                    .size_full()
+                    .overflow_hidden()
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _e: &MouseDownEvent, window, cx| {
+                            this.focus_workspace_window(id, window, cx);
+                        }),
+                    )
+                    .child(view)
+                    .into_any_element()
+            }
+            WindowLayout::Split { axis, children, .. } => {
+                let children = children
+                    .iter()
+                    .map(|child| self.render_window_layout(child, cx))
+                    .collect::<Vec<_>>();
+                match axis {
+                    SplitAxis::Horizontal => h_flex()
+                        .flex_1()
+                        .size_full()
+                        .overflow_hidden()
+                        .children(children)
+                        .into_any_element(),
+                    SplitAxis::Vertical => v_flex()
+                        .flex_1()
+                        .size_full()
+                        .overflow_hidden()
+                        .children(children)
+                        .into_any_element(),
+                }
+            }
+        }
     }
 
     fn activate_note_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -567,7 +681,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
 
     fn dismiss_minibuffer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.minibuffer.dismiss();
-        self.active_item.focus(window, cx);
+        self.focused_item().focus(window, cx);
         cx.notify();
     }
 
@@ -588,7 +702,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 // Notify active item of input changes for item-owned delegates
                 if let DelegateKind::Item(ref id) = self.minibuffer.delegate_kind {
                     let input = self.minibuffer.input.clone();
-                    self.active_item.on_input_changed(id, &input, cx);
+                    self.focused_item().on_input_changed(id, &input, cx);
                 }
                 cx.notify();
             }
@@ -656,7 +770,8 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 self.get_content_search_candidates()
             }
             DelegateKind::Item(id) => {
-                self.active_item.get_candidates(id, &self.minibuffer.input, cx)
+                self.focused_item()
+                    .get_candidates(id, &self.minibuffer.input, cx)
             }
         }
     }
@@ -797,7 +912,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             DelegateKind::Item(ref id) => {
                 let candidate = candidates.get(selected);
                 let id = id.clone();
-                let actions = self.active_item.handle_confirm(&id, &input, candidate, cx);
+                let actions = self.focused_item().handle_confirm(&id, &input, candidate, cx);
                 self.process_item_actions(actions, window, cx);
             }
         }
@@ -814,7 +929,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             match action {
                 ItemAction::SetMessage(msg) => {
                     if msg == "__close_split__" {
-                        self.close_split(window, cx);
+                        self.close_window(window, cx);
                     } else {
                         self.minibuffer.set_message(msg);
                     }
@@ -895,7 +1010,12 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 self.activate_split_note_search(window, cx);
             }
             "close-split" | "close-graph" => {
-                self.close_split(window, cx);
+                self.close_window(window, cx);
+            }
+            "only" | "only-window" => {
+                if self.workspace.only_focused() {
+                    cx.notify();
+                }
             }
             "backlinks" => {
                 self.activate_backlinks(window, cx);
@@ -995,23 +1115,13 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 let vh: f32 = window.viewport_size().height.into();
                 let vim = self.vim_snapshot(cx);
 
-                // Try right pane first if it's focused
-                if self.focused_pane == PaneSide::Right {
-                    if let Some(ref right) = self.right_pane {
-                        if let CommandOutcome::Handled(actions) =
-                            right.execute_command(cmd_id, (vw, vh), vim, cx)
-                        {
-                            self.process_item_actions(actions, window, cx);
-                            cx.notify();
-                            return;
-                        }
-                    }
-                }
-
-                let outcome = self.active_item.execute_command(cmd_id, (vw, vh), vim, cx);
+                let focused_is_editor = self.focused_item().is_editor();
+                let outcome = self
+                    .focused_item()
+                    .execute_command(cmd_id, (vw, vh), vim, cx);
                 if let CommandOutcome::Handled(actions) = outcome {
                     self.process_item_actions(actions, window, cx);
-                } else if self.active_item.is_editor() && self.focused_pane == PaneSide::Left {
+                } else if focused_is_editor {
                     // Editor commands that need window access (editing, motions, etc.)
                     let vim = self.vim_snapshot(cx);
                     let editor = self.editor_state.clone();
@@ -1573,6 +1683,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             Command { id: "open-graph", name: "Open Graph", description: "Open the vault graph in a split panel", aliases: &["graph"], binding: None },
             Command { id: "split-open", name: "Split Open", description: "Open a note or PDF in the right split panel", aliases: &["vs", "vsplit", "split"], binding: None },
             Command { id: "close-split", name: "Close Split", description: "Close the right split panel", aliases: &[], binding: None },
+            Command { id: "only-window", name: "Only Window", description: "Make the focused window occupy the workspace", aliases: &["only"], binding: Some(":only") },
             Command { id: "backlinks", name: "Backlinks", description: "Show notes that link to the current note", aliases: &["bl", "references"], binding: None },
             Command { id: "today", name: "Today's Journal", description: "Open or create today's journal note", aliases: &["daily", "journal"], binding: None },
             Command { id: "tags", name: "Tags", description: "List all tags in the vault", aliases: &[], binding: None },
@@ -1589,7 +1700,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
 
     /// Fuzzy-filter commands for the palette: item commands + global commands.
     fn palette_candidates(&self, query: &str) -> Vec<Candidate> {
-        let item_cmds = self.active_item.commands();
+        let item_cmds = self.focused_item().commands();
         let global_cmds = &self.global_commands;
 
         let all_cmds: Vec<&Command> = item_cmds.iter().chain(global_cmds.iter()).collect();
@@ -1639,11 +1750,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
     ) {
         // Check if this is a PDF — open in right split when editor is the left pane
         if path.extension().and_then(|e| e.to_str()) == Some("pdf") {
-            if self.active_item.is_editor() {
-                self.open_pdf_in_split(path, window, cx);
-            } else {
-                self.open_pdf(path, window, cx);
-            }
+            self.open_pdf_in_split(path, window, cx);
             return;
         }
 
@@ -1657,12 +1764,17 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         self.editor_state.update(cx, |state, cx| {
             state.set_document(document, window, cx);
         });
-        // Switch to editor item. The editor keeps its own keymap state —
-        // vim-mode persists across item switches.
-        self.switch_to_item(ActiveItem::Editor {
-            state: self.editor_state.clone(),
-            view: self.editor_view.clone(),
-        });
+        let path = self
+            .editor_state
+            .read(cx)
+            .document_path()
+            .expect("opened document must have a path")
+            .to_path_buf();
+        self.workspace
+            .buffers
+            .rekey(self.editor_buffer, ResourceKey::Markdown(path));
+        self.ensure_editor_window();
+        self.focus_workspace_window(self.editor_window, window, cx);
         cx.notify();
     }
 
@@ -1695,7 +1807,11 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 state: editor_state,
                 view: editor_view,
             };
-            self.open_item_in_split(item, window, cx);
+            let buffer = self
+                .workspace
+                .buffers
+                .open_with(ResourceKey::Markdown(path), || item);
+            self.show_buffer_in_secondary(buffer, window, cx);
         }
     }
 
@@ -1743,46 +1859,42 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         })
     }
 
-    fn open_pdf(
-        &mut self,
-        path: std::path::PathBuf,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let item = match self.create_pdf_item(&path, window, cx) {
-            Some(it) => it,
-            None => return,
-        };
-        item.focus(window, cx);
-        self.switch_to_item(item);
-        cx.notify();
-    }
-
     fn open_pdf_in_split(
         &mut self,
         path: std::path::PathBuf,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let item = match self.create_pdf_item(&path, window, cx) {
-            Some(it) => it,
-            None => return,
+        let key = ResourceKey::Pdf(path.clone());
+        let buffer = if let Some(buffer) = self.workspace.buffers.id_for_resource(&key) {
+            buffer
+        } else {
+            let item = match self.create_pdf_item(&path, window, cx) {
+                Some(it) => it,
+                None => return,
+            };
+            self.workspace.buffers.open_with(key, || item)
         };
-        self.open_item_in_split(item, window, cx);
+        self.show_buffer_in_secondary(buffer, window, cx);
     }
 
-    /// Open any ActiveItem in the right split pane.
-    fn open_item_in_split(
+    /// Display a buffer in the secondary window, creating that window when needed.
+    fn show_buffer_in_secondary(
         &mut self,
-        item: ActiveItem,
+        buffer: BufferId,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // Keymaps are per-view now — no shared-stack choreography needed.
-        self.right_pane = Some(item);
-        self.focused_pane = PaneSide::Right;
-        self.right_pane.as_ref().unwrap().focus(window, cx);
-        cx.notify();
+        let secondary = if let Some(secondary) = self.secondary_window() {
+            self.workspace.switch_window_buffer(secondary, buffer);
+            secondary
+        } else {
+            self.workspace.focus(self.editor_window);
+            self.workspace
+                .split_focused(SplitAxis::Horizontal, buffer)
+                .expect("editor window must be splittable")
+        };
+        self.focus_workspace_window(secondary, window, cx);
     }
 
     fn open_graph(
@@ -1790,6 +1902,18 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let key = ResourceKey::Graph(
+            self.state
+                .vault
+                .as_ref()
+                .map(|vault| vault.path.clone())
+                .unwrap_or_default(),
+        );
+        if let Some(buffer) = self.workspace.buffers.id_for_resource(&key) {
+            self.show_buffer_in_secondary(buffer, window, cx);
+            return;
+        }
+
         // Build graph from vault
         let graph_state = cx.new(|cx| {
             let mut gs = GraphState::new(cx);
@@ -1839,43 +1963,20 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             view: graph_view,
         };
 
-        self.open_item_in_split(graph_item, window, cx);
+        let buffer = self.workspace.buffers.open_with(key, || graph_item);
+        self.show_buffer_in_secondary(buffer, window, cx);
     }
 
-    fn close_split(
+    fn close_window(
         &mut self,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        self.right_pane = None;
-        self.focused_pane = PaneSide::Left;
-        self.active_item.focus(window, cx);
-        cx.notify();
-    }
-
-    fn focus_pane(
-        &mut self,
-        side: PaneSide,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if side == self.focused_pane {
-            return;
+        if self.workspace.close_focused() {
+            let focused = self.workspace.focused_window;
+            self.item_for_window(focused).focus(window, cx);
+            cx.notify();
         }
-        self.focused_pane = side;
-        let new_item = match side {
-            PaneSide::Left => Some(&self.active_item),
-            PaneSide::Right => self.right_pane.as_ref(),
-        };
-        if let Some(item) = new_item {
-            item.focus(window, cx);
-        }
-        cx.notify();
-    }
-
-    /// Switch the active item. Each view owns its own keymap.
-    fn switch_to_item(&mut self, new_item: ActiveItem) {
-        self.active_item = new_item;
     }
 
     fn create_note_by_title(&mut self, title: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -1884,6 +1985,9 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 self.editor_state.update(cx, |state, cx| {
                     state.set_document(document, window, cx);
                 });
+                self.sync_editor_resource(cx);
+                self.ensure_editor_window();
+                self.focus_workspace_window(self.editor_window, window, cx);
             }
             Err(e) => eprintln!("failed to create note: {}", e),
         }
@@ -1912,6 +2016,9 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 return;
             }
         }
+        self.sync_editor_resource(cx);
+        self.ensure_editor_window();
+        self.focus_workspace_window(self.editor_window, window, cx);
         self.start_vault_watcher();
         cx.notify();
     }
@@ -2143,11 +2250,8 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         let dirty = self.current_document_dirty(cx);
         let dirty_indicator = if dirty { " ●" } else { "" };
 
-        // Position info depends on focused pane
-        let focused_item = match self.focused_pane {
-            PaneSide::Left => &self.active_item,
-            PaneSide::Right => self.right_pane.as_ref().unwrap_or(&self.active_item),
-        };
+        // Position info depends on the focused window.
+        let focused_item = self.focused_item();
         let position_text = focused_item.position_text(600.0, cx);
 
         // Mode badge (left) — show focused item's badge
@@ -2311,7 +2415,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 rgb(0x657B83) // base00 — normal text
             };
 
-            let label_element = if matches!(self.minibuffer.delegate_kind, DelegateKind::Item(ref id) if self.active_item.highlight_input(id))
+            let label_element = if matches!(self.minibuffer.delegate_kind, DelegateKind::Item(ref id) if self.focused_item().highlight_input(id))
                 && !self.minibuffer.input.is_empty()
             {
                 // Highlight the search term within the candidate label
@@ -2419,14 +2523,12 @@ impl Render for Memex {
             }))
             .on_action(cx.listener(|this, _: &FocusLeftPane, window, cx| {
                 if this.minibuffer.active { return; }
-                if this.right_pane.is_some() {
-                    this.focus_pane(PaneSide::Left, window, cx);
-                }
+                this.focus_workspace_window(this.editor_window, window, cx);
             }))
             .on_action(cx.listener(|this, _: &FocusRightPane, window, cx| {
                 if this.minibuffer.active { return; }
-                if this.right_pane.is_some() {
-                    this.focus_pane(PaneSide::Right, window, cx);
+                if let Some(secondary) = this.secondary_window() {
+                    this.focus_workspace_window(secondary, window, cx);
                 }
             }))
             .on_action(cx.listener(|this, _: &SearchContent, window, cx| {
@@ -2440,66 +2542,7 @@ impl Render for Memex {
             }))
             // Custom title bar with drag + window controls
             .child(self.render_title_bar(cx))
-            // Main content area: active item's view + optional right split
-            .child({
-                let left_view = self.active_item.view_element();
-                let has_right = self.right_pane.is_some();
-                let focused = self.focused_pane;
-
-                if has_right {
-                    let right_view = self.right_pane.as_ref().unwrap().view_element();
-
-                    h_flex()
-                        .flex_1()
-                        .w_full()
-                        .overflow_hidden()
-                        // Left pane — click anywhere to make it the focused pane.
-                        .child(
-                            div()
-                                .id("pane-left")
-                                .flex_1()
-                                .h_full()
-                                .overflow_hidden()
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(|this, _e: &MouseDownEvent, window, cx| {
-                                        this.focus_pane(PaneSide::Left, window, cx);
-                                    }),
-                                )
-                                .child(left_view),
-                        )
-                        // Divider
-                        .child(
-                            div()
-                                .w(px(1.))
-                                .h_full()
-                                .bg(rgba(0x00000010)), // solarized base1
-                        )
-                        // Right pane — click anywhere to make it the focused pane.
-                        .child(
-                            div()
-                                .id("pane-right")
-                                .flex_1()
-                                .h_full()
-                                .overflow_hidden()
-                                .on_mouse_down(
-                                    MouseButton::Left,
-                                    cx.listener(|this, _e: &MouseDownEvent, window, cx| {
-                                        this.focus_pane(PaneSide::Right, window, cx);
-                                    }),
-                                )
-                                .child(right_view),
-                        )
-                        .into_any_element()
-                } else {
-                    div()
-                        .flex_1()
-                        .w_full()
-                        .overflow_hidden()
-                        .child(left_view)
-                        .into_any_element()
-                }
-            })
+            .child(self.render_window_layout(&self.workspace.layout, cx))
             // Optional backlinks panel below the content (Ctrl+Shift+B)
             .children(if self.show_backlinks {
                 Some(self.render_backlinks_panel(cx).into_any_element())
