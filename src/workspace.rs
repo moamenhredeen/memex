@@ -428,6 +428,17 @@ mod tests {
     }
 
     #[test]
+    fn opening_another_resource_preserves_the_previous_buffer() {
+        let mut store = BufferStore::default();
+        let first = store.open_with("first.md", || "unsaved first");
+        let second = store.open_with("second.md", || "second");
+
+        assert_ne!(first, second);
+        assert_eq!(store.get(first), Some(&"unsaved first"));
+        assert_eq!(store.get(second), Some(&"second"));
+    }
+
+    #[test]
     fn window_state_is_replaced_without_deleting_buffers() {
         let mut workspace = Workspace::new("note.md", "note");
         let pdf = workspace.buffers.open_with("manual.pdf", || "pdf");

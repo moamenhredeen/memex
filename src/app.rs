@@ -41,7 +41,7 @@ pub struct Memex {
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum ResourceKey {
-    Scratch,
+    Scratch(std::path::PathBuf),
     Markdown(std::path::PathBuf),
     Pdf(std::path::PathBuf),
     Graph(std::path::PathBuf),
@@ -158,7 +158,15 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             .read(cx)
             .document_path()
             .map(ResourceKey::Markdown)
-            .unwrap_or(ResourceKey::Scratch);
+            .unwrap_or_else(|| {
+                ResourceKey::Scratch(
+                    state
+                        .vault
+                        .as_ref()
+                        .map(|vault| vault.path.clone())
+                        .unwrap_or_default(),
+                )
+            });
         let editor_item = ActiveItem::Editor {
             state: editor_state.clone(),
             view: editor_view.clone(),
@@ -232,25 +240,21 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
     /// Create a read-only snapshot of keymap state for item dispatch.
     /// Reads from the editor view — the editor owns the vim state.
     fn vim_snapshot(&self, cx: &App) -> VimSnapshot {
-        self.focused_item()
-            .editor_view()
-            .unwrap_or_else(|| self.editor_view.clone())
-            .read(cx)
-            .vim_snapshot()
+        self.active_editor_view().read(cx).vim_snapshot()
     }
 
     /// Returns whether vim mode is enabled. Editor-owned.
     fn vim_enabled(&self, cx: &App) -> bool {
-        self.focused_item()
-            .editor_view()
-            .unwrap_or_else(|| self.editor_view.clone())
+        self.active_editor_view()
             .read(cx)
             .keymap
             .vim_enabled
     }
 
     fn current_document_path(&self, cx: &App) -> Option<std::path::PathBuf> {
-        self.editor_state.read(cx).document_path()
+        self.active_editor_state()
+            .read(cx)
+            .document_path()
     }
 
     fn current_document_title(&self, cx: &App) -> String {
@@ -258,17 +262,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
     }
 
     fn current_document_dirty(&self, cx: &App) -> bool {
-        self.editor_state.read(cx).is_dirty()
-    }
-
-    fn sync_editor_resource(&mut self, cx: &App) {
-        let resource = self
-            .current_document_path(cx)
-            .map(ResourceKey::Markdown)
-            .unwrap_or(ResourceKey::Scratch);
-        self.workspace
-            .buffers
-            .rekey(self.editor_buffer, resource);
+        self.active_editor_state().read(cx).is_dirty()
     }
 
     fn item_for_window(&self, window: WindowId) -> &ActiveItem {
@@ -281,31 +275,24 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         self.item_for_window(self.workspace.focused_window)
     }
 
+    fn active_editor_state(&self) -> Entity<EditorState> {
+        self.focused_item()
+            .editor_state()
+            .unwrap_or_else(|| self.editor_state.clone())
+    }
+
+    fn active_editor_view(&self) -> Entity<EditorView> {
+        self.focused_item()
+            .editor_view()
+            .unwrap_or_else(|| self.editor_view.clone())
+    }
+
     fn secondary_window(&self) -> Option<WindowId> {
         self.workspace
             .layout
             .window_ids()
             .into_iter()
             .find(|id| *id != self.editor_window)
-    }
-
-    fn ensure_editor_window(&mut self) {
-        if self.workspace.layout.window(self.editor_window).is_some()
-            && self.window_items.contains(self.editor_window)
-        {
-            return;
-        }
-        self.editor_window = self
-            .workspace
-            .split_focused(SplitAxis::Horizontal, self.editor_buffer)
-            .expect("focused window must be splittable");
-        self.window_items.insert(
-            self.editor_window,
-            ActiveItem::Editor {
-                state: self.editor_state.clone(),
-                view: self.editor_view.clone(),
-            },
-        );
     }
 
     fn focus_workspace_window(
@@ -510,7 +497,8 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         };
 
         // Use the editor's in-memory content (may have unsaved edits).
-        let content = self.editor_state.read(cx).content();
+        let editor = self.active_editor_state();
+        let content = editor.read(cx).content();
         let parsed = match crate::vault::frontmatter::parse(&content) {
             Ok(p) => p,
             Err(e) => {
@@ -543,7 +531,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             cx.notify();
             return;
         }
-        self.editor_state.update(cx, |state, cx| {
+        editor.update(cx, |state, cx| {
             state.set_content(new_content.clone(), window, cx);
         });
         if let Some(v) = self.state.vault.as_mut() {
@@ -635,7 +623,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         // Insert at the cursor. Use embed syntax `![[…]]` so eventual
         // inline-image rendering can pick it up.
         let snippet = format!("![[{}]]", filename);
-        self.editor_state.update(cx, |state, cx| {
+        self.active_editor_state().update(cx, |state, cx| {
             state.edit_text(&snippet, cx);
         });
 
@@ -673,7 +661,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             .collect::<String>();
 
         // Insert at the cursor via the editor's edit API.
-        self.editor_state.update(cx, |state, cx| {
+        self.active_editor_state().update(cx, |state, cx| {
             state.edit_text(&block, cx);
         });
         let _ = window;
@@ -822,7 +810,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     // Try executing raw input as ex command
                     self.dismiss_minibuffer(window, cx);
                     let vim = self.vim_snapshot(cx);
-                    let editor = self.editor_state.clone();
+                    let editor = self.active_editor_state();
                     let actions = editor.update(cx, |state, cx| {
                         state.execute_ex_command(&input, vim, window, cx)
                     });
@@ -972,7 +960,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 }
                 ItemAction::ActivateLayer(layer_id) => {
                     // Editor-owned layers now — route into the editor view.
-                    self.editor_view.update(cx, |view, cx| {
+                    self.active_editor_view().update(cx, |view, cx| {
                         view.keymap.stack.activate_layer(layer_id);
                         view.state.update(cx, |s, cx| s.on_layer_activated(layer_id, cx));
                         view.sync_state_vim_flags(cx);
@@ -980,12 +968,12 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     });
                 }
                 ItemAction::SetVimEnabled(enabled) => {
-                    self.editor_view.update(cx, |view, cx| {
+                    self.active_editor_view().update(cx, |view, cx| {
                         view.set_vim_enabled(enabled, cx);
                     });
                 }
                 ItemAction::SyncVimFlags => {
-                    self.editor_view.update(cx, |view, cx| {
+                    self.active_editor_view().update(cx, |view, cx| {
                         view.sync_state_vim_flags(cx);
                     });
                 }
@@ -1483,7 +1471,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let editor = self.editor_state.clone();
+        let editor = self.active_editor_state();
         editor.update(cx, |state, cx| {
             // The cursor should be right after the `[[` that triggered autocomplete.
             // Replace `[[` with `[[title]]`
@@ -1766,10 +1754,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
     }
 
     fn save(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        let editor = self
-            .focused_item()
-            .editor_state()
-            .unwrap_or_else(|| self.editor_state.clone());
+        let editor = self.active_editor_state();
         if let Err(e) = editor.update(cx, |state, _| state.save_document()) {
             eprintln!("save error: {}", e);
         }
@@ -1795,19 +1780,11 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 return;
             }
         };
-        self.editor_state.update(cx, |state, cx| {
-            state.set_document(document, window, cx);
-        });
-        let path = self
-            .editor_state
-            .read(cx)
-            .document_path()
-            .expect("opened document must have a path");
-        self.workspace
-            .buffers
-            .rekey(self.editor_buffer, ResourceKey::Markdown(path));
-        self.ensure_editor_window();
-        self.focus_workspace_window(self.editor_window, window, cx);
+        let path = document
+            .path()
+            .expect("opened document must have a path")
+            .to_path_buf();
+        self.open_document_buffer(ResourceKey::Markdown(path), document, window, cx);
         cx.notify();
     }
 
@@ -1901,6 +1878,59 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             state: editor_state,
             view: editor_view,
         }
+    }
+
+    fn show_markdown_buffer_in_editor(
+        &mut self,
+        buffer_id: BufferId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let buffer = match self
+            .workspace
+            .buffers
+            .get(buffer_id)
+            .expect("opened markdown buffer must exist")
+        {
+            BufferContent::Markdown(buffer) => buffer.clone(),
+            _ => unreachable!("markdown resource must contain markdown buffer"),
+        };
+        let item = self.create_editor_item(buffer, window, cx);
+        let editor_state = item
+            .editor_state()
+            .expect("new markdown item must expose editor state");
+        let editor_view = item
+            .editor_view()
+            .expect("new markdown item must expose editor view");
+
+        if self.workspace.layout.window(self.editor_window).is_some() {
+            self.workspace
+                .switch_window_buffer(self.editor_window, buffer_id);
+        } else {
+            self.editor_window = self
+                .workspace
+                .split_focused(SplitAxis::Horizontal, buffer_id)
+                .expect("focused window must be splittable");
+        }
+        self.window_items.insert(self.editor_window, item);
+        self.editor_buffer = buffer_id;
+        self.editor_state = editor_state;
+        self.editor_view = editor_view;
+        self.focus_workspace_window(self.editor_window, window, cx);
+    }
+
+    fn open_document_buffer(
+        &mut self,
+        resource: ResourceKey,
+        document: Document,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let buffer = self
+            .workspace
+            .buffers
+            .open_with(resource, || BufferContent::Markdown(EditorBuffer::new(document)));
+        self.show_markdown_buffer_in_editor(buffer, window, cx);
     }
 
     /// Create a PDF ActiveItem from a path. Returns None on error (sets minibuffer message).
@@ -2110,12 +2140,11 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
     fn create_note_by_title(&mut self, title: &str, window: &mut Window, cx: &mut Context<Self>) {
         match self.state.create_note(title) {
             Ok(document) => {
-                self.editor_state.update(cx, |state, cx| {
-                    state.set_document(document, window, cx);
-                });
-                self.sync_editor_resource(cx);
-                self.ensure_editor_window();
-                self.focus_workspace_window(self.editor_window, window, cx);
+                let path = document
+                    .path()
+                    .expect("created document must have a path")
+                    .to_path_buf();
+                self.open_document_buffer(ResourceKey::Markdown(path), document, window, cx);
             }
             Err(e) => eprintln!("failed to create note: {}", e),
         }
@@ -2128,25 +2157,29 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        match self.state.open_vault(path) {
+        let (resource, document) = match self.state.open_vault(path) {
             Ok(Some(document)) => {
-                self.editor_state.update(cx, |state, cx| {
-                    state.set_document(document, window, cx);
-                });
+                let path = document
+                    .path()
+                    .expect("vault document must have a path")
+                    .to_path_buf();
+                (ResourceKey::Markdown(path), document)
             }
             Ok(None) => {
-                self.editor_state.update(cx, |state, cx| {
-                    state.set_document(Document::scratch(String::new()), window, cx);
-                });
+                let vault_path = self
+                    .state
+                    .vault
+                    .as_ref()
+                    .map(|vault| vault.path.clone())
+                    .unwrap_or_default();
+                (ResourceKey::Scratch(vault_path), Document::scratch(String::new()))
             }
             Err(e) => {
                 eprintln!("failed to open vault: {}", e);
                 return;
             }
-        }
-        self.sync_editor_resource(cx);
-        self.ensure_editor_window();
-        self.focus_workspace_window(self.editor_window, window, cx);
+        };
+        self.open_document_buffer(resource, document, window, cx);
         self.start_vault_watcher();
         cx.notify();
     }
@@ -2367,10 +2400,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
     }
 
     fn render_mode_line(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let editor_view = self
-            .focused_item()
-            .editor_view()
-            .unwrap_or_else(|| self.editor_view.clone());
+        let editor_view = self.active_editor_view();
         let ev = editor_view.read(cx);
         let vim_enabled = ev.keymap.vim_enabled;
         let vim_state = ev.keymap.active_vim_state().map(|s| s.to_string());
@@ -2482,7 +2512,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 .minibuffer
                 .message
                 .clone()
-                .or_else(|| self.editor_state.read(cx).status_message.clone())
+                .or_else(|| self.active_editor_state().read(cx).status_message.clone())
                 .unwrap_or_default();
             return base.child(
                 h_flex()
@@ -2646,10 +2676,7 @@ impl Render for Memex {
             .on_action(cx.listener(|this, _: &ToggleVim, _window, cx| {
                 if this.minibuffer.active { return; }
                 let new_enabled = !this.vim_enabled(cx);
-                let editor_view = this
-                    .focused_item()
-                    .editor_view()
-                    .unwrap_or_else(|| this.editor_view.clone());
+                let editor_view = this.active_editor_view();
                 editor_view.update(cx, |view, cx| {
                     view.set_vim_enabled(new_enabled, cx);
                 });
