@@ -1,7 +1,8 @@
-//! Pane item system — Zed-style architecture for view-specific behavior.
+//! Window item system for view-specific behavior.
 //!
-//! Each pane holds one `ActiveItem` (editor, PDF, graph, etc.).
-//! The item owns its view, commands, keybindings, and minibuffer delegates.
+//! Each live workspace window holds one `ActiveItem` (editor, PDF, graph, etc.).
+//! The item owns window-local view state, commands, keybindings, and delegates;
+//! retained resource data lives separately in the workspace buffer store.
 //! The app shell dispatches to the active item — no central match arms.
 //!
 //! To add a new item type:
@@ -70,7 +71,7 @@ impl CommandOutcome {
     }
 }
 
-/// The active content in a pane. Each variant wraps a state+view entity pair.
+/// The presentation state in a live window. Each variant wraps a state+view pair.
 ///
 /// When you add a new item type (graph view, backlinks, etc.), add a variant
 /// here and implement the same methods on the state type.
@@ -90,6 +91,20 @@ pub enum ActiveItem {
 }
 
 impl ActiveItem {
+    pub fn editor_state(&self) -> Option<Entity<EditorState>> {
+        match self {
+            Self::Editor { state, .. } => Some(state.clone()),
+            _ => None,
+        }
+    }
+
+    pub fn editor_view(&self) -> Option<Entity<EditorView>> {
+        match self {
+            Self::Editor { view, .. } => Some(view.clone()),
+            _ => None,
+        }
+    }
+
     /// Display name for the mode-line badge.
     #[allow(dead_code)]
     pub fn display_name(&self) -> &str {

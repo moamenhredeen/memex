@@ -157,6 +157,41 @@ pub struct BufferStore<K, B> {
     mru: Vec<BufferId>,
 }
 
+/// Presentation state owned by live windows, separate from retained buffers.
+pub struct WindowStore<W> {
+    windows: HashMap<WindowId, W>,
+}
+
+impl<W> Default for WindowStore<W> {
+    fn default() -> Self {
+        Self {
+            windows: HashMap::new(),
+        }
+    }
+}
+
+impl<W> WindowStore<W> {
+    pub fn insert(&mut self, id: WindowId, state: W) -> Option<W> {
+        self.windows.insert(id, state)
+    }
+
+    pub fn get(&self, id: WindowId) -> Option<&W> {
+        self.windows.get(&id)
+    }
+
+    pub fn contains(&self, id: WindowId) -> bool {
+        self.windows.contains_key(&id)
+    }
+
+    pub fn remove(&mut self, id: WindowId) -> Option<W> {
+        self.windows.remove(&id)
+    }
+
+    pub fn retain_only(&mut self, id: WindowId) {
+        self.windows.retain(|window_id, _| *window_id == id);
+    }
+}
+
 impl<K, B> Default for BufferStore<K, B> {
     fn default() -> Self {
         Self {
@@ -390,5 +425,33 @@ mod tests {
         assert_eq!(workspace.buffer_for_window(tool_window), Some(graph));
         assert_eq!(workspace.buffers.get(pdf), Some(&"pdf"));
         assert_eq!(workspace.buffers.get(graph), Some(&"graph"));
+    }
+
+    #[test]
+    fn window_state_is_replaced_without_deleting_buffers() {
+        let mut workspace = Workspace::new("note.md", "note");
+        let pdf = workspace.buffers.open_with("manual.pdf", || "pdf");
+        let tool_window = workspace
+            .split_focused(SplitAxis::Horizontal, pdf)
+            .unwrap();
+        let mut windows = WindowStore::default();
+        windows.insert(WindowId(1), "editor viewport");
+        windows.insert(tool_window, "pdf viewport");
+
+        assert_eq!(windows.insert(tool_window, "graph viewport"), Some("pdf viewport"));
+        assert_eq!(windows.get(tool_window), Some(&"graph viewport"));
+        assert_eq!(workspace.buffers.get(pdf), Some(&"pdf"));
+    }
+
+    #[test]
+    fn retaining_one_window_drops_only_other_presentations() {
+        let mut windows = WindowStore::default();
+        windows.insert(WindowId(1), "editor viewport");
+        windows.insert(WindowId(2), "pdf viewport");
+
+        windows.retain_only(WindowId(2));
+
+        assert!(windows.get(WindowId(1)).is_none());
+        assert_eq!(windows.get(WindowId(2)), Some(&"pdf viewport"));
     }
 }

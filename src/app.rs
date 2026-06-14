@@ -5,13 +5,13 @@ use gpui_component::{h_flex, v_flex, Icon, IconName};
 
 use crate::command::Command;
 use crate::document::Document;
-use crate::editor::{EditorEvent, EditorState, EditorView, EditorViewEvent};
+use crate::editor::{EditorBuffer, EditorEvent, EditorState, EditorView, EditorViewEvent};
 use crate::graph::{GraphEvent, GraphState, GraphView, GraphViewEvent};
 use crate::minibuffer::{Candidate, DelegateKind, Minibuffer, MinibufferAction, MinibufferVimMode};
 use crate::pane::{ActiveItem, CommandOutcome, ItemAction, VimSnapshot};
 use crate::pdf::{PdfState, PdfView, PdfViewEvent};
 use crate::state::AppState;
-use crate::workspace::{BufferId, SplitAxis, WindowId, WindowLayout, Workspace};
+use crate::workspace::{BufferId, SplitAxis, WindowId, WindowLayout, WindowStore, Workspace};
 
 const MAX_RESULTS: usize = 15;
 
@@ -23,7 +23,8 @@ pub struct Memex {
     state: AppState,
     editor_state: Entity<EditorState>,
     editor_view: Entity<EditorView>,
-    workspace: Workspace<ResourceKey, ActiveItem>,
+    workspace: Workspace<ResourceKey, BufferContent>,
+    window_items: WindowStore<ActiveItem>,
     editor_buffer: BufferId,
     editor_window: WindowId,
     minibuffer: Minibuffer,
@@ -42,6 +43,13 @@ pub struct Memex {
 enum ResourceKey {
     Scratch,
     Markdown(std::path::PathBuf),
+    Pdf(std::path::PathBuf),
+    Graph(std::path::PathBuf),
+}
+
+#[derive(Clone)]
+enum BufferContent {
+    Markdown(EditorBuffer),
     Pdf(std::path::PathBuf),
     Graph(std::path::PathBuf),
 }
@@ -151,21 +159,25 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             .document_path()
             .map(ResourceKey::Markdown)
             .unwrap_or(ResourceKey::Scratch);
+        let editor_item = ActiveItem::Editor {
+            state: editor_state.clone(),
+            view: editor_view.clone(),
+        };
         let workspace = Workspace::new(
             editor_resource,
-            ActiveItem::Editor {
-                state: editor_state.clone(),
-                view: editor_view.clone(),
-            },
+            BufferContent::Markdown(editor_state.read(cx).buffer.clone()),
         );
         let editor_buffer = workspace.focused_buffer();
         let editor_window = workspace.focused_window;
+        let mut window_items = WindowStore::default();
+        window_items.insert(editor_window, editor_item);
 
         let mut this = Self {
             state,
             editor_state: editor_state.clone(),
             editor_view: editor_view.clone(),
             workspace,
+            window_items,
             editor_buffer,
             editor_window,
             minibuffer: Minibuffer::new(),
@@ -220,12 +232,21 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
     /// Create a read-only snapshot of keymap state for item dispatch.
     /// Reads from the editor view — the editor owns the vim state.
     fn vim_snapshot(&self, cx: &App) -> VimSnapshot {
-        self.editor_view.read(cx).vim_snapshot()
+        self.focused_item()
+            .editor_view()
+            .unwrap_or_else(|| self.editor_view.clone())
+            .read(cx)
+            .vim_snapshot()
     }
 
     /// Returns whether vim mode is enabled. Editor-owned.
     fn vim_enabled(&self, cx: &App) -> bool {
-        self.editor_view.read(cx).keymap.vim_enabled
+        self.focused_item()
+            .editor_view()
+            .unwrap_or_else(|| self.editor_view.clone())
+            .read(cx)
+            .keymap
+            .vim_enabled
     }
 
     fn current_document_path(&self, cx: &App) -> Option<std::path::PathBuf> {
@@ -251,14 +272,9 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
     }
 
     fn item_for_window(&self, window: WindowId) -> &ActiveItem {
-        let buffer = self
-            .workspace
-            .buffer_for_window(window)
-            .expect("live window must reference a buffer");
-        self.workspace
-            .buffers
-            .get(buffer)
-            .expect("window buffer must be open")
+        self.window_items
+            .get(window)
+            .expect("live window must have presentation state")
     }
 
     fn focused_item(&self) -> &ActiveItem {
@@ -274,13 +290,22 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
     }
 
     fn ensure_editor_window(&mut self) {
-        if self.workspace.layout.window(self.editor_window).is_some() {
+        if self.workspace.layout.window(self.editor_window).is_some()
+            && self.window_items.contains(self.editor_window)
+        {
             return;
         }
         self.editor_window = self
             .workspace
             .split_focused(SplitAxis::Horizontal, self.editor_buffer)
             .expect("focused window must be splittable");
+        self.window_items.insert(
+            self.editor_window,
+            ActiveItem::Editor {
+                state: self.editor_state.clone(),
+                view: self.editor_view.clone(),
+            },
+        );
     }
 
     fn focus_workspace_window(
@@ -1014,6 +1039,8 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             }
             "only" | "only-window" => {
                 if self.workspace.only_focused() {
+                    let focused = self.workspace.focused_window;
+                    self.window_items.retain_only(focused);
                     cx.notify();
                 }
             }
@@ -1124,12 +1151,15 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 } else if focused_is_editor {
                     // Editor commands that need window access (editing, motions, etc.)
                     let vim = self.vim_snapshot(cx);
-                    let editor = self.editor_state.clone();
+                    let editor = self
+                        .focused_item()
+                        .editor_state()
+                        .expect("focused editor item must expose editor state");
                     let item_actions = editor.update(cx, |state, ecx| {
                         state.execute_command_by_id(cmd_id, count, vim, window, ecx)
                     });
                     self.process_item_actions(item_actions, window, cx);
-                    if let Some(msg) = self.editor_state.read(cx).status_message.clone() {
+                    if let Some(msg) = editor.read(cx).status_message.clone() {
                         self.minibuffer.set_message(msg);
                     }
                 }
@@ -1736,7 +1766,11 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
     }
 
     fn save(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
-        if let Err(e) = self.editor_state.update(cx, |state, _| state.save_document()) {
+        let editor = self
+            .focused_item()
+            .editor_state()
+            .unwrap_or_else(|| self.editor_state.clone());
+        if let Err(e) = editor.update(cx, |state, _| state.save_document()) {
             eprintln!("save error: {}", e);
         }
         cx.notify();
@@ -1787,30 +1821,85 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         if path.extension().and_then(|e| e.to_str()) == Some("pdf") {
             self.open_pdf_in_split(path, window, cx);
         } else {
-            // For markdown notes, create a second editor in split
-            // For now, load the note and show editor as split
-            let document = match Document::open(path.clone()) {
-                Ok(document) => document,
-                Err(e) => {
-                    self.minibuffer.set_message(format!("Failed to read: {}", e));
-                    return;
-                }
+            let key = ResourceKey::Markdown(path.clone());
+            let buffer = if let Some(buffer) = self.workspace.buffers.id_for_resource(&key) {
+                buffer
+            } else {
+                let document = match Document::open(path) {
+                    Ok(document) => document,
+                    Err(e) => {
+                        self.minibuffer.set_message(format!("Failed to read: {}", e));
+                        return;
+                    }
+                };
+                self.workspace
+                    .buffers
+                    .open_with(key, || BufferContent::Markdown(EditorBuffer::new(document)))
             };
-            let editor_state = cx.new(|cx| {
-                crate::editor::EditorState::from_document(document, cx)
-            });
-            let editor_view = cx.new(|cx| {
-                crate::editor::EditorView::new(editor_state.clone(), cx)
-            });
-            let item = ActiveItem::Editor {
-                state: editor_state,
-                view: editor_view,
-            };
-            let buffer = self
+            let editor_buffer = match self
                 .workspace
                 .buffers
-                .open_with(ResourceKey::Markdown(path), || item);
-            self.show_buffer_in_secondary(buffer, window, cx);
+                .get(buffer)
+                .expect("opened markdown buffer must exist")
+            {
+                BufferContent::Markdown(buffer) => buffer.clone(),
+                _ => unreachable!("markdown resource must contain markdown buffer"),
+            };
+            let item = self.create_editor_item(editor_buffer, window, cx);
+            self.show_item_in_secondary(buffer, item, window, cx);
+        }
+    }
+
+    fn create_editor_item(
+        &mut self,
+        buffer: EditorBuffer,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> ActiveItem {
+        let editor_state = cx.new(|cx| EditorState::from_buffer(buffer, cx));
+        let editor_view = cx.new(|cx| EditorView::new(editor_state.clone(), cx));
+        let key_sub = cx.subscribe_in(
+            &editor_view,
+            window,
+            |this, _view, ev: &EditorViewEvent, window, cx| match ev {
+                EditorViewEvent::Command(cmd_id, count) => {
+                    this.execute_command(cmd_id, "", *count, window, cx);
+                }
+                EditorViewEvent::ItemActions(actions) => {
+                    this.process_item_actions(actions.clone(), window, cx);
+                }
+                EditorViewEvent::VimStateChanged => cx.notify(),
+            },
+        );
+        let state_sub = cx.subscribe_in(
+            &editor_state,
+            window,
+            |this, _entity, ev: &EditorEvent, window, cx| match ev {
+                EditorEvent::Changed => {
+                    this.minibuffer.message = None;
+                    cx.notify();
+                }
+                EditorEvent::RequestSave => this.save(window, cx),
+                EditorEvent::RequestQuit => cx.quit(),
+                EditorEvent::RequestOpen(path) => {
+                    this.open_note_by_path(path.into(), window, cx);
+                }
+                EditorEvent::RequestVaultSwitch => this.activate_vault_switch(window, cx),
+                EditorEvent::RequestVaultOpen => this.activate_vault_open(window, cx),
+                EditorEvent::RequestNoteSearch => this.activate_note_search(window, cx),
+                EditorEvent::RequestCommand => this.activate_command_palette(window, cx),
+                EditorEvent::WikilinkClicked(title) => {
+                    this.follow_wikilink(title.clone(), window, cx);
+                }
+                EditorEvent::WikilinkAutocomplete => {
+                    this.activate_wikilink_autocomplete(window, cx);
+                }
+            },
+        );
+        self._subscriptions.extend([key_sub, state_sub]);
+        ActiveItem::Editor {
+            state: editor_state,
+            view: editor_view,
         }
     }
 
@@ -1868,19 +1957,31 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         let buffer = if let Some(buffer) = self.workspace.buffers.id_for_resource(&key) {
             buffer
         } else {
-            let item = match self.create_pdf_item(&path, window, cx) {
-                Some(it) => it,
-                None => return,
-            };
-            self.workspace.buffers.open_with(key, || item)
+            self.workspace
+                .buffers
+                .open_with(key, || BufferContent::Pdf(path.clone()))
         };
-        self.show_buffer_in_secondary(buffer, window, cx);
+        let pdf_path = match self
+            .workspace
+            .buffers
+            .get(buffer)
+            .expect("opened PDF buffer must exist")
+        {
+            BufferContent::Pdf(path) => path.clone(),
+            _ => unreachable!("PDF resource must contain PDF buffer"),
+        };
+        let item = match self.create_pdf_item(&pdf_path, window, cx) {
+            Some(item) => item,
+            None => return,
+        };
+        self.show_item_in_secondary(buffer, item, window, cx);
     }
 
-    /// Display a buffer in the secondary window, creating that window when needed.
-    fn show_buffer_in_secondary(
+    /// Display an item in the secondary window, creating that window when needed.
+    fn show_item_in_secondary(
         &mut self,
         buffer: BufferId,
+        item: ActiveItem,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -1893,6 +1994,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 .split_focused(SplitAxis::Horizontal, buffer)
                 .expect("editor window must be splittable")
         };
+        self.window_items.insert(secondary, item);
         self.focus_workspace_window(secondary, window, cx);
     }
 
@@ -1908,16 +2010,44 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 .map(|vault| vault.path.clone())
                 .unwrap_or_default(),
         );
-        if let Some(buffer) = self.workspace.buffers.id_for_resource(&key) {
-            self.show_buffer_in_secondary(buffer, window, cx);
-            return;
-        }
+        let buffer = if let Some(buffer) = self.workspace.buffers.id_for_resource(&key) {
+            buffer
+        } else {
+            let path = match &key {
+                ResourceKey::Graph(path) => path.clone(),
+                _ => unreachable!(),
+            };
+            self.workspace
+                .buffers
+                .open_with(key, || BufferContent::Graph(path))
+        };
+        let graph_path = match self
+            .workspace
+            .buffers
+            .get(buffer)
+            .expect("opened graph buffer must exist")
+        {
+            BufferContent::Graph(path) => path.clone(),
+            _ => unreachable!("graph resource must contain graph buffer"),
+        };
+        let graph_item = self.create_graph_item(&graph_path, window, cx);
+        self.show_item_in_secondary(buffer, graph_item, window, cx);
+    }
+
+    fn create_graph_item(
+        &mut self,
+        vault_path: &std::path::Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> ActiveItem {
 
         // Build graph from vault
         let graph_state = cx.new(|cx| {
             let mut gs = GraphState::new(cx);
             if let Some(vault) = &self.state.vault {
-                gs.build_from_vault(vault);
+                if vault.path == vault_path {
+                    gs.build_from_vault(vault);
+                }
             }
             // Set local root to current note if one is open
             if let Some(current) = self.current_document_path(cx) {
@@ -1957,13 +2087,10 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         let obs = cx.observe(&graph_state, |_, _, cx| cx.notify());
         self._subscriptions.push(obs);
 
-        let graph_item = ActiveItem::Graph {
+        ActiveItem::Graph {
             state: graph_state,
             view: graph_view,
-        };
-
-        let buffer = self.workspace.buffers.open_with(key, || graph_item);
-        self.show_buffer_in_secondary(buffer, window, cx);
+        }
     }
 
     fn close_window(
@@ -1971,7 +2098,9 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let closed = self.workspace.focused_window;
         if self.workspace.close_focused() {
+            self.window_items.remove(closed);
             let focused = self.workspace.focused_window;
             self.item_for_window(focused).focus(window, cx);
             cx.notify();
@@ -2238,11 +2367,13 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
     }
 
     fn render_mode_line(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let es = self.editor_state.read(cx);
-        let ev = self.editor_view.read(cx);
+        let editor_view = self
+            .focused_item()
+            .editor_view()
+            .unwrap_or_else(|| self.editor_view.clone());
+        let ev = editor_view.read(cx);
         let vim_enabled = ev.keymap.vim_enabled;
         let vim_state = ev.keymap.active_vim_state().map(|s| s.to_string());
-        let _ = es;
 
         let vault_name = self.state.vault_name();
         let note_title = self.current_document_title(cx);
@@ -2515,7 +2646,11 @@ impl Render for Memex {
             .on_action(cx.listener(|this, _: &ToggleVim, _window, cx| {
                 if this.minibuffer.active { return; }
                 let new_enabled = !this.vim_enabled(cx);
-                this.editor_view.update(cx, |view, cx| {
+                let editor_view = this
+                    .focused_item()
+                    .editor_view()
+                    .unwrap_or_else(|| this.editor_view.clone());
+                editor_view.update(cx, |view, cx| {
                     view.set_vim_enabled(new_enabled, cx);
                 });
                 cx.notify();
