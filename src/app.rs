@@ -1470,7 +1470,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     state.rope_replace(range.clone(), &replacement);
                     let new_cursor = range.start + replacement.len();
 
-                    state.history.record(
+                    state.buffer.history.record(
                         crate::editor::undo::EditOp {
                             range,
                             old_text,

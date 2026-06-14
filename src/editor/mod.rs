@@ -1,4 +1,5 @@
 mod blink;
+mod buffer;
 pub mod commands;
 mod display_map;
 mod element;
@@ -18,12 +19,13 @@ use crate::minibuffer::Candidate;
 use crate::pane::{CommandOutcome, ItemAction};
 
 pub use blink::BlinkCursor;
+pub use buffer::EditorBuffer;
 pub use view::{EditorView, EditorViewEvent};
 
 actions!(editor, [TabAction, ShiftTabAction]);
 
 pub struct EditorState {
-    pub document: Document,
+    pub buffer: EditorBuffer,
     pub cursor: usize,
     pub selected_range: Range<usize>,
     pub selection_reversed: bool,
@@ -33,10 +35,8 @@ pub struct EditorState {
     pub scroll_offset: Pixels,
     pub last_line_layouts: Vec<LinePaintInfo>,
     pub last_bounds: Option<Bounds<Pixels>>,
-    pub history: undo::UndoHistory,
     pub grammar: crate::keymap::VimGrammar,
     pub display_map: display_map::DisplayMap,
-    pub plugins: crate::plugin::PluginEngine,
     pub outline: outline::OutlineState,
     /// Status message shown briefly after command execution
     pub status_message: Option<String>,
@@ -78,23 +78,19 @@ impl EditorState {
         let content = document.content();
         display.update(&content);
 
-        let plugins = crate::plugin::PluginEngine::new();
-
         Self {
             cursor: 0,
             selected_range: 0..0,
             selection_reversed: false,
             marked_range: None,
-            document,
+            buffer: EditorBuffer::new(document),
             focus_handle,
             blink_cursor,
             scroll_offset: px(0.),
             last_line_layouts: Vec::new(),
             last_bounds: None,
-            history: undo::UndoHistory::new(),
             grammar: crate::keymap::VimGrammar::new(),
             display_map: display,
-            plugins,
             outline: outline::OutlineState::new(),
             status_message: None,
             suppress_next_input: false,
@@ -110,23 +106,23 @@ impl EditorState {
     /// Snapshot the buffer as a String (allocates). Use for read-heavy operations
     /// that need string slicing. Mutations should use the rope API directly.
     pub fn content(&self) -> String {
-        self.document.content()
+        self.buffer.document.content()
     }
 
     pub fn content_len(&self) -> usize {
-        self.document.buffer.len_bytes()
+        self.buffer.document.buffer.len_bytes()
     }
 
     pub fn document_path(&self) -> Option<&std::path::Path> {
-        self.document.path()
+        self.buffer.document.path()
     }
 
     pub fn is_dirty(&self) -> bool {
-        self.document.is_dirty()
+        self.buffer.document.is_dirty()
     }
 
     pub fn save_document(&mut self) -> Result<(), std::io::Error> {
-        self.document.save()
+        self.buffer.document.save()
     }
 
     /// Check if a byte offset falls within a [[wikilink]] span.
@@ -198,7 +194,7 @@ impl EditorState {
 
             self.rope_replace(range.clone(), new_marker);
 
-            self.history.record(
+            self.buffer.history.record(
                 crate::editor::undo::EditOp {
                     range: range.clone(),
                     old_text: marker.to_string(),
@@ -215,22 +211,21 @@ impl EditorState {
     }
 
     pub fn set_content(&mut self, content: String, _window: &mut Window, cx: &mut Context<Self>) {
-        self.document.replace_content(content.clone());
+        self.buffer.document.replace_content(content.clone());
         self.cursor = 0;
         self.selected_range = 0..0;
         self.marked_range = None;
-        self.history.clear();
+        self.buffer.history.clear();
         self.display_map.update(&content);
         cx.notify();
     }
 
     pub fn set_document(&mut self, document: Document, _window: &mut Window, cx: &mut Context<Self>) {
         let content = document.content();
-        self.document = document;
+        self.buffer.replace_document(document);
         self.cursor = 0;
         self.selected_range = 0..0;
         self.marked_range = None;
-        self.history.clear();
         self.display_map.update(&content);
         cx.notify();
     }
@@ -241,15 +236,15 @@ impl EditorState {
 
     /// Replace a byte range in the rope buffer with new text. O(log n).
     pub(crate) fn rope_replace(&mut self, range: Range<usize>, new_text: &str) {
-        let char_start = self.document.buffer.byte_to_char(range.start);
-        let char_end = self.document.buffer.byte_to_char(range.end);
+        let char_start = self.buffer.document.buffer.byte_to_char(range.start);
+        let char_end = self.buffer.document.buffer.byte_to_char(range.end);
         if char_start != char_end {
-            self.document.buffer.remove(char_start..char_end);
+            self.buffer.document.buffer.remove(char_start..char_end);
         }
         if !new_text.is_empty() {
-            self.document.buffer.insert(char_start, new_text);
+            self.buffer.document.buffer.insert(char_start, new_text);
         }
-        self.document.mark_dirty();
+        self.buffer.document.mark_dirty();
         self.display_map.invalidate();
     }
 
@@ -259,9 +254,9 @@ impl EditorState {
         let range = self.marked_range.clone().unwrap_or(self.selected_range.clone());
 
         let old_text = {
-            let char_start = self.document.buffer.byte_to_char(range.start);
-            let char_end = self.document.buffer.byte_to_char(range.end);
-            self.document.buffer.slice(char_start..char_end).to_string()
+            let char_start = self.buffer.document.buffer.byte_to_char(range.start);
+            let char_end = self.buffer.document.buffer.byte_to_char(range.end);
+            self.buffer.document.buffer.slice(char_start..char_end).to_string()
         };
         let cursor_before = self.cursor;
         let selection_before = self.selected_range.clone();
@@ -270,7 +265,7 @@ impl EditorState {
 
         let new_cursor = range.start + new_text.len();
 
-        self.history.record(
+        self.buffer.history.record(
             undo::EditOp {
                 range: range.clone(),
                 old_text,
@@ -399,7 +394,7 @@ impl EditorState {
     }
 
     pub fn undo(&mut self, cx: &mut Context<Self>) {
-        let txn = match self.history.undo() {
+        let txn = match self.buffer.history.undo() {
             Some(t) => t,
             None => return,
         };
@@ -422,7 +417,7 @@ impl EditorState {
     }
 
     pub fn redo(&mut self, cx: &mut Context<Self>) {
-        let txn = match self.history.redo() {
+        let txn = match self.buffer.history.redo() {
             Some(t) => t,
             None => return,
         };
@@ -574,9 +569,9 @@ impl EditorState {
             }
             YankSelection => {
                 if !self.selected_range.is_empty() {
-                    let char_start = self.document.buffer.byte_to_char(self.selected_range.start);
-                    let char_end = self.document.buffer.byte_to_char(self.selected_range.end);
-                    let text = self.document.buffer.slice(char_start..char_end).to_string();
+                    let char_start = self.buffer.document.buffer.byte_to_char(self.selected_range.start);
+                    let char_end = self.buffer.document.buffer.byte_to_char(self.selected_range.end);
+                    let text = self.buffer.document.buffer.slice(char_start..char_end).to_string();
                     self.grammar.register_content = text;
                     // Collapse selection
                     let pos = self.selected_range.start;
@@ -901,7 +896,7 @@ impl EditorState {
                 if enter_insert {
                     actions.push(ItemAction::ActivateLayer("vim:insert"));
                     self.insert_mode = true;
-                    self.history.break_coalescing();
+                    self.buffer.history.break_coalescing();
                     cx.notify();
                 }
             }
@@ -931,14 +926,14 @@ impl EditorState {
                 // Handle side effects of layer change
                 match layer_id {
                     "vim:insert" => {
-                        self.history.break_coalescing();
+                        self.buffer.history.break_coalescing();
                     }
                     "vim:normal" => {
                         if !self.selected_range.is_empty() {
                             let pos = self.selected_range.start;
                             self.move_to(pos, cx);
                         }
-                        self.history.break_coalescing();
+                        self.buffer.history.break_coalescing();
                     }
                     "vim:visual" | "vim:visual-line" => {
                         if self.selected_range.is_empty() {
@@ -980,7 +975,7 @@ impl EditorState {
                 let content = self.content();
                 let cursor = self.cursor;
                 let sel = (self.selected_range.start, self.selected_range.end);
-                if let Some(cmds) = self.plugins.run_command(&name, &content, cursor, sel) {
+                if let Some(cmds) = self.buffer.plugins.run_command(&name, &content, cursor, sel) {
                     for cmd in cmds {
                         match cmd {
                             commands::EditorCommand::EnterMode(mode_str) => {
@@ -998,7 +993,7 @@ impl EditorState {
                             commands::EditorCommand::ToggleVimMode => {
                                 actions.push(ItemAction::SetVimEnabled(!vim.vim_enabled));
                                 actions.push(ItemAction::SyncVimFlags);
-                                self.history.break_coalescing();
+                                self.buffer.history.break_coalescing();
                                 cx.notify();
                             }
                             _ => self.dispatch(cmd, window, cx),
@@ -1016,7 +1011,7 @@ impl EditorState {
         self.suppress_next_input = true;
         match layer_id {
             "vim:insert" => {
-                self.history.break_coalescing();
+                self.buffer.history.break_coalescing();
             }
             "vim:normal" => {
                 if !self.selected_range.is_empty() {
@@ -1024,7 +1019,7 @@ impl EditorState {
                     self.selected_range = pos..pos;
                     self.cursor = pos;
                 }
-                self.history.break_coalescing();
+                self.buffer.history.break_coalescing();
             }
             "vim:visual" | "vim:visual-line" => {
                 if self.selected_range.is_empty() {
@@ -1142,7 +1137,7 @@ impl EditorState {
             "toggle-vim" => {
                 actions.push(ItemAction::SetVimEnabled(!vim.vim_enabled));
                 actions.push(ItemAction::SyncVimFlags);
-                self.history.break_coalescing();
+                self.buffer.history.break_coalescing();
                 cx.notify();
             }
             // Visual mode operations
@@ -1173,7 +1168,7 @@ impl EditorState {
                 }
                 self.dispatch(EditorCommand::DeleteSelection, window, cx);
                 actions.push(ItemAction::ActivateLayer("vim:insert"));
-                self.history.break_coalescing();
+                self.buffer.history.break_coalescing();
                 cx.notify();
             }
             "indent-selection" => self.dispatch(EditorCommand::IndentSelection, window, cx),
@@ -1242,7 +1237,7 @@ impl EditorState {
                 let pos = self.next_grapheme(self.cursor);
                 self.move_to(pos, cx);
                 actions.push(ItemAction::ActivateLayer("vim:insert"));
-                self.history.break_coalescing();
+                self.buffer.history.break_coalescing();
                 cx.notify();
             }
             "insert-at-line-start" => {
@@ -1251,7 +1246,7 @@ impl EditorState {
                 let target = crate::keymap::motion_first_non_whitespace(&content, self.cursor, 1);
                 self.move_to(target, cx);
                 actions.push(ItemAction::ActivateLayer("vim:insert"));
-                self.history.break_coalescing();
+                self.buffer.history.break_coalescing();
                 cx.notify();
             }
             "insert-at-line-end" => {
@@ -1260,7 +1255,7 @@ impl EditorState {
                 let target = crate::keymap::motion_line_end(&content, self.cursor, 1);
                 self.move_to(target, cx);
                 actions.push(ItemAction::ActivateLayer("vim:insert"));
-                self.history.break_coalescing();
+                self.buffer.history.break_coalescing();
                 cx.notify();
             }
             "open-line-below" => {
@@ -1271,7 +1266,7 @@ impl EditorState {
                 self.move_to(line_end, cx);
                 self.edit_text("\n", cx);
                 actions.push(ItemAction::ActivateLayer("vim:insert"));
-                self.history.break_coalescing();
+                self.buffer.history.break_coalescing();
                 cx.notify();
             }
             "open-line-above" => {
@@ -1284,7 +1279,7 @@ impl EditorState {
                 let new_pos = line_start;
                 self.move_to(new_pos, cx);
                 actions.push(ItemAction::ActivateLayer("vim:insert"));
-                self.history.break_coalescing();
+                self.buffer.history.break_coalescing();
                 cx.notify();
             }
             "paste-after" => {
@@ -1364,7 +1359,7 @@ impl EditorState {
                     self.edit_text("", cx);
                 }
                 actions.push(ItemAction::ActivateLayer("vim:insert"));
-                self.history.break_coalescing();
+                self.buffer.history.break_coalescing();
                 cx.notify();
             }
             "change-line" => {
@@ -1377,7 +1372,7 @@ impl EditorState {
                 self.selected_range = line_start..line_end;
                 self.edit_text("", cx);
                 actions.push(ItemAction::ActivateLayer("vim:insert"));
-                self.history.break_coalescing();
+                self.buffer.history.break_coalescing();
                 cx.notify();
             }
             "toggle-case" => {
@@ -1489,7 +1484,7 @@ impl EditorState {
                 let content = self.content();
                 let cursor = self.cursor;
                 let sel = (self.selected_range.start, self.selected_range.end);
-                if let Some(cmds) = self.plugins.run_command(cmd_id, &content, cursor, sel) {
+                if let Some(cmds) = self.buffer.plugins.run_command(cmd_id, &content, cursor, sel) {
                     for cmd in cmds {
                         self.dispatch(cmd, window, cx);
                     }
@@ -1556,7 +1551,7 @@ impl EditorState {
                 let content = self.content();
                 let cursor = self.cursor;
                 let sel = (self.selected_range.start, self.selected_range.end);
-                let result = self.plugins.run_command(cmd, &content, cursor, sel);
+                let result = self.buffer.plugins.run_command(cmd, &content, cursor, sel);
                 match result {
                     Some(cmds) => {
                         for c in cmds {
