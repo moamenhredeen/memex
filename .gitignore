@@ -1,1 +1,9 @@
+# rust
 /target
+
+# Jetbrains
+.idea/
+
+
+# vscode
+.vscode/
