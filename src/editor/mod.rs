@@ -40,8 +40,6 @@ pub struct EditorState {
     pub outline: outline::OutlineState,
     /// Status message shown briefly after command execution
     pub status_message: Option<String>,
-    /// When true, the next OS text input event is suppressed (keymap already handled the key).
-    pub suppress_next_input: bool,
     /// Whether vim is enabled (mirrored from KeymapSystem for input handler)
     pub vim_enabled: bool,
     /// Whether insert mode is active (mirrored from KeymapSystem for input handler)
@@ -98,7 +96,6 @@ impl EditorState {
             display_map: display,
             outline: outline::OutlineState::new(),
             status_message: None,
-            suppress_next_input: false,
             vim_enabled: true,
             insert_mode: false,
             drag_state: None,
@@ -998,7 +995,6 @@ impl EditorState {
 
     /// Handle keymap layer activation side effects (vim mode changes).
     pub fn on_layer_activated(&mut self, layer_id: &str, cx: &mut Context<Self>) {
-        self.suppress_next_input = true;
         match layer_id {
             "vim:insert" => {
                 self.buffer.break_undo_coalescing();
@@ -1043,7 +1039,6 @@ impl EditorState {
                     new_content.replace_range(cursor..cursor + next_char_len, &ch.to_string());
                     self.set_content(new_content, window, cx);
                 }
-                self.suppress_next_input = true;
                 cx.notify();
             }
             kind @ ("find_char_forward" | "til_char_forward"
@@ -1065,7 +1060,6 @@ impl EditorState {
                 };
                 self.grammar.last_char_search = Some((ch, static_kind));
                 self.cursor = pos;
-                self.suppress_next_input = true;
                 cx.notify();
             }
             _ => {}
@@ -1087,7 +1081,6 @@ impl EditorState {
         let content = self.content();
         let cursor = self.cursor;
         let result = self.grammar.process(action, key, count, &content, cursor, stack);
-        self.suppress_next_input = true;
         let actions = self.execute_grammar_result(result, count, vim, window, cx);
         actions
     }

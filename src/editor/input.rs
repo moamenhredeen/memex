@@ -50,12 +50,6 @@ impl EntityInputHandler for EditorState {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // If the keymap system already handled this keystroke, skip OS input.
-        if self.suppress_next_input {
-            self.suppress_next_input = false;
-            return;
-        }
-
         // In vim non-insert modes, suppress OS text input entirely.
         if self.vim_enabled && !self.insert_mode {
             return;
@@ -114,12 +108,6 @@ impl EntityInputHandler for EditorState {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // If the keymap system already handled this keystroke, skip OS input.
-        if self.suppress_next_input {
-            self.suppress_next_input = false;
-            return;
-        }
-
         // In vim non-insert modes, suppress OS text input entirely.
         if self.vim_enabled && !self.insert_mode {
             return;

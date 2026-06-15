@@ -6,7 +6,7 @@
 //!   notes/          # flat, ID-based note filenames
 //!   attachments/    # PDFs, images, drawings
 //!   journal/        # daily notes (YYYY-MM-DD.md)
-//!   .memex/         # per-vault cache and config
+//!   .memex/         # per-vault application data
 //! ```
 //!
 //! Missing folders are created when a vault is opened. Existing files

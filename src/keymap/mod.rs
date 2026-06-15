@@ -173,15 +173,12 @@ impl KeymapSystem {
                 ResolvedKey::Pending
             }
             None => {
-                // In vim non-insert modes, unbound single-char keys become SelfInsert
-                // so the grammar can handle them (e.g. i→insert, a→append, o→open-line)
-                if self.vim_enabled && !self.is_insert_active() && !ctrl && !alt {
-                    if let Some(_ch) = key.chars().next() {
-                        if key.chars().count() == 1 {
-                            let count = self.take_count();
-                            return ResolvedKey::Action(Action::SelfInsert, count);
-                        }
-                    }
+                // Unknown keys in vim command modes are consumed as no-ops.
+                // Text insertion belongs exclusively to the OS input path while
+                // insert mode is active.
+                if self.vim_enabled && !self.is_insert_active() {
+                    self.count = None;
+                    return ResolvedKey::Action(Action::Noop, 1);
                 }
                 self.count = None;
                 ResolvedKey::Unhandled
@@ -357,14 +354,28 @@ mod tests {
     }
 
     #[test]
-    fn test_resolve_unbound_key_falls_to_self_insert() {
+    fn test_unbound_normal_key_is_consumed_without_inserting() {
         let mut ks = KeymapSystem::new(true);
-        // 'z' is not bound as a leaf in any active layer, should become SelfInsert
         let result = ks.resolve_key("z", false, false, false);
         match result {
-            ResolvedKey::Action(Action::SelfInsert, _) => {}
-            other => panic!("Expected SelfInsert fallback, got {:?}", other),
+            ResolvedKey::Action(Action::Noop, _) => {}
+            other => panic!("Expected Noop fallback, got {:?}", other),
         }
+    }
+
+    #[test]
+    fn first_printable_key_after_entering_insert_is_unhandled() {
+        let mut ks = KeymapSystem::new(true);
+        assert!(matches!(
+            ks.resolve_key("i", false, false, false),
+            ResolvedKey::Action(Action::ActivateLayer("vim:insert"), _)
+        ));
+        ks.stack.activate_layer("vim:insert");
+
+        assert!(matches!(
+            ks.resolve_key("x", false, false, false),
+            ResolvedKey::Unhandled
+        ));
     }
 
     /// The editor's keymap has the pdf and graph layers *registered* (by

@@ -1,7 +1,7 @@
 use fuzzy_matcher::FuzzyMatcher;
 use fuzzy_matcher::skim::SkimMatcherV2;
 use gpui::*;
-use gpui_component::{h_flex, v_flex, Icon, IconName};
+use gpui_component::{Icon, IconName, h_flex, v_flex};
 
 use crate::command::Command;
 use crate::document::Document;
@@ -18,7 +18,19 @@ const MAX_RESULTS: usize = 15;
 
 // App-wide actions. Registered as gpui actions so they work regardless of
 // which view has focus. Keybindings are wired up in `src/main.rs`.
-actions!(memex, [Save, FindNote, CommandPalette, ToggleVim, FocusLeftPane, FocusRightPane, SearchContent, ToggleBacklinks]);
+actions!(
+    memex,
+    [
+        Save,
+        FindNote,
+        CommandPalette,
+        ToggleVim,
+        FocusLeftPane,
+        FocusRightPane,
+        SearchContent,
+        ToggleBacklinks
+    ]
+);
 
 pub struct Memex {
     state: AppState,
@@ -61,7 +73,8 @@ impl Memex {
         let mut state = AppState::new();
 
         let initial_document = state.restore_document().unwrap_or_else(|| {
-            Document::scratch("# Welcome to Memex
+            Document::scratch(
+                "# Welcome to Memex
 
 Open or create a vault to get started.
 Use **Ctrl+P** to search and create notes.
@@ -87,7 +100,9 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
 | Name | Role | Status |
 |------|------|--------|
 | Alice | Dev | Active |
-| Bob | Design | Away |".to_string())
+| Bob | Design | Away |"
+                    .to_string(),
+            )
         });
 
         let editor_state = cx.new(|cx| EditorState::from_document(initial_document, cx));
@@ -213,7 +228,9 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 let should_refresh = cx
                     .update(|cx| {
                         this.update(cx, |memex, _| {
-                            let Some(watcher) = memex.vault_watcher.as_ref() else { return false; };
+                            let Some(watcher) = memex.vault_watcher.as_ref() else {
+                                return false;
+                            };
                             let mut got_any = false;
                             while let Ok(_batch) = watcher.events.try_recv() {
                                 got_any = true;
@@ -249,20 +266,16 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
 
     /// Returns whether vim mode is enabled. Editor-owned.
     fn vim_enabled(&self, cx: &App) -> bool {
-        self.active_editor_view()
-            .read(cx)
-            .keymap
-            .vim_enabled
+        self.active_editor_view().read(cx).keymap.vim_enabled
     }
 
     fn current_document_path(&self, cx: &App) -> Option<std::path::PathBuf> {
-        self.active_editor_state()
-            .read(cx)
-            .document_path()
+        self.active_editor_state().read(cx).document_path()
     }
 
     fn current_document_title(&self, cx: &App) -> String {
-        self.state.document_title(self.current_document_path(cx).as_deref())
+        self.state
+            .document_title(self.current_document_path(cx).as_deref())
     }
 
     fn current_document_dirty(&self, cx: &App) -> bool {
@@ -311,11 +324,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         }
     }
 
-    fn render_window_layout(
-        &self,
-        layout: &WindowLayout,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    fn render_window_layout(&self, layout: &WindowLayout, cx: &mut Context<Self>) -> AnyElement {
         match layout {
             WindowLayout::Window(workspace_window) => {
                 let id = workspace_window.id;
@@ -359,28 +368,32 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
 
     fn activate_note_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let vim = self.vim_enabled(cx);
-        self.minibuffer.activate(DelegateKind::NoteSearch, "Find note:", vim);
+        self.minibuffer
+            .activate(DelegateKind::NoteSearch, "Find note:", vim);
         self.minibuffer_focus.focus(window);
         cx.notify();
     }
 
     fn activate_split_note_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let vim = self.vim_enabled(cx);
-        self.minibuffer.activate(DelegateKind::SplitNoteSearch, "Split open:", vim);
+        self.minibuffer
+            .activate(DelegateKind::SplitNoteSearch, "Split open:", vim);
         self.minibuffer_focus.focus(window);
         cx.notify();
     }
 
     fn activate_vault_switch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let vim = self.vim_enabled(cx);
-        self.minibuffer.activate(DelegateKind::VaultSwitch, "Switch vault:", vim);
+        self.minibuffer
+            .activate(DelegateKind::VaultSwitch, "Switch vault:", vim);
         self.minibuffer_focus.focus(window);
         cx.notify();
     }
 
     fn activate_vault_open(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let vim = self.vim_enabled(cx);
-        self.minibuffer.activate(DelegateKind::VaultOpen, "Open vault:", vim);
+        self.minibuffer
+            .activate(DelegateKind::VaultOpen, "Open vault:", vim);
         // Seed with home directory
         if let Some(home) = dirs::home_dir() {
             let seed = format!("{}/", home.to_string_lossy());
@@ -401,14 +414,16 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
 
     fn activate_wikilink_autocomplete(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let vim = self.vim_enabled(cx);
-        self.minibuffer.activate(DelegateKind::WikilinkAutocomplete, "Link to:", vim);
+        self.minibuffer
+            .activate(DelegateKind::WikilinkAutocomplete, "Link to:", vim);
         self.minibuffer_focus.focus(window);
         cx.notify();
     }
 
     fn activate_backlinks(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let vim = self.vim_enabled(cx);
-        self.minibuffer.activate(DelegateKind::Backlinks, "Backlinks:", vim);
+        self.minibuffer
+            .activate(DelegateKind::Backlinks, "Backlinks:", vim);
         self.minibuffer_focus.focus(window);
         cx.notify();
     }
@@ -433,14 +448,16 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
 
     fn activate_orphans(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let vim = self.vim_enabled(cx);
-        self.minibuffer.activate(DelegateKind::Orphans, "Orphans:", vim);
+        self.minibuffer
+            .activate(DelegateKind::Orphans, "Orphans:", vim);
         self.minibuffer_focus.focus(window);
         cx.notify();
     }
 
     fn activate_content_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let vim = self.vim_enabled(cx);
-        self.minibuffer.activate(DelegateKind::ContentSearch, "Search:", vim);
+        self.minibuffer
+            .activate(DelegateKind::ContentSearch, "Search:", vim);
         self.minibuffer_focus.focus(window);
         cx.notify();
     }
@@ -457,8 +474,25 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         for item in self.window_items.values() {
             item.set_theme(theme, cx);
         }
-        self.minibuffer.set_message(format!("Theme: {}", theme.name));
+        self.minibuffer
+            .set_message(format!("Theme: {}", theme.name));
         cx.notify();
+    }
+
+    fn select_theme(&mut self, theme: Theme, cx: &mut Context<Self>) {
+        match crate::config::save_theme(theme.id) {
+            Ok(path) => {
+                self.state.config.theme = theme.id.to_string();
+                self.apply_theme(theme, cx);
+                self.minibuffer
+                    .set_message(format!("Theme: {} ({})", theme.name, path.display()));
+            }
+            Err(error) => {
+                self.minibuffer
+                    .set_message(format!("Failed to save theme: {error}"));
+                cx.notify();
+            }
+        }
     }
 
     /// Open or create today's journal note at `journal/YYYY-MM-DD.md`.
@@ -486,13 +520,15 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             let content = match crate::vault::frontmatter::write(&fm, &body) {
                 Ok(c) => c,
                 Err(e) => {
-                    self.minibuffer.set_message(format!("journal write failed: {}", e));
+                    self.minibuffer
+                        .set_message(format!("journal write failed: {}", e));
                     cx.notify();
                     return;
                 }
             };
             if let Err(e) = crate::fs::save_note(&path, &content) {
-                self.minibuffer.set_message(format!("journal create failed: {}", e));
+                self.minibuffer
+                    .set_message(format!("journal create failed: {}", e));
                 cx.notify();
                 return;
             }
@@ -509,7 +545,12 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
     /// and appends the previous title to `aliases:` so existing
     /// `[[old title]]` wikilinks keep resolving. The filename does not
     /// change — IDs stay stable.
-    fn rename_current_note(&mut self, new_title: &str, window: &mut Window, cx: &mut Context<Self>) {
+    fn rename_current_note(
+        &mut self,
+        new_title: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let Some(path) = self.current_document_path(cx) else {
             self.minibuffer.set_message("No note open");
             cx.notify();
@@ -557,7 +598,8 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         if let Some(v) = self.state.vault.as_mut() {
             let _ = v.refresh();
         }
-        self.minibuffer.set_message(format!("Renamed to '{}'", new_title));
+        self.minibuffer
+            .set_message(format!("Renamed to '{}'", new_title));
         cx.notify();
     }
 
@@ -584,13 +626,19 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             return;
         };
 
-        let timestamp = crate::vault::id::iso_now().replace(':', "").replace('-', "");
+        let timestamp = crate::vault::id::iso_now()
+            .replace(':', "")
+            .replace('-', "");
         // Trim the trailing Z so the filename doesn't carry timezone noise.
         let ts_clean = timestamp.trim_end_matches('Z');
 
         // Try image first. Fall back to treating string content as a path.
         let (filename, bytes) = if let Some(image) = item.entries().iter().find_map(|e| {
-            if let ClipboardEntry::Image(img) = e { Some(img.clone()) } else { None }
+            if let ClipboardEntry::Image(img) = e {
+                Some(img.clone())
+            } else {
+                None
+            }
         }) {
             let ext = match image.format {
                 ImageFormat::Png => "png",
@@ -613,17 +661,15 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                         return;
                     }
                 };
-                let ext = src
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .unwrap_or("bin");
+                let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("bin");
                 let stem = src
                     .file_stem()
                     .and_then(|s| s.to_str())
                     .unwrap_or("attachment");
                 (format!("{}-{}.{}", ts_clean, stem, ext), bytes)
             } else {
-                self.minibuffer.set_message("Clipboard has no image or file path");
+                self.minibuffer
+                    .set_message("Clipboard has no image or file path");
                 cx.notify();
                 return;
             }
@@ -635,7 +681,8 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
 
         let dest = attachments_dir.join(&filename);
         if let Err(e) = std::fs::write(&dest, &bytes) {
-            self.minibuffer.set_message(format!("attach write failed: {}", e));
+            self.minibuffer
+                .set_message(format!("attach write failed: {}", e));
             cx.notify();
             return;
         }
@@ -666,7 +713,8 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         };
         let ids = vault.index.notes_with_tag(tag).to_vec();
         if ids.is_empty() {
-            self.minibuffer.set_message(format!("No notes tagged #{}", tag));
+            self.minibuffer
+                .set_message(format!("No notes tagged #{}", tag));
             cx.notify();
             return;
         }
@@ -685,22 +733,20 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             state.edit_text(&block, cx);
         });
         let _ = window;
-        self.minibuffer.set_message(format!("Inserted {} links", titles.len()));
+        self.minibuffer
+            .set_message(format!("Inserted {} links", titles.len()));
         cx.notify();
     }
 
     /// Follow a [[wikilink]]: open the note if it exists, create it otherwise.
-    fn follow_wikilink(
-        &mut self,
-        title: String,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn follow_wikilink(&mut self, title: String, window: &mut Window, cx: &mut Context<Self>) {
         // Search for a matching note in the vault
         if let Some(vault) = &self.state.vault {
             let titles = vault.note_titles();
             let target_lower = title.to_lowercase();
-            if let Some((_, path)) = titles.iter().find(|(t, _)| t.to_lowercase() == target_lower)
+            if let Some((_, path)) = titles
+                .iter()
+                .find(|(t, _)| t.to_lowercase() == target_lower)
             {
                 let path = path.clone();
                 self.open_note_by_path(path, window, cx);
@@ -709,7 +755,8 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         }
         // No match — create the note
         self.create_note_by_title(&title, window, cx);
-        self.minibuffer.set_message(format!("Created \"{}\"", title));
+        self.minibuffer
+            .set_message(format!("Created \"{}\"", title));
     }
 
     fn dismiss_minibuffer(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -728,7 +775,9 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         cx: &mut Context<Self>,
     ) {
         let candidates = self.get_candidates(cx);
-        let action = self.minibuffer.handle_key(key, ctrl, shift, candidates.len());
+        let action = self
+            .minibuffer
+            .handle_key(key, ctrl, shift, candidates.len());
 
         match action {
             MinibufferAction::Updated => {
@@ -769,39 +818,17 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
     /// Get candidates for the current delegate kind.
     fn get_candidates(&self, cx: &App) -> Vec<Candidate> {
         match &self.minibuffer.delegate_kind {
-            DelegateKind::Command => {
-                self.palette_candidates(&self.minibuffer.input)
-            }
-            DelegateKind::NoteSearch => {
-                self.get_note_candidates()
-            }
-            DelegateKind::SplitNoteSearch => {
-                self.get_note_candidates()
-            }
-            DelegateKind::WikilinkAutocomplete => {
-                self.get_wikilink_candidates()
-            }
-            DelegateKind::Backlinks => {
-                self.get_backlink_candidates(cx)
-            }
-            DelegateKind::VaultSwitch => {
-                self.get_vault_switch_candidates()
-            }
-            DelegateKind::VaultOpen => {
-                self.get_vault_open_candidates()
-            }
-            DelegateKind::TagList => {
-                self.get_tag_list_candidates()
-            }
-            DelegateKind::TagNotes(tag) => {
-                self.get_tag_notes_candidates(tag)
-            }
-            DelegateKind::Orphans => {
-                self.get_orphans_candidates()
-            }
-            DelegateKind::ContentSearch => {
-                self.get_content_search_candidates()
-            }
+            DelegateKind::Command => self.palette_candidates(&self.minibuffer.input),
+            DelegateKind::NoteSearch => self.get_note_candidates(),
+            DelegateKind::SplitNoteSearch => self.get_note_candidates(),
+            DelegateKind::WikilinkAutocomplete => self.get_wikilink_candidates(),
+            DelegateKind::Backlinks => self.get_backlink_candidates(cx),
+            DelegateKind::VaultSwitch => self.get_vault_switch_candidates(),
+            DelegateKind::VaultOpen => self.get_vault_open_candidates(),
+            DelegateKind::TagList => self.get_tag_list_candidates(),
+            DelegateKind::TagNotes(tag) => self.get_tag_notes_candidates(tag),
+            DelegateKind::Orphans => self.get_orphans_candidates(),
+            DelegateKind::ContentSearch => self.get_content_search_candidates(),
             DelegateKind::Theme => self.get_theme_candidates(),
             DelegateKind::Item(id) => {
                 self.focused_item()
@@ -899,10 +926,8 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                         self.open_vault_by_path(path, window, cx);
                         self.activate_note_search(window, cx);
                     } else {
-                        self.minibuffer.set_message(format!(
-                            "Not a directory: {}",
-                            candidate.data
-                        ));
+                        self.minibuffer
+                            .set_message(format!("Not a directory: {}", candidate.data));
                     }
                 } else if !input.is_empty() {
                     let path = std::path::PathBuf::from(&input);
@@ -911,7 +936,8 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                         self.open_vault_by_path(path, window, cx);
                         self.activate_note_search(window, cx);
                     } else {
-                        self.minibuffer.set_message(format!("Not a directory: {}", input));
+                        self.minibuffer
+                            .set_message(format!("Not a directory: {}", input));
                     }
                 }
             }
@@ -948,13 +974,15 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     && let Some(theme) = theme::by_id(&candidate.data)
                 {
                     self.dismiss_minibuffer(window, cx);
-                    self.apply_theme(theme, cx);
+                    self.select_theme(theme, cx);
                 }
             }
             DelegateKind::Item(ref id) => {
                 let candidate = candidates.get(selected);
                 let id = id.clone();
-                let actions = self.focused_item().handle_confirm(&id, &input, candidate, cx);
+                let actions = self
+                    .focused_item()
+                    .handle_confirm(&id, &input, candidate, cx);
                 self.process_item_actions(actions, window, cx);
             }
         }
@@ -976,9 +1004,14 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                         self.minibuffer.set_message(msg);
                     }
                 }
-                ItemAction::ActivateDelegate { id, prompt, highlight_input: _ } => {
+                ItemAction::ActivateDelegate {
+                    id,
+                    prompt,
+                    highlight_input: _,
+                } => {
                     let vim = self.vim_enabled(cx);
-                    self.minibuffer.activate(DelegateKind::Item(id), &prompt, vim);
+                    self.minibuffer
+                        .activate(DelegateKind::Item(id), &prompt, vim);
                     self.minibuffer_focus.focus(window);
                 }
                 ItemAction::Dismiss => {
@@ -991,7 +1024,8 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     // Editor-owned layers now — route into the editor view.
                     self.active_editor_view().update(cx, |view, cx| {
                         view.keymap.stack.activate_layer(layer_id);
-                        view.state.update(cx, |s, cx| s.on_layer_activated(layer_id, cx));
+                        view.state
+                            .update(cx, |s, cx| s.on_layer_activated(layer_id, cx));
                         view.sync_state_vim_flags(cx);
                         cx.emit(EditorViewEvent::VimStateChanged);
                     });
@@ -1132,9 +1166,11 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     let removed = self.state.registry.forget_vault(&path);
                     let _ = self.state.registry.save();
                     if removed {
-                        self.minibuffer.set_message(format!("Forgot vault: {}", arg));
+                        self.minibuffer
+                            .set_message(format!("Forgot vault: {}", arg));
                     } else {
-                        self.minibuffer.set_message(format!("Not in registry: {}", arg));
+                        self.minibuffer
+                            .set_message(format!("Not in registry: {}", arg));
                     }
                     cx.notify();
                 }
@@ -1237,7 +1273,12 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
 
         // Titles — canonical names.
         let mut entries: Vec<(i64, String, Option<String>, String)> = Vec::new();
-        for note in vault.contents.notes.iter().chain(vault.contents.journal.iter()) {
+        for note in vault
+            .contents
+            .notes
+            .iter()
+            .chain(vault.contents.journal.iter())
+        {
             if note.path.extension().and_then(|e| e.to_str()) == Some("pdf") {
                 continue;
             }
@@ -1349,7 +1390,11 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
 
         let build = |tag: &str, count: usize| Candidate {
             label: format!("#{}", tag),
-            detail: Some(format!("{} note{}", count, if count == 1 { "" } else { "s" })),
+            detail: Some(format!(
+                "{} note{}",
+                count,
+                if count == 1 { "" } else { "s" }
+            )),
             is_action: false,
             data: tag.to_string(),
         };
@@ -1474,8 +1519,15 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         let needle = query.to_lowercase();
 
         let mut hits: Vec<(usize, String, std::path::PathBuf, String)> = Vec::new();
-        for note in vault.contents.notes.iter().chain(vault.contents.journal.iter()) {
-            let Ok(body) = std::fs::read_to_string(&note.path) else { continue; };
+        for note in vault
+            .contents
+            .notes
+            .iter()
+            .chain(vault.contents.journal.iter())
+        {
+            let Ok(body) = std::fs::read_to_string(&note.path) else {
+                continue;
+            };
             let count = body.to_lowercase().matches(&needle).count();
             if count == 0 {
                 continue;
@@ -1487,7 +1539,15 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         hits.into_iter()
             .take(MAX_RESULTS)
             .map(|(count, title, path, snippet)| Candidate {
-                label: format!("{}{}", title, if count > 1 { format!(" ({}×)", count) } else { String::new() }),
+                label: format!(
+                    "{}{}",
+                    title,
+                    if count > 1 {
+                        format!(" ({}×)", count)
+                    } else {
+                        String::new()
+                    }
+                ),
                 detail: Some(snippet),
                 is_action: false,
                 data: path.to_string_lossy().to_string(),
@@ -1661,10 +1721,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     if !p.is_dir() {
                         return false;
                     }
-                    let name = p
-                        .file_name()
-                        .and_then(|s| s.to_str())
-                        .unwrap_or("");
+                    let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
                     if name.starts_with('.') {
                         return false;
                     }
@@ -1704,7 +1761,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     .any(|vp| *vp == path);
                 let suffix = if is_registered { "  ★" } else { "" };
                 candidates.push(Candidate {
-                    label: format!("{}/{}",  name, suffix),
+                    label: format!("{}/{}", name, suffix),
                     detail: Some(path.to_string_lossy().to_string()),
                     is_action: false,
                     data: path.to_string_lossy().to_string(),
@@ -1718,34 +1775,202 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
     /// Global commands available in every item context.
     fn global_commands() -> Vec<Command> {
         vec![
-            Command { id: "write", name: "Save", description: "Save current note to disk", aliases: &["w", "save"], binding: Some(":w") },
-            Command { id: "quit", name: "Quit", description: "Quit memex", aliases: &["q", "exit"], binding: Some(":q") },
-            Command { id: "wq", name: "Save and Quit", description: "Save current note and quit", aliases: &["x"], binding: Some(":wq") },
-            Command { id: "vault-switch", name: "Switch Vault", description: "Switch to a recent vault", aliases: &["vault", "vaults", "switch-vault"], binding: Some(":vault-switch") },
-            Command { id: "vault-open", name: "Open Vault", description: "Browse filesystem to open a vault", aliases: &["open-vault"], binding: Some(":vault-open") },
-            Command { id: "notes", name: "Find Note", description: "Search and open a note in current vault", aliases: &["find-note", "find", "note"], binding: Some("Ctrl+P") },
-            Command { id: "edit", name: "Edit File", description: "Open a file by path", aliases: &["e", "open"], binding: Some(":e <path>") },
-            Command { id: "set", name: "Set Option", description: "Set an editor option", aliases: &[], binding: Some(":set <option>") },
-            Command { id: "set-vim", name: "Enable Vim Mode", description: "Enable vim keybindings", aliases: &[], binding: None },
-            Command { id: "set-novim", name: "Disable Vim Mode", description: "Disable vim keybindings", aliases: &[], binding: None },
-            Command { id: "nohlsearch", name: "Clear Search Highlighting", description: "Remove search result highlighting", aliases: &["noh"], binding: Some(":noh") },
-            Command { id: "toggle-vim", name: "Toggle Vim Mode", description: "Toggle vim mode on/off", aliases: &[], binding: None },
-            Command { id: "open-graph", name: "Open Graph", description: "Open the vault graph in a split panel", aliases: &["graph"], binding: None },
-            Command { id: "split-open", name: "Split Open", description: "Open a note or PDF in the right split panel", aliases: &["vs", "vsplit", "split"], binding: None },
-            Command { id: "close-split", name: "Close Split", description: "Close the right split panel", aliases: &[], binding: None },
-            Command { id: "only-window", name: "Only Window", description: "Make the focused window occupy the workspace", aliases: &["only"], binding: Some(":only") },
-            Command { id: "backlinks", name: "Backlinks", description: "Show notes that link to the current note", aliases: &["bl", "references"], binding: None },
-            Command { id: "today", name: "Today's Journal", description: "Open or create today's journal note", aliases: &["daily", "journal"], binding: None },
-            Command { id: "tags", name: "Tags", description: "List all tags in the vault", aliases: &[], binding: None },
-            Command { id: "tag", name: "Tag Search", description: "Notes with a specific tag", aliases: &[], binding: None },
-            Command { id: "orphans", name: "Orphan Notes", description: "Notes with no incoming or outgoing links", aliases: &[], binding: None },
-            Command { id: "search-content", name: "Search Content", description: "Full-text search across notes", aliases: &["search", "grep"], binding: Some("Ctrl+Shift+F") },
-            Command { id: "rename", name: "Rename Note", description: "Update the current note's title (no file rename — IDs stay stable)", aliases: &["rn"], binding: Some(":rename <title>") },
-            Command { id: "insert-links-by-tag", name: "Insert Links by Tag", description: "Insert wikilinks to all notes with a tag (MOC helper)", aliases: &["moc"], binding: Some(":moc <tag>") },
-            Command { id: "vault-forget", name: "Forget Vault", description: "Remove a vault from the recent-vaults list", aliases: &["forget-vault"], binding: Some(":vault-forget <path>") },
-            Command { id: "toggle-backlinks", name: "Toggle Backlinks Panel", description: "Show or hide the backlinks panel below the editor", aliases: &["backlinks-panel"], binding: Some("Ctrl+Shift+B") },
-            Command { id: "attach", name: "Attach from Clipboard", description: "Save clipboard image to attachments/ and insert a link", aliases: &["paste-image"], binding: None },
-            Command { id: "theme", name: "Theme", description: "Select an application theme", aliases: &["themes", "color-scheme"], binding: Some(":theme") },
+            Command {
+                id: "write",
+                name: "Save",
+                description: "Save current note to disk",
+                aliases: &["w", "save"],
+                binding: Some(":w"),
+            },
+            Command {
+                id: "quit",
+                name: "Quit",
+                description: "Quit memex",
+                aliases: &["q", "exit"],
+                binding: Some(":q"),
+            },
+            Command {
+                id: "wq",
+                name: "Save and Quit",
+                description: "Save current note and quit",
+                aliases: &["x"],
+                binding: Some(":wq"),
+            },
+            Command {
+                id: "vault-switch",
+                name: "Switch Vault",
+                description: "Switch to a recent vault",
+                aliases: &["vault", "vaults", "switch-vault"],
+                binding: Some(":vault-switch"),
+            },
+            Command {
+                id: "vault-open",
+                name: "Open Vault",
+                description: "Browse filesystem to open a vault",
+                aliases: &["open-vault"],
+                binding: Some(":vault-open"),
+            },
+            Command {
+                id: "notes",
+                name: "Find Note",
+                description: "Search and open a note in current vault",
+                aliases: &["find-note", "find", "note"],
+                binding: Some("Ctrl+P"),
+            },
+            Command {
+                id: "edit",
+                name: "Edit File",
+                description: "Open a file by path",
+                aliases: &["e", "open"],
+                binding: Some(":e <path>"),
+            },
+            Command {
+                id: "set",
+                name: "Set Option",
+                description: "Set an editor option",
+                aliases: &[],
+                binding: Some(":set <option>"),
+            },
+            Command {
+                id: "set-vim",
+                name: "Enable Vim Mode",
+                description: "Enable vim keybindings",
+                aliases: &[],
+                binding: None,
+            },
+            Command {
+                id: "set-novim",
+                name: "Disable Vim Mode",
+                description: "Disable vim keybindings",
+                aliases: &[],
+                binding: None,
+            },
+            Command {
+                id: "nohlsearch",
+                name: "Clear Search Highlighting",
+                description: "Remove search result highlighting",
+                aliases: &["noh"],
+                binding: Some(":noh"),
+            },
+            Command {
+                id: "toggle-vim",
+                name: "Toggle Vim Mode",
+                description: "Toggle vim mode on/off",
+                aliases: &[],
+                binding: None,
+            },
+            Command {
+                id: "open-graph",
+                name: "Open Graph",
+                description: "Open the vault graph in a split panel",
+                aliases: &["graph"],
+                binding: None,
+            },
+            Command {
+                id: "split-open",
+                name: "Split Open",
+                description: "Open a note or PDF in the right split panel",
+                aliases: &["vs", "vsplit", "split"],
+                binding: None,
+            },
+            Command {
+                id: "close-split",
+                name: "Close Split",
+                description: "Close the right split panel",
+                aliases: &[],
+                binding: None,
+            },
+            Command {
+                id: "only-window",
+                name: "Only Window",
+                description: "Make the focused window occupy the workspace",
+                aliases: &["only"],
+                binding: Some(":only"),
+            },
+            Command {
+                id: "backlinks",
+                name: "Backlinks",
+                description: "Show notes that link to the current note",
+                aliases: &["bl", "references"],
+                binding: None,
+            },
+            Command {
+                id: "today",
+                name: "Today's Journal",
+                description: "Open or create today's journal note",
+                aliases: &["daily", "journal"],
+                binding: None,
+            },
+            Command {
+                id: "tags",
+                name: "Tags",
+                description: "List all tags in the vault",
+                aliases: &[],
+                binding: None,
+            },
+            Command {
+                id: "tag",
+                name: "Tag Search",
+                description: "Notes with a specific tag",
+                aliases: &[],
+                binding: None,
+            },
+            Command {
+                id: "orphans",
+                name: "Orphan Notes",
+                description: "Notes with no incoming or outgoing links",
+                aliases: &[],
+                binding: None,
+            },
+            Command {
+                id: "search-content",
+                name: "Search Content",
+                description: "Full-text search across notes",
+                aliases: &["search", "grep"],
+                binding: Some("Ctrl+Shift+F"),
+            },
+            Command {
+                id: "rename",
+                name: "Rename Note",
+                description: "Update the current note's title (no file rename — IDs stay stable)",
+                aliases: &["rn"],
+                binding: Some(":rename <title>"),
+            },
+            Command {
+                id: "insert-links-by-tag",
+                name: "Insert Links by Tag",
+                description: "Insert wikilinks to all notes with a tag (MOC helper)",
+                aliases: &["moc"],
+                binding: Some(":moc <tag>"),
+            },
+            Command {
+                id: "vault-forget",
+                name: "Forget Vault",
+                description: "Remove a vault from the recent-vaults list",
+                aliases: &["forget-vault"],
+                binding: Some(":vault-forget <path>"),
+            },
+            Command {
+                id: "toggle-backlinks",
+                name: "Toggle Backlinks Panel",
+                description: "Show or hide the backlinks panel below the editor",
+                aliases: &["backlinks-panel"],
+                binding: Some("Ctrl+Shift+B"),
+            },
+            Command {
+                id: "attach",
+                name: "Attach from Clipboard",
+                description: "Save clipboard image to attachments/ and insert a link",
+                aliases: &["paste-image"],
+                binding: None,
+            },
+            Command {
+                id: "theme",
+                name: "Theme",
+                description: "Select an application theme",
+                aliases: &["themes", "color-scheme"],
+                binding: Some(":theme"),
+            },
         ]
     }
 
@@ -1779,21 +2004,25 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         let all_cmds: Vec<&Command> = item_cmds.iter().chain(global_cmds.iter()).collect();
 
         if query.is_empty() {
-            return all_cmds.iter()
+            return all_cmds
+                .iter()
                 .take(MAX_RESULTS)
                 .map(|c| command_to_candidate(c))
                 .collect();
         }
 
         let matcher = SkimMatcherV2::default();
-        let mut scored: Vec<(i64, &Command)> = all_cmds.iter()
+        let mut scored: Vec<(i64, &Command)> = all_cmds
+            .iter()
             .filter_map(|c| {
                 let scores = [
                     matcher.fuzzy_match(c.name, query),
                     matcher.fuzzy_match(c.description, query),
                     matcher.fuzzy_match(c.id, query),
                 ];
-                let alias_score = c.aliases.iter()
+                let alias_score = c
+                    .aliases
+                    .iter()
                     .filter_map(|a| matcher.fuzzy_match(a, query))
                     .max();
                 let best = scores.into_iter().flatten().chain(alias_score).max();
@@ -1802,7 +2031,8 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             .collect();
 
         scored.sort_by(|a, b| b.0.cmp(&a.0));
-        scored.into_iter()
+        scored
+            .into_iter()
             .take(MAX_RESULTS)
             .map(|(_, c)| command_to_candidate(c))
             .collect()
@@ -1860,7 +2090,8 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 let document = match Document::open(path) {
                     Ok(document) => document,
                     Err(e) => {
-                        self.minibuffer.set_message(format!("Failed to read: {}", e));
+                        self.minibuffer
+                            .set_message(format!("Failed to read: {}", e));
                         return;
                     }
                 };
@@ -1982,10 +2213,9 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let buffer = self
-            .workspace
-            .buffers
-            .open_with(resource, || BufferContent::Markdown(EditorBuffer::new(document)));
+        let buffer = self.workspace.buffers.open_with(resource, || {
+            BufferContent::Markdown(EditorBuffer::new(document))
+        });
         self.show_markdown_buffer_in_editor(buffer, window, cx);
     }
 
@@ -1999,7 +2229,8 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         let raw_bytes = match std::fs::read(path) {
             Ok(b) => b,
             Err(e) => {
-                self.minibuffer.set_message(format!("Failed to read PDF: {}", e));
+                self.minibuffer
+                    .set_message(format!("Failed to read PDF: {}", e));
                 cx.notify();
                 return None;
             }
@@ -2085,11 +2316,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         self.focus_workspace_window(secondary, window, cx);
     }
 
-    fn open_graph(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn open_graph(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let key = ResourceKey::Graph(
             self.state
                 .vault
@@ -2127,7 +2354,6 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> ActiveItem {
-
         // Build graph from vault
         let graph_state = cx.new(|cx| {
             let mut gs = GraphState::new(cx);
@@ -2149,11 +2375,9 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         let graph_sub = cx.subscribe_in(
             &graph_state,
             window,
-            |this, _entity, ev: &GraphEvent, window, cx| {
-                match ev {
-                    GraphEvent::OpenNote(path) => {
-                        this.open_note_by_path(path.clone(), window, cx);
-                    }
+            |this, _entity, ev: &GraphEvent, window, cx| match ev {
+                GraphEvent::OpenNote(path) => {
+                    this.open_note_by_path(path.clone(), window, cx);
                 }
             },
         );
@@ -2181,11 +2405,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         }
     }
 
-    fn close_window(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn close_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let closed = self.workspace.focused_window;
         if self.workspace.close_focused() {
             self.window_items.remove(closed);
@@ -2230,16 +2450,16 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     .as_ref()
                     .map(|vault| vault.path.clone())
                     .unwrap_or_default();
-                (ResourceKey::Scratch(vault_path), Document::scratch(String::new()))
+                (
+                    ResourceKey::Scratch(vault_path),
+                    Document::scratch(String::new()),
+                )
             }
             Err(e) => {
                 eprintln!("failed to open vault: {}", e);
                 return;
             }
         };
-        let configured_theme = theme::by_id(&self.state.config.theme)
-            .unwrap_or(theme::SOLARIZED_LIGHT);
-        self.apply_theme(configured_theme, cx);
         self.open_document_buffer(resource, document, window, cx);
         self.start_vault_watcher();
         cx.notify();
@@ -2252,7 +2472,9 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
     fn start_vault_watcher(&mut self) {
         // Drop the previous watcher first so its channel closes.
         self.vault_watcher = None;
-        let Some(vault) = self.state.vault.as_ref() else { return; };
+        let Some(vault) = self.state.vault.as_ref() else {
+            return;
+        };
         match crate::vault::VaultWatcher::start(&vault.path) {
             Ok(w) => self.vault_watcher = Some(w),
             Err(e) => eprintln!("vault watcher failed to start: {}", e),
@@ -2335,17 +2557,10 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     ),
             )
             // Right: window controls — NOT inside the drag area, so Close hitbox wins
-            .child(
-                h_flex()
-                    .gap(px(0.))
-                    .child(self.title_bar_close_button(cx)),
-            )
+            .child(h_flex().gap(px(0.)).child(self.title_bar_close_button(cx)))
     }
 
-    fn title_bar_close_button(
-        &self,
-        cx: &mut Context<Self>,
-    ) -> impl IntoElement {
+    fn title_bar_close_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .id("close-btn")
             .w(px(24.))
@@ -2358,10 +2573,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             .text_size(px(12.))
             .bg(rgba(0x00000010))
             .cursor_pointer()
-            .hover(|s| s
-                .text_color(rgba(0x00000010))
-                .bg(rgba(0xFF000040))
-            )
+            .hover(|s| s.text_color(rgba(0x00000010)).bg(rgba(0xFF000040)))
             // Register close hitbox for Windows hit testing
             .window_control_area(WindowControlArea::Close)
             .on_click(cx.listener(|_this, _e: &ClickEvent, _window, cx| {
@@ -2417,13 +2629,11 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     .py(px(6.))
                     .text_size(px(12.))
                     .text_color(rgb(self.theme.text_muted))
-                    .child(
-                        if current_title.is_empty() {
-                            "No note open."
-                        } else {
-                            "No backlinks yet. Link to this note from another note with [[…]]."
-                        },
-                    ),
+                    .child(if current_title.is_empty() {
+                        "No note open."
+                    } else {
+                        "No backlinks yet. Link to this note from another note with [[…]]."
+                    }),
             );
         } else {
             for (title, path) in backlinks {
@@ -2479,36 +2689,28 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         let show_non_editor = focused_item.is_pdf() || focused_item.is_graph();
         let mode_badge = if show_non_editor {
             let (label, color) = focused_item.mode_badge();
-            div()
-                .px(px(6.))
-                .py(px(1.))
-                .bg(rgb(color))
-                .child(
-                    div()
-                        .text_size(px(11.))
-                        .font_weight(FontWeight::BOLD)
-                        .text_color(rgb(self.theme.background))
-                        .child(label),
-                )
+            div().px(px(6.)).py(px(1.)).bg(rgb(color)).child(
+                div()
+                    .text_size(px(14.))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(rgb(self.theme.background))
+                    .child(label),
+            )
         } else if vim_enabled {
             let (label, bg) = match vim_state.as_deref() {
-                Some("NORMAL") => ("NOR", rgb(self.theme.accent)),
-                Some("INSERT") => ("INS", rgb(self.theme.success)),
-                Some("VISUAL") => ("VIS", rgb(self.theme.violet)),
-                Some("V-LINE") => ("V-L", rgb(self.theme.violet)),
+                Some("NORMAL") => ("NORMAL", rgb(self.theme.accent)),
+                Some("INSERT") => ("INSERT", rgb(self.theme.success)),
+                Some("VISUAL") => ("VISUAL", rgb(self.theme.violet)),
+                Some("V-LINE") => ("V-LINE", rgb(self.theme.violet)),
                 _ => ("NOR", rgb(self.theme.accent)),
             };
-            div()
-                .px(px(6.))
-                .py(px(1.))
-                .bg(bg)
-                .child(
-                    div()
-                        .text_size(px(11.))
-                        .font_weight(FontWeight::BOLD)
-                        .text_color(rgb(self.theme.background))
-                        .child(label),
-                )
+            div().px(px(6.)).py(px(1.)).bg(bg).child(
+                div()
+                    .text_size(px(14.))
+                    .font_weight(FontWeight::BOLD)
+                    .text_color(rgb(self.theme.background))
+                    .child(label),
+            )
         } else {
             div()
                 .px(px(6.))
@@ -2516,7 +2718,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 .bg(rgb(self.theme.success))
                 .child(
                     div()
-                        .text_size(px(11.))
+                        .text_size(px(14.))
                         .font_weight(FontWeight::BOLD)
                         .text_color(rgb(self.theme.background))
                         .child("EDT"),
@@ -2532,30 +2734,26 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             .child(mode_badge)
             // Vault + file
             .child(
-                div()
-                    .px(px(8.))
-                    .child(
-                        div()
-                            .text_size(px(11.))
-                            .text_color(rgb(self.theme.text_strong))
-                            .child(format!(
-                                " {} › {}{}",
-                                vault_name, note_title, dirty_indicator
-                            )),
-                    ),
+                div().px(px(8.)).child(
+                    div()
+                        .text_size(px(14.))
+                        .text_color(rgb(self.theme.text_strong))
+                        .child(format!(
+                            " {} › {}{}",
+                            vault_name, note_title, dirty_indicator
+                        )),
+                ),
             )
             // Spacer
             .child(div().flex_1())
             // Position (always L:C)
             .child(
-                div()
-                    .px(px(8.))
-                    .child(
-                        div()
-                            .text_size(px(11.))
-                            .text_color(rgb(self.theme.text_muted))
-                            .child(position_text),
-                    ),
+                div().px(px(8.)).child(
+                    div()
+                        .text_size(px(14.))
+                        .text_color(rgb(self.theme.text_muted))
+                        .child(position_text),
+                ),
             )
     }
 
@@ -2563,9 +2761,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
     /// Always visible like emacs: shows echo area messages when idle,
     /// prompt + input + vertico candidates when active.
     fn render_minibuffer(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let base = v_flex()
-            .w_full()
-            .bg(rgb(self.theme.background));
+        let base = v_flex().w_full().bg(rgb(self.theme.background));
 
         if !self.minibuffer.active {
             // Idle — echo area: show message or status from editor
@@ -2576,17 +2772,12 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 .or_else(|| self.active_editor_state().read(cx).status_message.clone())
                 .unwrap_or_default();
             return base.child(
-                h_flex()
-                    .w_full()
-                    .h(px(22.))
-                    .px(px(8.))
-                    .py(px(3.))
-                    .child(
-                        div()
-                            .text_size(px(13.))
-                            .text_color(rgb(self.theme.text_muted))
-                            .child(msg),
-                    ),
+                h_flex().w_full().h(px(22.)).px(px(8.)).py(px(3.)).child(
+                    div()
+                        .text_size(px(13.))
+                        .text_color(rgb(self.theme.text_muted))
+                        .child(msg),
+                ),
             );
         }
 
@@ -2701,16 +2892,12 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                         div()
                             .text_size(px(13.))
                             .text_color(rgb(self.theme.text_strong))
-                            .child(format!(
-                                "{}{}{}",
-                                before_cursor, cursor_char, after_cursor
-                            )),
+                            .child(format!("{}{}{}", before_cursor, cursor_char, after_cursor)),
                     ),
             )
             // Vertico candidate list
             .child(items)
     }
-
 }
 
 impl Render for Memex {
@@ -2724,19 +2911,27 @@ impl Render for Memex {
             .font_family("FiraCode Nerd Font")
             // App-wide actions — work regardless of which view has focus.
             .on_action(cx.listener(|this, _: &Save, window, cx| {
-                if this.minibuffer.active { return; }
+                if this.minibuffer.active {
+                    return;
+                }
                 this.save(window, cx);
             }))
             .on_action(cx.listener(|this, _: &FindNote, window, cx| {
-                if this.minibuffer.active { return; }
+                if this.minibuffer.active {
+                    return;
+                }
                 this.activate_note_search(window, cx);
             }))
             .on_action(cx.listener(|this, _: &CommandPalette, window, cx| {
-                if this.minibuffer.active { return; }
+                if this.minibuffer.active {
+                    return;
+                }
                 this.activate_command_palette(window, cx);
             }))
             .on_action(cx.listener(|this, _: &ToggleVim, _window, cx| {
-                if this.minibuffer.active { return; }
+                if this.minibuffer.active {
+                    return;
+                }
                 let new_enabled = !this.vim_enabled(cx);
                 let editor_view = this.active_editor_view();
                 editor_view.update(cx, |view, cx| {
@@ -2745,21 +2940,29 @@ impl Render for Memex {
                 cx.notify();
             }))
             .on_action(cx.listener(|this, _: &FocusLeftPane, window, cx| {
-                if this.minibuffer.active { return; }
+                if this.minibuffer.active {
+                    return;
+                }
                 this.focus_workspace_window(this.editor_window, window, cx);
             }))
             .on_action(cx.listener(|this, _: &FocusRightPane, window, cx| {
-                if this.minibuffer.active { return; }
+                if this.minibuffer.active {
+                    return;
+                }
                 if let Some(secondary) = this.secondary_window() {
                     this.focus_workspace_window(secondary, window, cx);
                 }
             }))
             .on_action(cx.listener(|this, _: &SearchContent, window, cx| {
-                if this.minibuffer.active { return; }
+                if this.minibuffer.active {
+                    return;
+                }
                 this.activate_content_search(window, cx);
             }))
             .on_action(cx.listener(|this, _: &ToggleBacklinks, _window, cx| {
-                if this.minibuffer.active { return; }
+                if this.minibuffer.active {
+                    return;
+                }
                 this.show_backlinks = !this.show_backlinks;
                 cx.notify();
             }))
@@ -2787,7 +2990,7 @@ impl Render for Memex {
                     .left(px(0.))
                     .w_full()
                     .h_full()
-                    .bg(rgba(0x00000000))  // transparent — click-to-dismiss only, no dimming
+                    .bg(rgba(0x00000000)) // transparent — click-to-dismiss only, no dimming
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(|this, _e: &MouseDownEvent, window, cx| {
@@ -2827,7 +3030,9 @@ fn render_highlighted_label(
             // Text before match
             if abs_start > pos {
                 container = container.child(
-                    div().text_color(base_hsla).child(label[pos..abs_start].to_string()),
+                    div()
+                        .text_color(base_hsla)
+                        .child(label[pos..abs_start].to_string()),
                 );
             }
             // Highlighted match
@@ -2840,9 +3045,8 @@ fn render_highlighted_label(
             pos = abs_end;
         } else {
             // Remaining text after last match
-            container = container.child(
-                div().text_color(base_hsla).child(label[pos..].to_string()),
-            );
+            container =
+                container.child(div().text_color(base_hsla).child(label[pos..].to_string()));
             break;
         }
     }
@@ -2852,15 +3056,23 @@ fn render_highlighted_label(
 
 /// Snap byte index to a valid char boundary.
 fn snap_to_char(s: &str, idx: usize, ceil: bool) -> usize {
-    if idx >= s.len() { return s.len(); }
-    if s.is_char_boundary(idx) { return idx; }
+    if idx >= s.len() {
+        return s.len();
+    }
+    if s.is_char_boundary(idx) {
+        return idx;
+    }
     if ceil {
         let mut i = idx;
-        while i < s.len() && !s.is_char_boundary(i) { i += 1; }
+        while i < s.len() && !s.is_char_boundary(i) {
+            i += 1;
+        }
         i
     } else {
         let mut i = idx;
-        while i > 0 && !s.is_char_boundary(i) { i -= 1; }
+        while i > 0 && !s.is_char_boundary(i) {
+            i -= 1;
+        }
         i
     }
 }
@@ -2870,7 +3082,9 @@ fn snap_to_char(s: &str, idx: usize, ceil: bool) -> usize {
 /// insensitive match. Returns `"…"` if nothing matches.
 fn extract_snippet(body: &str, needle: &str, radius: usize) -> String {
     let lower = body.to_lowercase();
-    let Some(pos) = lower.find(needle) else { return "…".to_string(); };
+    let Some(pos) = lower.find(needle) else {
+        return "…".to_string();
+    };
     // Align to char boundaries in the original body.
     let start = body[..pos]
         .char_indices()

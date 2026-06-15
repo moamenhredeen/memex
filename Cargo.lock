@@ -3422,6 +3422,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "toml 0.8.23",
+ "toml_edit 0.22.27",
 ]
 
 [[package]]

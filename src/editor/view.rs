@@ -131,7 +131,6 @@ impl EditorView {
                 true
             }
             ResolvedKey::Pending => {
-                self.state.update(cx, |s, _| s.suppress_next_input = true);
                 true
             }
             // Unhandled: leave propagation alone so gpui's input handler can

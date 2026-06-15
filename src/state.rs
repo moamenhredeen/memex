@@ -26,15 +26,13 @@ impl AppState {
         };
 
         // Load global config
-        state.config = config::load_config(None);
+        state.config = config::load_config();
 
         // Try to restore last session
         if let Some(vault_path) = state.registry.last_vault_path()
             && vault_path.is_dir()
             && let Ok(vault) = Vault::open(vault_path.clone())
         {
-            // Reload config with vault path for per-vault overrides
-            state.config = config::load_config(Some(&vault_path));
             state.vault = Some(vault);
         }
 
@@ -95,9 +93,6 @@ impl AppState {
     /// Open a vault directory.
     pub fn open_vault(&mut self, path: PathBuf) -> Result<Option<Document>, std::io::Error> {
         let vault = Vault::open(path.clone())?;
-
-        // Reload config with vault-specific overrides
-        self.config = config::load_config(Some(&path));
 
         // Try last note for this vault, otherwise first note
         let note_to_open = self
