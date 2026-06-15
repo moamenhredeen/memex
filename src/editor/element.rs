@@ -1,17 +1,20 @@
 use gpui::*;
 
 use crate::markdown::{LineKind, StyleKind};
+use crate::theme::Theme;
 
 use super::{EditorState, LinePaintInfo};
 
 pub struct EditorElement {
     state: Entity<EditorState>,
+    theme: Theme,
 }
 
 impl EditorElement {
-    pub fn new(state: &Entity<EditorState>) -> Self {
+    pub fn new(state: &Entity<EditorState>, theme: Theme) -> Self {
         Self {
             state: state.clone(),
+            theme,
         }
     }
 }
@@ -116,12 +119,11 @@ impl Element for EditorElement {
         let mut prepaint_lines = Vec::new();
         let mut cursor_quad: Option<PaintQuad> = None;
         let mut selection_quads = Vec::new();
-        // Solarized Light palette (hsla for text shaping API)
-        let base_color = hsla(0.544, 0.129, 0.455, 1.0);  // base00 — body text
-        let dim_color = hsla(0.500, 0.069, 0.604, 1.0);   // base1 — comments
-        let code_color = hsla(0.487, 0.586, 0.398, 1.0);  // cyan — inline code
-        let heading_color = hsla(0.534, 0.808, 0.143, 1.0); // base03 — headings
-        let hr_color = hsla(0.117, 0.235, 0.775, 1.0);    // subtle rule
+        let base_color: Hsla = rgb(self.theme.text).into();
+        let dim_color: Hsla = rgb(self.theme.text_muted).into();
+        let code_color: Hsla = rgb(self.theme.cyan).into();
+        let heading_color: Hsla = rgb(self.theme.text_strong).into();
+        let hr_color: Hsla = rgb(self.theme.border).into();
 
         for i in vis_first..vis_last {
             // Skip lines hidden by outline folding
@@ -229,7 +231,7 @@ impl Element for EditorElement {
                                 FontWeight::NORMAL,
                                 FontStyle::Normal,
                                 code_color,
-                                Some(hsla(0.127, 0.424, 0.884, 1.0)),  // base2 — code bg
+                                Some(rgb(self.theme.code_background).into()),
                                 None,
                                 None,
                                 true,
@@ -303,11 +305,11 @@ impl Element for EditorElement {
                             StyleKind::Wikilink => (
                                 FontWeight::NORMAL,
                                 FontStyle::Normal,
-                                hsla(0.569, 0.694, 0.486, 1.0),  // blue — links
+                                rgb(self.theme.accent).into(),
                                 None,
                                 Some(UnderlineStyle {
                                     thickness: px(1.),
-                                    color: Some(hsla(0.569, 0.694, 0.486, 1.0)),
+                                    color: Some(rgb(self.theme.accent).into()),
                                     wavy: false,
                                 }),
                                 None,
@@ -325,7 +327,7 @@ impl Element for EditorElement {
                             StyleKind::Tag => (
                                 FontWeight::NORMAL,
                                 FontStyle::Normal,
-                                hsla(0.083, 0.756, 0.429, 1.0), // solarized orange
+                                rgb(self.theme.warning).into(),
                                 None,
                                 None,
                                 None,
@@ -403,7 +405,7 @@ impl Element for EditorElement {
                 let cursor_x = shaped.x_for_index(idx_in_line);
 
                 // Determine cursor shape based on vim mode
-                let cursor_color = rgb(0x268BD2); // solarized blue
+                let cursor_color = rgb(self.theme.accent);
                 let cursor_shape = if vim_enabled && !is_insert {
                     // Block cursor for normal/visual modes
                     let next_x = if idx_in_line < line_text.len() {
@@ -437,7 +439,7 @@ impl Element for EditorElement {
                             point(origin.x + x1, y),
                             point(origin.x + x2, y + line_height),
                         ),
-                        rgba(0x268BD230), // solarized blue selection
+                        rgba((self.theme.accent << 8) | 0x30),
                     ));
                 }
             }
@@ -465,7 +467,7 @@ impl Element for EditorElement {
                     ),
                     size(cw, px(24.)),
                 ),
-                rgb(0x268BD2), // solarized blue cursor fallback
+                rgb(self.theme.accent),
             ));
         }
 
@@ -494,7 +496,7 @@ impl Element for EditorElement {
         );
 
         // Background
-        window.paint_quad(fill(bounds, rgb(0xFDF6E3))); // solarized base3 bg
+        window.paint_quad(fill(bounds, rgb(self.theme.background)));
 
         // Selections
         for sel in &prepaint.selection_quads {

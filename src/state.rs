@@ -11,7 +11,7 @@ pub struct AppState {
     pub vault: Option<Vault>,
     /// Persisted vault registry.
     pub registry: VaultRegistry,
-    /// Configuration loaded from Rhai scripts.
+    /// Configuration loaded from global and vault TOML files.
     pub config: MemexConfig,
 }
 
@@ -29,15 +29,13 @@ impl AppState {
         state.config = config::load_config(None);
 
         // Try to restore last session
-        if let Some(vault_path) = state.registry.last_vault_path() {
-            if vault_path.is_dir() {
-                if let Ok(vault) = Vault::open(vault_path.clone()) {
-                    // Reload config with vault path for per-vault overrides
-                    state.config = config::load_config(Some(&vault_path));
-
-                    state.vault = Some(vault);
-                }
-            }
+        if let Some(vault_path) = state.registry.last_vault_path()
+            && vault_path.is_dir()
+            && let Ok(vault) = Vault::open(vault_path.clone())
+        {
+            // Reload config with vault path for per-vault overrides
+            state.config = config::load_config(Some(&vault_path));
+            state.vault = Some(vault);
         }
 
         state
@@ -48,8 +46,7 @@ impl AppState {
         let document = Document::open(path.clone())?;
         // Update registry with last note
         if let Some(ref vault) = self.vault {
-            self.registry
-                .upsert_vault(&vault.path, Some(&path));
+            self.registry.upsert_vault(&vault.path, Some(&path));
             let _ = self.registry.save();
         }
         Ok(document)
@@ -59,9 +56,10 @@ impl AppState {
     /// writes frontmatter with `id`, `title`, `created`, and places the
     /// file under `notes/{id}.md`.
     pub fn create_note(&mut self, title: &str) -> Result<Document, std::io::Error> {
-        let vault = self.vault.as_mut().ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::NotFound, "no vault open")
-        })?;
+        let vault = self
+            .vault
+            .as_mut()
+            .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "no vault open"))?;
 
         let layout = vault.layout();
         let id = crate::vault::id::generate();
@@ -132,12 +130,6 @@ impl AppState {
             .filter(|path| path.exists())
             .or_else(|| vault.first_note_path())?;
         self.open_document(path).ok()
-    }
-
-    /// Reload configuration from Rhai scripts.
-    pub fn reload_config(&mut self) {
-        let vault_path = self.vault.as_ref().map(|v| v.path.as_path());
-        self.config = config::load_config(vault_path);
     }
 
     /// Get display title of current note.

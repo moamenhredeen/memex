@@ -11,6 +11,7 @@ use crate::minibuffer::{Candidate, DelegateKind, Minibuffer, MinibufferAction, M
 use crate::pane::{ActiveItem, CommandOutcome, ItemAction, VimSnapshot};
 use crate::pdf::{PdfState, PdfView, PdfViewEvent};
 use crate::state::AppState;
+use crate::theme::{self, Theme};
 use crate::workspace::{BufferId, SplitAxis, WindowId, WindowLayout, WindowStore, Workspace};
 
 const MAX_RESULTS: usize = 15;
@@ -36,6 +37,7 @@ pub struct Memex {
     vault_watcher: Option<crate::vault::VaultWatcher>,
     /// Whether the backlinks panel is visible below the editor.
     show_backlinks: bool,
+    theme: Theme,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -89,7 +91,8 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         });
 
         let editor_state = cx.new(|cx| EditorState::from_document(initial_document, cx));
-        let editor_view = cx.new(|cx| EditorView::new(editor_state.clone(), cx));
+        let theme = theme::by_id(&state.config.theme).unwrap_or(theme::SOLARIZED_LIGHT);
+        let editor_view = cx.new(|cx| EditorView::new(editor_state.clone(), theme, cx));
 
         // The editor owns its own keymap and dispatches keys internally.
         // It only emits events for things the app shell must handle:
@@ -193,6 +196,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             global_commands: Self::global_commands(),
             vault_watcher: None,
             show_backlinks: false,
+            theme,
             _subscriptions: vec![editor_sub, editor_key_sub],
         };
 
@@ -438,6 +442,22 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         let vim = self.vim_enabled(cx);
         self.minibuffer.activate(DelegateKind::ContentSearch, "Search:", vim);
         self.minibuffer_focus.focus(window);
+        cx.notify();
+    }
+
+    fn activate_theme_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let vim = self.vim_enabled(cx);
+        self.minibuffer.activate(DelegateKind::Theme, "Theme:", vim);
+        self.minibuffer_focus.focus(window);
+        cx.notify();
+    }
+
+    fn apply_theme(&mut self, theme: Theme, cx: &mut Context<Self>) {
+        self.theme = theme;
+        for item in self.window_items.values() {
+            item.set_theme(theme, cx);
+        }
+        self.minibuffer.set_message(format!("Theme: {}", theme.name));
         cx.notify();
     }
 
@@ -782,6 +802,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             DelegateKind::ContentSearch => {
                 self.get_content_search_candidates()
             }
+            DelegateKind::Theme => self.get_theme_candidates(),
             DelegateKind::Item(id) => {
                 self.focused_item()
                     .get_candidates(id, &self.minibuffer.input, cx)
@@ -922,6 +943,14 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     self.open_note_by_path(path, window, cx);
                 }
             }
+            DelegateKind::Theme => {
+                if let Some(candidate) = candidates.get(selected)
+                    && let Some(theme) = theme::by_id(&candidate.data)
+                {
+                    self.dismiss_minibuffer(window, cx);
+                    self.apply_theme(theme, cx);
+                }
+            }
             DelegateKind::Item(ref id) => {
                 let candidate = candidates.get(selected);
                 let id = id.clone();
@@ -1055,6 +1084,9 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             }
             "search-content" | "search" | "grep" => {
                 self.activate_content_search(window, cx);
+            }
+            "theme" => {
+                self.activate_theme_picker(window, cx);
             }
             "rename" | "rn" => {
                 let arg = raw_input
@@ -1713,7 +1745,30 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             Command { id: "vault-forget", name: "Forget Vault", description: "Remove a vault from the recent-vaults list", aliases: &["forget-vault"], binding: Some(":vault-forget <path>") },
             Command { id: "toggle-backlinks", name: "Toggle Backlinks Panel", description: "Show or hide the backlinks panel below the editor", aliases: &["backlinks-panel"], binding: Some("Ctrl+Shift+B") },
             Command { id: "attach", name: "Attach from Clipboard", description: "Save clipboard image to attachments/ and insert a link", aliases: &["paste-image"], binding: None },
+            Command { id: "theme", name: "Theme", description: "Select an application theme", aliases: &["themes", "color-scheme"], binding: Some(":theme") },
         ]
+    }
+
+    fn get_theme_candidates(&self) -> Vec<Candidate> {
+        let query = self.minibuffer.input.to_lowercase();
+        theme::THEMES
+            .iter()
+            .filter(|candidate| {
+                query.is_empty()
+                    || candidate.name.to_lowercase().contains(&query)
+                    || candidate.id.contains(&query)
+            })
+            .map(|candidate| Candidate {
+                label: candidate.name.to_string(),
+                detail: Some(if candidate.id == self.theme.id {
+                    format!("{} (active)", candidate.description)
+                } else {
+                    candidate.description.to_string()
+                }),
+                is_action: candidate.id != self.theme.id,
+                data: candidate.id.to_string(),
+            })
+            .collect()
     }
 
     /// Fuzzy-filter commands for the palette: item commands + global commands.
@@ -1834,7 +1889,8 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         cx: &mut Context<Self>,
     ) -> ActiveItem {
         let editor_state = cx.new(|cx| EditorState::from_buffer(buffer, cx));
-        let editor_view = cx.new(|cx| EditorView::new(editor_state.clone(), cx));
+        let theme = self.theme;
+        let editor_view = cx.new(|cx| EditorView::new(editor_state.clone(), theme, cx));
         let key_sub = cx.subscribe_in(
             &editor_view,
             window,
@@ -1956,7 +2012,8 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
 
         let pdf_state = cx.new(|cx| PdfState::new(path, cx).expect("PDF already validated"));
         pdf_state.update(cx, |s, cx| s.extract_text_cache(cx));
-        let pdf_view = cx.new(|cx| PdfView::new(pdf_state.clone(), cx));
+        let theme = self.theme;
+        let pdf_view = cx.new(|cx| PdfView::new(pdf_state.clone(), theme, cx));
         let pdf_sub = cx.observe(&pdf_state, |_, _, cx| cx.notify());
         self._subscriptions.push(pdf_sub);
         // Route PDF-local keybindings through the existing item-command dispatch.
@@ -2085,7 +2142,8 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             }
             gs
         });
-        let graph_view = cx.new(|cx| GraphView::new(graph_state.clone(), cx));
+        let theme = self.theme;
+        let graph_view = cx.new(|cx| GraphView::new(graph_state.clone(), theme, cx));
 
         // Subscribe to graph events (node clicks)
         let graph_sub = cx.subscribe_in(
@@ -2179,6 +2237,9 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 return;
             }
         };
+        let configured_theme = theme::by_id(&self.state.config.theme)
+            .unwrap_or(theme::SOLARIZED_LIGHT);
+        self.apply_theme(configured_theme, cx);
         self.open_document_buffer(resource, document, window, cx);
         self.start_vault_watcher();
         cx.notify();
@@ -2269,7 +2330,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     .child(
                         div()
                             .text_size(px(12.))
-                            .text_color(rgb(0x657B83))
+                            .text_color(rgb(self.theme.text))
                             .child(title_text),
                     ),
             )
@@ -2326,20 +2387,20 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             .w_full()
             .px(px(8.))
             .py(px(3.))
-            .bg(rgb(0xEEE8D5))          // solarized base2
+            .bg(rgb(self.theme.surface))
             .items_center()
             .gap(px(8.))
             .child(
                 div()
                     .text_size(px(11.))
                     .font_weight(FontWeight::BOLD)
-                    .text_color(rgb(0x586E75)) // base01
+                    .text_color(rgb(self.theme.text_strong))
                     .child("Backlinks"),
             );
         header = header.child(
             div()
                 .text_size(px(11.))
-                .text_color(rgb(0x93A1A1)) // base1
+                .text_color(rgb(self.theme.text_muted))
                 .child(format!("{}", backlinks.len())),
         );
 
@@ -2347,7 +2408,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             .w_full()
             .flex_1()
             .overflow_hidden()
-            .bg(rgb(0xFDF6E3)); // base3
+            .bg(rgb(self.theme.background));
 
         if backlinks.is_empty() {
             list = list.child(
@@ -2355,7 +2416,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     .px(px(10.))
                     .py(px(6.))
                     .text_size(px(12.))
-                    .text_color(rgb(0x93A1A1))
+                    .text_color(rgb(self.theme.text_muted))
                     .child(
                         if current_title.is_empty() {
                             "No note open."
@@ -2376,7 +2437,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                         .px(px(10.))
                         .py(px(3.))
                         .text_size(px(12.))
-                        .text_color(rgb(0x268BD2)) // blue — links
+                        .text_color(rgb(self.theme.accent))
                         .cursor_pointer()
                         .hover(|s| s.bg(rgba(0x00000010)))
                         .child(title)
@@ -2394,7 +2455,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             .w_full()
             .h(px(160.))
             .border_t_1()
-            .border_color(rgb(0xD3CBB8))
+            .border_color(rgb(self.theme.border))
             .child(header)
             .child(list)
     }
@@ -2426,16 +2487,16 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     div()
                         .text_size(px(11.))
                         .font_weight(FontWeight::BOLD)
-                        .text_color(rgb(0xFDF6E3))
+                        .text_color(rgb(self.theme.background))
                         .child(label),
                 )
         } else if vim_enabled {
             let (label, bg) = match vim_state.as_deref() {
-                Some("NORMAL") => ("NOR", rgb(0x268BD2)),   // blue
-                Some("INSERT") => ("INS", rgb(0x859900)),   // green
-                Some("VISUAL") => ("VIS", rgb(0x6C71C4)),   // violet
-                Some("V-LINE") => ("V-L", rgb(0x6C71C4)),
-                _ => ("NOR", rgb(0x268BD2)),
+                Some("NORMAL") => ("NOR", rgb(self.theme.accent)),
+                Some("INSERT") => ("INS", rgb(self.theme.success)),
+                Some("VISUAL") => ("VIS", rgb(self.theme.violet)),
+                Some("V-LINE") => ("V-L", rgb(self.theme.violet)),
+                _ => ("NOR", rgb(self.theme.accent)),
             };
             div()
                 .px(px(6.))
@@ -2445,19 +2506,19 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     div()
                         .text_size(px(11.))
                         .font_weight(FontWeight::BOLD)
-                        .text_color(rgb(0xFDF6E3))  // base3 on badge
+                        .text_color(rgb(self.theme.background))
                         .child(label),
                 )
         } else {
             div()
                 .px(px(6.))
                 .py(px(1.))
-                .bg(rgb(0x859900))  // green for EDT badge
+                .bg(rgb(self.theme.success))
                 .child(
                     div()
                         .text_size(px(11.))
                         .font_weight(FontWeight::BOLD)
-                        .text_color(rgb(0xFDF6E3))  // base3 on badge
+                        .text_color(rgb(self.theme.background))
                         .child("EDT"),
                 )
         };
@@ -2465,7 +2526,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         h_flex()
             .w_full()
             .h(px(24.))
-            .bg(rgb(0xEEE8D5))  // solarized base2
+            .bg(rgb(self.theme.surface))
             .items_center()
             .gap(px(0.))
             .child(mode_badge)
@@ -2476,7 +2537,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     .child(
                         div()
                             .text_size(px(11.))
-                            .text_color(rgb(0x586E75))  // base01
+                            .text_color(rgb(self.theme.text_strong))
                             .child(format!(
                                 " {} › {}{}",
                                 vault_name, note_title, dirty_indicator
@@ -2492,7 +2553,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     .child(
                         div()
                             .text_size(px(11.))
-                            .text_color(rgb(0x93A1A1))  // base1
+                            .text_color(rgb(self.theme.text_muted))
                             .child(position_text),
                     ),
             )
@@ -2504,7 +2565,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
     fn render_minibuffer(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let base = v_flex()
             .w_full()
-            .bg(rgb(0xFDF6E3)); // solarized base3
+            .bg(rgb(self.theme.background));
 
         if !self.minibuffer.active {
             // Idle — echo area: show message or status from editor
@@ -2523,7 +2584,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     .child(
                         div()
                             .text_size(px(13.))
-                            .text_color(rgb(0x93A1A1)) // base1 — idle message
+                            .text_color(rgb(self.theme.text_muted))
                             .child(msg),
                     ),
             );
@@ -2562,17 +2623,17 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             let candidate = &candidates[i];
             let is_selected = i == selected;
             let bg_color = if is_selected {
-                rgb(0xEEE8D5) // base2 — selected
+                rgb(self.theme.selection)
             } else {
-                rgb(0xFDF6E3) // base3 — default
+                rgb(self.theme.background)
             };
 
             let text_color = if candidate.is_action {
-                rgb(0x859900) // green — create/action items
+                rgb(self.theme.success)
             } else if is_selected {
-                rgb(0x073642) // base03 — selected text
+                rgb(self.theme.text_strong)
             } else {
-                rgb(0x657B83) // base00 — normal text
+                rgb(self.theme.text)
             };
 
             let label_element = if matches!(self.minibuffer.delegate_kind, DelegateKind::Item(ref id) if self.focused_item().highlight_input(id))
@@ -2583,6 +2644,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     &candidate.label,
                     &self.minibuffer.input,
                     text_color,
+                    self.theme.warning,
                 )
             } else {
                 div()
@@ -2597,7 +2659,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 row = row.child(
                     div()
                         .text_size(px(11.))
-                        .text_color(rgb(0x93A1A1)) // base1 — detail/description
+                        .text_color(rgb(self.theme.text_muted))
                         .child(detail.clone()),
                 );
             }
@@ -2614,7 +2676,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         }
 
         base.border_t_1()
-            .border_color(rgb(0xD3CBB8))
+            .border_color(rgb(self.theme.border))
             .track_focus(&self.minibuffer_focus)
             .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
                 let key = e.keystroke.key.as_str();
@@ -2632,13 +2694,13 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     .child(
                         div()
                             .text_size(px(13.))
-                            .text_color(rgb(0x268BD2)) // blue — prompt
+                            .text_color(rgb(self.theme.accent))
                             .child(self.minibuffer.prompt.clone()),
                     )
                     .child(
                         div()
                             .text_size(px(13.))
-                            .text_color(rgb(0x073642)) // base03 — input text
+                            .text_color(rgb(self.theme.text_strong))
                             .child(format!(
                                 "{}{}{}",
                                 before_cursor, cursor_char, after_cursor
@@ -2658,7 +2720,7 @@ impl Render for Memex {
         let mut root = v_flex()
             .id("memex-root")
             .size_full()
-            .bg(rgb(0xFDF6E3))  // solarized base3
+            .bg(rgb(self.theme.background))
             .font_family("FiraCode Nerd Font")
             // App-wide actions — work regardless of which view has focus.
             .on_action(cx.listener(|this, _: &Save, window, cx| {
@@ -2744,8 +2806,9 @@ fn render_highlighted_label(
     label: &str,
     query: &str,
     base_color: impl Into<Hsla> + Copy,
+    highlight: u32,
 ) -> Div {
-    let highlight_color = rgb(0xCB4B16); // solarized orange
+    let highlight_color = rgb(highlight);
     let base_hsla: Hsla = base_color.into();
     let label_lower = label.to_lowercase();
     let query_lower = query.to_lowercase();

@@ -2,6 +2,7 @@ use gpui::*;
 
 use super::{GraphEvent, GraphState};
 use crate::keymap::{Action, KeyCombo, KeyTrie, Layer, build_graph_layer};
+use crate::theme::Theme;
 
 /// Emitted by [`GraphView`] when a keybinding resolves to a command.
 #[derive(Clone, Debug)]
@@ -17,6 +18,7 @@ pub struct GraphView {
     drag_start: Option<(f32, f32, f32, f32)>, // (mouse_x, mouse_y, pan_x, pan_y)
     /// Graph-local keymap layer. Only resolves when this view has focus.
     keymap: Layer,
+    theme: Theme,
 }
 
 impl GraphView {
@@ -29,7 +31,7 @@ impl GraphView {
         }
     }
 
-    pub fn new(state: Entity<GraphState>, cx: &mut Context<Self>) -> Self {
+    pub fn new(state: Entity<GraphState>, theme: Theme, cx: &mut Context<Self>) -> Self {
         // Tick the physics simulation periodically
         let state_clone = state.clone();
         cx.spawn(async move |_this, cx| {
@@ -59,7 +61,13 @@ impl GraphView {
             state,
             drag_start: None,
             keymap: build_graph_layer(),
+            theme,
         }
+    }
+
+    pub fn set_theme(&mut self, theme: Theme, cx: &mut Context<Self>) {
+        self.theme = theme;
+        cx.notify();
     }
 }
 
@@ -75,11 +83,12 @@ impl Render for GraphView {
         let hovered = gs.hovered;
         let local_visible = gs.local_visible_set();
         let focus = gs.focus_handle.clone();
+        let theme = self.theme;
 
         div()
             .id("graph-view")
             .size_full()
-            .bg(rgb(0xFDF6E3)) // solarized base3
+            .bg(rgb(theme.background))
             .track_focus(&focus)
             .on_key_down(cx.listener(|this, e: &KeyDownEvent, _window, cx| {
                 let k = &e.keystroke;
@@ -198,9 +207,9 @@ impl Render for GraphView {
                                     || selected == Some(edge.target);
 
                                 let color = if is_selected {
-                                    rgba(0x268BD2CC) // solarized blue
+                                    rgba((theme.accent << 8) | 0xCC)
                                 } else {
-                                    rgba(0x93A1A140) // solarized base1, faint
+                                    rgba((theme.text_muted << 8) | 0x40)
                                 };
 
                                 let path = {
@@ -226,11 +235,11 @@ impl Render for GraphView {
                                 let is_sel = selected == Some(i);
                                 let is_hov = hovered == Some(i);
                                 let color = if is_sel {
-                                    rgb(0xDC322F) // solarized red
+                                    rgb(theme.danger)
                                 } else if is_hov {
-                                    rgb(0x268BD2) // solarized blue
+                                    rgb(theme.accent)
                                 } else {
-                                    rgb(0x657B83) // solarized base00
+                                    rgb(theme.text)
                                 };
 
                                 let r = if is_sel || is_hov {
@@ -257,9 +266,9 @@ impl Render for GraphView {
                                 if zoom > 0.3 {
                                     let font_size = (11.0 * zoom).max(8.0).min(14.0);
                                     let label_color = if is_sel {
-                                        rgb(0xDC322F)
+                                        rgb(theme.danger)
                                     } else {
-                                        rgb(0x586E75) // solarized base01
+                                        rgb(theme.text_strong)
                                     };
 
                                     let run = TextRun {

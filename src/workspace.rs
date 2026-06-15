@@ -187,6 +187,10 @@ impl<W> WindowStore<W> {
         self.windows.remove(&id)
     }
 
+    pub fn values(&self) -> impl Iterator<Item = &W> {
+        self.windows.values()
+    }
+
     pub fn retain_only(&mut self, id: WindowId) {
         self.windows.retain(|window_id, _| *window_id == id);
     }

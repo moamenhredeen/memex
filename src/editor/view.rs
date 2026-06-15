@@ -5,6 +5,7 @@ use super::element::EditorElement;
 use super::{EditorEvent, EditorState, TabAction, ShiftTabAction};
 use crate::keymap::{Action, KeymapSystem, ResolvedKey};
 use crate::pane::{ItemAction, VimSnapshot};
+use crate::theme::Theme;
 
 /// Events from [`EditorView`] that the app shell processes.
 ///
@@ -31,11 +32,12 @@ pub struct EditorView {
     pub keymap: KeymapSystem,
     focus_handle: FocusHandle,
     is_selecting: bool,
+    theme: Theme,
     _observe_state: Subscription,
 }
 
 impl EditorView {
-    pub fn new(state: Entity<EditorState>, cx: &mut Context<Self>) -> Self {
+    pub fn new(state: Entity<EditorState>, theme: Theme, cx: &mut Context<Self>) -> Self {
         let focus_handle = state.read(cx).focus_handle.clone();
         let _observe_state = cx.observe(&state, |_, _, cx| cx.notify());
         let keymap = KeymapSystem::new(true);
@@ -44,10 +46,16 @@ impl EditorView {
             keymap,
             focus_handle,
             is_selecting: false,
+            theme,
             _observe_state,
         };
         this.sync_state_vim_flags(cx);
         this
+    }
+
+    pub fn set_theme(&mut self, theme: Theme, cx: &mut Context<Self>) {
+        self.theme = theme;
+        cx.notify();
     }
 
     /// Snapshot of vim state for passing into `EditorState::process_vim_action`.
@@ -242,7 +250,7 @@ impl Render for EditorView {
                     cx.notify();
                 });
             }))
-            .child(EditorElement::new(&self.state))
+            .child(EditorElement::new(&self.state, self.theme))
             .child(crate::ui::Scrollbar::new(self.state.clone()).with_id("editor-scrollbar"))
     }
 }

@@ -71,6 +71,8 @@ pub enum DelegateKind {
     /// Full-text search across note bodies. Input is the search query;
     /// results include a context snippet.
     ContentSearch,
+    /// Built-in application themes.
+    Theme,
     /// Item-owned delegate — dispatched to the active PaneItem.
     Item(String),
 }

@@ -18,6 +18,7 @@ use crate::editor::{EditorState, EditorView};
 use crate::graph::{GraphState, GraphView};
 use crate::minibuffer::Candidate;
 use crate::pdf::{PdfState, PdfView};
+use crate::theme::Theme;
 
 /// Side effects an item wants the app shell to perform.
 ///
@@ -91,6 +92,14 @@ pub enum ActiveItem {
 }
 
 impl ActiveItem {
+    pub fn set_theme(&self, theme: Theme, cx: &mut Context<crate::app::Memex>) {
+        match self {
+            Self::Editor { view, .. } => view.update(cx, |view, cx| view.set_theme(theme, cx)),
+            Self::Pdf { view, .. } => view.update(cx, |view, cx| view.set_theme(theme, cx)),
+            Self::Graph { view, .. } => view.update(cx, |view, cx| view.set_theme(theme, cx)),
+        }
+    }
+
     pub fn editor_state(&self) -> Option<Entity<EditorState>> {
         match self {
             Self::Editor { state, .. } => Some(state.clone()),

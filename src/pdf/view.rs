@@ -5,6 +5,7 @@ use gpui::*;
 use super::PdfState;
 use crate::ui::Scrollbar;
 use crate::keymap::{Action, KeyCombo, KeyTrie, Layer, build_pdf_layer};
+use crate::theme::Theme;
 
 /// Emitted by [`PdfView`] when a keybinding resolves to a command.
 /// The app shell subscribes and runs the command through
@@ -21,19 +22,26 @@ pub struct PdfView {
     focus_handle: FocusHandle,
     /// PDF-local keymap layer. Only resolves when this view has focus.
     keymap: Layer,
+    theme: Theme,
     _observe_state: Subscription,
 }
 
 impl PdfView {
-    pub fn new(state: Entity<PdfState>, cx: &mut Context<Self>) -> Self {
+    pub fn new(state: Entity<PdfState>, theme: Theme, cx: &mut Context<Self>) -> Self {
         let focus_handle = state.read(cx).focus_handle.clone();
         let _observe_state = cx.observe(&state, |_, _, cx| cx.notify());
         Self {
             state,
             focus_handle,
             keymap: build_pdf_layer(),
+            theme,
             _observe_state,
         }
+    }
+
+    pub fn set_theme(&mut self, theme: Theme, cx: &mut Context<Self>) {
+        self.theme = theme;
+        cx.notify();
     }
 
     /// Resolve a keystroke against the PDF layer. Pure function — useful for
@@ -207,7 +215,7 @@ impl Render for PdfView {
                         .flex()
                         .items_center()
                         .justify_center()
-                        .text_color(rgb(0x999999))
+                        .text_color(rgb(self.theme.text_muted))
                         .child(format!("Loading page {}...", page_idx + 1)),
                 );
             }
@@ -234,7 +242,7 @@ impl Render for PdfView {
             .relative()
             .track_focus(&self.focus_handle)
             .key_context("PdfView")
-            .bg(rgb(0xE8E4DA))
+            .bg(rgb(self.theme.pdf_background))
             .overflow_hidden()
             .on_key_down(cx.listener(|this, e: &KeyDownEvent, _window, cx| {
                 let k = &e.keystroke;

@@ -41,7 +41,7 @@ Memex is a single-binary desktop app with a WYSIWYG markdown editor, PDF viewer,
 ### Vault Management
 - **Multi-vault** — switch between vaults with `:vault-switch`, open new ones with `:vault-open`
 - **Recent vaults** — MRU-ordered vault list persisted across sessions
-- **Per-vault config** — Rhai scripting for vault-specific keybindings and settings
+- **Per-vault config** — declarative TOML settings layered over global defaults
 
 ### Minibuffer (Command Palette)
 - Fuzzy-filtered command palette (`:` or `M-x`)
@@ -51,7 +51,20 @@ Memex is a single-binary desktop app with a WYSIWYG markdown editor, PDF viewer,
 ### Other
 - **Undo/redo** with full history
 - **Rhai plugin system** — extend with custom commands and keybindings
-- **Configurable** — global and per-vault configuration via Rhai scripts
+- **Configurable** — global and per-vault configuration via TOML; Rhai is reserved for plugins
+
+### Configuration
+
+Memex is designed to work well without configuration. Optional settings are read
+from `~/.config/memex/config.toml`, with vault-specific overrides from
+`{vault}/.memex/config.toml`.
+
+```toml
+theme = "nord"
+```
+
+Built-in theme IDs are `solarized-light`, `solarized-dark`, `gruvbox-dark`, and
+`nord`. The `:theme` command previews and selects themes for the current session.
 
 ## Building
 
