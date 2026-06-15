@@ -110,7 +110,10 @@ impl EditorBuffer {
     }
 
     pub fn begin_edit_group(&self, selection_before: Range<usize>) {
-        self.inner.borrow_mut().history.begin_group(selection_before);
+        self.inner
+            .borrow_mut()
+            .history
+            .begin_group(selection_before);
     }
 
     pub fn end_edit_group(&self) {

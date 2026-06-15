@@ -2,7 +2,7 @@ use gpui::*;
 
 use super::commands::EditorCommand;
 use super::element::EditorElement;
-use super::{EditorEvent, EditorState, TabAction, ShiftTabAction};
+use super::{EditorEvent, EditorState, ShiftTabAction, TabAction};
 use crate::keymap::{Action, KeymapSystem, ResolvedKey};
 use crate::pane::{ItemAction, VimSnapshot};
 use crate::theme::Theme;
@@ -33,11 +33,17 @@ pub struct EditorView {
     focus_handle: FocusHandle,
     is_selecting: bool,
     theme: Theme,
+    editor_width: Pixels,
     _observe_state: Subscription,
 }
 
 impl EditorView {
-    pub fn new(state: Entity<EditorState>, theme: Theme, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        state: Entity<EditorState>,
+        theme: Theme,
+        editor_width: u32,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let focus_handle = state.read(cx).focus_handle.clone();
         let _observe_state = cx.observe(&state, |_, _, cx| cx.notify());
         let keymap = KeymapSystem::new(true);
@@ -47,6 +53,7 @@ impl EditorView {
             focus_handle,
             is_selecting: false,
             theme,
+            editor_width: px(editor_width as f32),
             _observe_state,
         };
         this.sync_state_vim_flags(cx);
@@ -73,7 +80,8 @@ impl EditorView {
     pub fn sync_state_vim_flags(&self, cx: &mut Context<Self>) {
         let vim = self.keymap.vim_enabled;
         let insert = self.keymap.is_insert_active();
-        self.state.update(cx, |s, _cx| s.sync_vim_flags(vim, insert));
+        self.state
+            .update(cx, |s, _cx| s.sync_vim_flags(vim, insert));
     }
 
     /// Toggle vim mode on or off.
@@ -105,7 +113,8 @@ impl EditorView {
                 }
                 Action::ActivateLayer(layer_id) => {
                     self.keymap.stack.activate_layer(layer_id);
-                    self.state.update(cx, |s, cx| s.on_layer_activated(layer_id, cx));
+                    self.state
+                        .update(cx, |s, cx| s.on_layer_activated(layer_id, cx));
                     self.sync_state_vim_flags(cx);
                     cx.emit(EditorViewEvent::VimStateChanged);
                     cx.notify();
@@ -124,15 +133,17 @@ impl EditorView {
                     true
                 }
             },
-            ResolvedKey::TransientCapture { transient_id, ch, count } => {
+            ResolvedKey::TransientCapture {
+                transient_id,
+                ch,
+                count,
+            } => {
                 self.state.update(cx, |s, ecx| {
                     s.handle_transient_capture(&transient_id, ch, count, window, ecx);
                 });
                 true
             }
-            ResolvedKey::Pending => {
-                true
-            }
+            ResolvedKey::Pending => true,
             // Unhandled: leave propagation alone so gpui's input handler can
             // insert the character through `EntityInputHandler`.
             ResolvedKey::Unhandled => false,
@@ -249,7 +260,11 @@ impl Render for EditorView {
                     cx.notify();
                 });
             }))
-            .child(EditorElement::new(&self.state, self.theme))
+            .child(EditorElement::new(
+                &self.state,
+                self.theme,
+                self.editor_width,
+            ))
             .child(crate::ui::Scrollbar::new(self.state.clone()).with_id("editor-scrollbar"))
     }
 }

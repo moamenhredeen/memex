@@ -7,12 +7,14 @@ use toml_edit::{ImDocument, value};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MemexConfig {
     pub theme: String,
+    pub editor_width: u32,
 }
 
 impl Default for MemexConfig {
     fn default() -> Self {
         Self {
             theme: crate::theme::SOLARIZED_LIGHT.id.to_string(),
+            editor_width: 760,
         }
     }
 }
@@ -22,6 +24,7 @@ impl Default for MemexConfig {
 #[serde(deny_unknown_fields)]
 struct ConfigFile {
     theme: Option<String>,
+    editor_width: Option<u32>,
 }
 
 impl ConfigFile {
@@ -38,6 +41,12 @@ impl ConfigFile {
                 ));
             }
             config.theme = theme;
+        }
+        if let Some(editor_width) = self.editor_width {
+            if editor_width == 0 {
+                return Err("editor_width must be greater than zero".to_string());
+            }
+            config.editor_width = editor_width;
         }
         Ok(())
     }
@@ -85,8 +94,7 @@ fn save_theme_to_path(path: &Path, theme: &str) -> Result<(), String> {
         .map_err(|error| format!("invalid TOML in {}: {error}", path.display()))?;
 
     let output = if let Some(item) = document.get("theme") {
-        item
-            .as_value()
+        item.as_value()
             .and_then(|value| value.as_str())
             .ok_or_else(|| format!("theme in {} must be a string", path.display()))?;
         let span = item
@@ -151,13 +159,23 @@ mod tests {
     #[test]
     fn defaults_are_powerful_without_a_config_file() {
         assert_eq!(MemexConfig::default().theme, "solarized-light");
+        assert_eq!(MemexConfig::default().editor_width, 760);
     }
 
     #[test]
     fn loads_toml_config() {
-        let path = temp_config("theme", "theme = \"nord\"\n");
+        let path = temp_config("theme", "theme = \"nord\"\neditor_width = 840\n");
         let config = load_config_from_path(Some(path.clone()));
         assert_eq!(config.theme, "nord");
+        assert_eq!(config.editor_width, 840);
+        std::fs::remove_file(path).ok();
+    }
+
+    #[test]
+    fn rejects_zero_editor_width() {
+        let path = temp_config("editor-width", "editor_width = 0\n");
+        let mut config = MemexConfig::default();
+        assert!(apply_config_file(&path, &mut config).is_err());
         std::fs::remove_file(path).ok();
     }
 

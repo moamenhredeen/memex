@@ -9,13 +9,15 @@ use super::{EditorState, LinePaintInfo};
 pub struct EditorElement {
     state: Entity<EditorState>,
     theme: Theme,
+    editor_width: Pixels,
 }
 
 impl EditorElement {
-    pub fn new(state: &Entity<EditorState>, theme: Theme) -> Self {
+    pub fn new(state: &Entity<EditorState>, theme: Theme, editor_width: Pixels) -> Self {
         Self {
             state: state.clone(),
             theme,
+            editor_width,
         }
     }
 }
@@ -41,6 +43,14 @@ struct PrepaintLine {
     source_len: usize,
     source_to_display: Vec<usize>,
     display_to_source: Vec<usize>,
+}
+
+const MIN_HORIZONTAL_PADDING: f32 = 24.0;
+
+fn content_inset(viewport_width: Pixels, editor_width: Pixels) -> Pixels {
+    let viewport_width: f32 = viewport_width.into();
+    let editor_width: f32 = editor_width.into();
+    px(((viewport_width - editor_width) / 2.0).max(MIN_HORIZONTAL_PADDING))
 }
 
 struct DisplayLine {
@@ -182,7 +192,8 @@ impl Element for EditorElement {
         });
 
         let state = self.state.read(cx);
-        let padding = px(24.);
+        let vertical_padding = px(24.);
+        let horizontal_inset = content_inset(bounds.size.width, self.editor_width);
         let scroll = state.scroll_offset;
         let cursor_pos = state.cursor;
         let selected_range = state.selected_range.clone();
@@ -218,7 +229,7 @@ impl Element for EditorElement {
             let line_start = dm.line_offset(i);
             let line_height = dm.line_height(i);
             let font_size = info.kind.display_font_size();
-            let y = bounds.origin.y + padding - scroll + dm.line_y(i);
+            let y = bounds.origin.y + vertical_padding - scroll + dm.line_y(i);
 
             // Check if this heading is folded (next line hidden)
             let heading_is_folded = matches!(&info.kind, LineKind::Heading(_))
@@ -492,7 +503,7 @@ impl Element for EditorElement {
 
             let shaped = text_system.shape_line(display_text, font_size, &runs, None);
 
-            let origin = point(bounds.origin.x + padding, y);
+            let origin = point(bounds.origin.x + horizontal_inset, y);
 
             // Cursor — render on the line where the cursor logically belongs
             if cursor_pos >= line_start && cursor_pos <= line_byte_end {
@@ -563,8 +574,8 @@ impl Element for EditorElement {
             cursor_quad = Some(fill(
                 Bounds::new(
                     point(
-                        bounds.origin.x + padding,
-                        bounds.origin.y + padding - scroll,
+                        bounds.origin.x + horizontal_inset,
+                        bounds.origin.y + vertical_padding - scroll,
                     ),
                     size(cw, px(24.)),
                 ),
@@ -617,6 +628,7 @@ impl Element for EditorElement {
             line_paint_infos.push(LinePaintInfo {
                 content_offset: pl.content_offset,
                 shaped_line: pl.shaped.clone(),
+                origin_x: pl.origin.x,
                 source_len: pl.source_len,
                 source_to_display: pl.source_to_display.clone(),
                 display_to_source: pl.display_to_source.clone(),
@@ -645,9 +657,22 @@ impl Element for EditorElement {
 
 #[cfg(test)]
 mod tests {
-    use super::build_display_line;
+    use super::{build_display_line, content_inset};
     use crate::markdown::parse_inline_styles;
+    use gpui::px;
     use std::collections::HashMap;
+
+    #[test]
+    fn centers_configured_editor_width_in_wide_viewport() {
+        let inset: f32 = content_inset(px(1200.0), px(760.0)).into();
+        assert_eq!(inset, 220.0);
+    }
+
+    #[test]
+    fn keeps_minimum_padding_in_narrow_viewport() {
+        let inset: f32 = content_inset(px(700.0), px(760.0)).into();
+        assert_eq!(inset, 24.0);
+    }
 
     #[test]
     fn note_wikilink_renders_canonical_title() {

@@ -139,7 +139,9 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             editor_state.update(cx, |editor, cx| editor.set_wikilink_titles(titles, cx));
         }
         let theme = theme::by_id(&state.config.theme).unwrap_or(theme::SOLARIZED_LIGHT);
-        let editor_view = cx.new(|cx| EditorView::new(editor_state.clone(), theme, cx));
+        let editor_width = state.config.editor_width;
+        let editor_view =
+            cx.new(|cx| EditorView::new(editor_state.clone(), theme, editor_width, cx));
 
         // The editor owns its own keymap and dispatches keys internally.
         // It only emits events for things the app shell must handle:
@@ -2052,7 +2054,9 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             editor_state.update(cx, |editor, cx| editor.set_wikilink_titles(titles, cx));
         }
         let theme = self.theme;
-        let editor_view = cx.new(|cx| EditorView::new(editor_state.clone(), theme, cx));
+        let editor_width = self.state.config.editor_width;
+        let editor_view =
+            cx.new(|cx| EditorView::new(editor_state.clone(), theme, editor_width, cx));
         let key_sub = cx.subscribe_in(
             &editor_view,
             window,

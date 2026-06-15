@@ -1,6 +1,9 @@
 use gpui::*;
 
-use crate::markdown::{compute_col_widths, cursor_pos_in_formatted_table, format_table, is_separator_row, parse_table_cells};
+use crate::markdown::{
+    compute_col_widths, cursor_pos_in_formatted_table, format_table, is_separator_row,
+    parse_table_cells,
+};
 
 use super::{EditorEvent, EditorState};
 
@@ -72,9 +75,21 @@ impl EditorState {
 
         // Calculate target cell
         let (next_row, next_col, need_new_row) = if forward {
-            Self::next_table_cell(cursor_row_idx, cursor_col_idx, &rows, &is_separator, max_cols)
+            Self::next_table_cell(
+                cursor_row_idx,
+                cursor_col_idx,
+                &rows,
+                &is_separator,
+                max_cols,
+            )
         } else {
-            Self::prev_table_cell(cursor_row_idx, cursor_col_idx, &rows, &is_separator, max_cols)
+            Self::prev_table_cell(
+                cursor_row_idx,
+                cursor_col_idx,
+                &rows,
+                &is_separator,
+                max_cols,
+            )
         };
 
         if need_new_row {
@@ -105,7 +120,8 @@ impl EditorState {
         let cursor_before = self.cursor;
         let selection_before = self.selected_range.clone();
 
-        self.buffer.replace_range(table_start..table_end, &new_table);
+        self.buffer
+            .replace_range(table_start..table_end, &new_table);
 
         // Record as a single undo unit (suppress coalescing)
         self.buffer.begin_edit_group(selection_before);
@@ -134,10 +150,7 @@ impl EditorState {
         let mut start = line_start;
         while start > 0 {
             let prev_end = start - 1;
-            let prev_start = content[..prev_end]
-                .rfind('\n')
-                .map(|i| i + 1)
-                .unwrap_or(0);
+            let prev_start = content[..prev_end].rfind('\n').map(|i| i + 1).unwrap_or(0);
             let prev_line = content[prev_start..prev_end].trim();
             if prev_line.starts_with('|') && prev_line.ends_with('|') && prev_line.len() > 1 {
                 start = prev_start;

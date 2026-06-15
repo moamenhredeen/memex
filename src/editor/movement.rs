@@ -30,10 +30,9 @@ impl EditorState {
     }
 
     pub(crate) fn index_for_mouse_position(&self, position: Point<Pixels>) -> usize {
-        let bounds = match &self.last_bounds {
-            Some(b) => b,
-            None => return 0,
-        };
+        if self.last_bounds.is_none() {
+            return 0;
+        }
 
         if self.last_line_layouts.is_empty() {
             return 0;
@@ -45,7 +44,7 @@ impl EditorState {
 
         for ll in &self.last_line_layouts {
             if position.y >= ll.y && position.y < ll.y + ll.line_height {
-                let local_x = (position.x - bounds.left() - px(24.)).max(px(0.));
+                let local_x = (position.x - ll.origin_x).max(px(0.));
                 let display_idx = ll.shaped_line.closest_index_for_x(local_x);
                 return ll.content_offset + ll.source_offset(display_idx);
             }
@@ -57,9 +56,7 @@ impl EditorState {
 
     pub(crate) fn offset_to_utf16(&self, offset: usize) -> usize {
         let content = self.content();
-        content[..offset.min(content.len())]
-            .encode_utf16()
-            .count()
+        content[..offset.min(content.len())].encode_utf16().count()
     }
 
     pub(crate) fn offset_from_utf16(&self, utf16_offset: usize) -> usize {

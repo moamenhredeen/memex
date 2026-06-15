@@ -70,10 +70,13 @@ from `~/.config/memex/config.toml`.
 
 ```toml
 theme = "nord"
+editor_width = 760
 ```
 
 Built-in theme IDs are `solarized-light`, `solarized-dark`, `gruvbox-dark`, and
 `nord`. The `:theme` command selects a theme and saves it to the global config.
+`editor_width` sets the centered reading-column width in pixels. Narrow panes
+retain 24 pixels of horizontal padding.
 
 ## Building
 

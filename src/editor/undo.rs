@@ -242,10 +242,7 @@ mod tests {
 
         // Type "hello" as separate chars — should coalesce
         for (i, ch) in "hello".chars().enumerate() {
-            history.record(
-                make_insert(i, &ch.to_string(), i + 1),
-                i..i,
-            );
+            history.record(make_insert(i, &ch.to_string(), i + 1), i..i);
         }
 
         // Should be one transaction due to coalescing

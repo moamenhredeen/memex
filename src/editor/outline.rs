@@ -95,11 +95,7 @@ impl OutlineState {
 
     /// Compute which lines are hidden given the current fold states.
     /// Returns a Vec<bool> of length `line_count` where true = hidden.
-    pub fn compute_hidden_lines(
-        &self,
-        headings: &[HeadingInfo],
-        line_count: usize,
-    ) -> Vec<bool> {
+    pub fn compute_hidden_lines(&self, headings: &[HeadingInfo], line_count: usize) -> Vec<bool> {
         let mut hidden = vec![false; line_count];
         if headings.is_empty() || line_count == 0 {
             return hidden;
@@ -127,7 +123,11 @@ impl OutlineState {
                     // unless the user has explicitly expanded them.
                     let first_child_line = headings
                         .iter()
-                        .find(|h| h.line_idx > hi.line_idx && h.line_idx < section_end && h.level > hi.level)
+                        .find(|h| {
+                            h.line_idx > hi.line_idx
+                                && h.line_idx < section_end
+                                && h.level > hi.level
+                        })
                         .map(|h| h.line_idx);
 
                     let mut line = hi.line_idx + 1;
@@ -148,14 +148,12 @@ impl OutlineState {
 
                         // Line inside a direct child's section — only show
                         // if user has explicitly expanded that child.
-                        if let Some(parent_child) = find_direct_child_parent(
-                            line, hi, headings, line_count,
-                        ) {
-                            let explicitly_open = self
-                                .fold_states
-                                .get(&parent_child.line_idx)
-                                .copied()
-                                == Some(FoldCycle::ShowAll);
+                        if let Some(parent_child) =
+                            find_direct_child_parent(line, hi, headings, line_count)
+                        {
+                            let explicitly_open =
+                                self.fold_states.get(&parent_child.line_idx).copied()
+                                    == Some(FoldCycle::ShowAll);
                             if explicitly_open {
                                 line += 1;
                                 continue;
@@ -197,11 +195,7 @@ pub fn extract_headings(line_kinds: &[LineKind]) -> Vec<HeadingInfo> {
 
 /// End line (exclusive) of the section owned by heading at `heading_idx`.
 /// A section runs from the heading to the next heading of same or higher level.
-pub fn section_end_line(
-    heading_idx: usize,
-    headings: &[HeadingInfo],
-    line_count: usize,
-) -> usize {
+pub fn section_end_line(heading_idx: usize, headings: &[HeadingInfo], line_count: usize) -> usize {
     let hi = &headings[heading_idx];
     for next in &headings[(heading_idx + 1)..] {
         if next.level <= hi.level {
@@ -212,16 +206,15 @@ pub fn section_end_line(
 }
 
 /// Check if a heading has any child headings (deeper level within its section).
-fn has_child_headings(
-    hi: &HeadingInfo,
-    headings: &[HeadingInfo],
-    line_count: usize,
-) -> bool {
-    let idx = headings.iter().position(|h| h.line_idx == hi.line_idx).unwrap();
+fn has_child_headings(hi: &HeadingInfo, headings: &[HeadingInfo], line_count: usize) -> bool {
+    let idx = headings
+        .iter()
+        .position(|h| h.line_idx == hi.line_idx)
+        .unwrap();
     let end = section_end_line(idx, headings, line_count);
-    headings.iter().any(|h| {
-        h.line_idx > hi.line_idx && h.line_idx < end && h.level > hi.level
-    })
+    headings
+        .iter()
+        .any(|h| h.line_idx > hi.line_idx && h.line_idx < end && h.level > hi.level)
 }
 
 /// Find the direct child heading that owns `line`, if any.
@@ -316,9 +309,27 @@ mod tests {
         let kinds = make_kinds(&[("h", 1), ("n", 0), ("h", 2), ("n", 0), ("h", 1)]);
         let headings = extract_headings(&kinds);
         assert_eq!(headings.len(), 3);
-        assert_eq!(headings[0], HeadingInfo { line_idx: 0, level: 1 });
-        assert_eq!(headings[1], HeadingInfo { line_idx: 2, level: 2 });
-        assert_eq!(headings[2], HeadingInfo { line_idx: 4, level: 1 });
+        assert_eq!(
+            headings[0],
+            HeadingInfo {
+                line_idx: 0,
+                level: 1
+            }
+        );
+        assert_eq!(
+            headings[1],
+            HeadingInfo {
+                line_idx: 2,
+                level: 2
+            }
+        );
+        assert_eq!(
+            headings[2],
+            HeadingInfo {
+                line_idx: 4,
+                level: 1
+            }
+        );
     }
 
     #[test]
@@ -377,9 +388,7 @@ mod tests {
     #[test]
     fn test_compute_hidden_children() {
         // H1(0), body(1), H2(2), body(3), H2(4), body(5)
-        let kinds = make_kinds(&[
-            ("h", 1), ("n", 0), ("h", 2), ("n", 0), ("h", 2), ("n", 0),
-        ]);
+        let kinds = make_kinds(&[("h", 1), ("n", 0), ("h", 2), ("n", 0), ("h", 2), ("n", 0)]);
         let headings = extract_headings(&kinds);
         let mut outline = OutlineState::new();
         outline.fold_states.insert(0, FoldCycle::Children);

@@ -174,15 +174,9 @@ impl EntityInputHandler for EditorState {
                 let local_end = (range.end - ll.content_offset).min(ll.source_len);
                 let x1 = ll.shaped_line.x_for_index(ll.display_offset(local_start));
                 let x2 = ll.shaped_line.x_for_index(ll.display_offset(local_end));
-                let padding = px(24.);
-                let base_x = self
-                    .last_bounds
-                    .as_ref()
-                    .map(|b| b.left())
-                    .unwrap_or(px(0.));
                 return Some(Bounds::from_corners(
-                    point(base_x + padding + x1, ll.y),
-                    point(base_x + padding + x2, ll.y + ll.line_height),
+                    point(ll.origin_x + x1, ll.y),
+                    point(ll.origin_x + x2, ll.y + ll.line_height),
                 ));
             }
         }

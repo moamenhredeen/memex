@@ -13,11 +13,11 @@ mod view;
 use std::collections::HashMap;
 use std::ops::Range;
 
-use gpui::*;
 use crate::command::Command;
 use crate::document::Document;
 use crate::minibuffer::Candidate;
 use crate::pane::{CommandOutcome, ItemAction};
+use gpui::*;
 
 pub use blink::BlinkCursor;
 pub use buffer::EditorBuffer;
@@ -62,6 +62,7 @@ pub struct EditorState {
 pub struct LinePaintInfo {
     pub content_offset: usize,
     pub shaped_line: ShapedLine,
+    pub origin_x: Pixels,
     pub source_len: usize,
     pub source_to_display: Vec<usize>,
     pub display_to_source: Vec<usize>,
@@ -203,7 +204,10 @@ impl EditorState {
 
         // Check for `- [ ] ` or `- [x] ` or `- [X] ` at the start of the line
         let trimmed = line_text.trim_start();
-        if trimmed.starts_with("- [ ] ") || trimmed.starts_with("- [x] ") || trimmed.starts_with("- [X] ") {
+        if trimmed.starts_with("- [ ] ")
+            || trimmed.starts_with("- [x] ")
+            || trimmed.starts_with("- [X] ")
+        {
             // The checkbox bracket range within the line: `[`, ` ` or `x`, `]`
             let bracket_start = line_offset + trimmed_start + 2; // skip "- "
             let bracket_end = bracket_start + 3; // "[ ]" or "[x]"
@@ -250,7 +254,12 @@ impl EditorState {
         cx.notify();
     }
 
-    pub fn set_document(&mut self, document: Document, _window: &mut Window, cx: &mut Context<Self>) {
+    pub fn set_document(
+        &mut self,
+        document: Document,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let content = document.content();
         self.buffer.replace_document(document);
         self.cursor = 0;
@@ -273,7 +282,10 @@ impl EditorState {
     /// Internal text mutation — bypasses OS input guard.
     /// Used by all commands that need to modify buffer content programmatically.
     pub(crate) fn edit_text(&mut self, new_text: &str, cx: &mut Context<Self>) {
-        let range = self.marked_range.clone().unwrap_or(self.selected_range.clone());
+        let range = self
+            .marked_range
+            .clone()
+            .unwrap_or(self.selected_range.clone());
 
         let old_text = self.buffer.slice_bytes(range.clone());
         let cursor_before = self.cursor;
@@ -549,8 +561,7 @@ impl EditorState {
                     self.select_to(0, cx);
                 } else {
                     let prev_end = line_start - 1;
-                    let prev_start =
-                        content[..prev_end].rfind('\n').map(|i| i + 1).unwrap_or(0);
+                    let prev_start = content[..prev_end].rfind('\n').map(|i| i + 1).unwrap_or(0);
                     let prev_len = prev_end - prev_start;
                     self.select_to(prev_start + col.min(prev_len), cx);
                 }
@@ -676,7 +687,11 @@ impl EditorState {
                     while pos <= end.saturating_add_signed(offset) {
                         let actual = (pos as isize + offset) as usize;
                         let current = self.content();
-                        let spaces = current[actual..].chars().take_while(|c| *c == ' ').count().min(4);
+                        let spaces = current[actual..]
+                            .chars()
+                            .take_while(|c| *c == ' ')
+                            .count()
+                            .min(4);
                         if spaces > 0 {
                             self.selected_range = actual..actual + spaces;
                             self.edit_text("", cx);
@@ -703,10 +718,16 @@ impl EditorState {
                 let (start, end) = self.ordered_selection();
                 let content = self.content();
                 let selected = &content[start..end];
-                let toggled: String = selected.chars().map(|c| {
-                    if c.is_uppercase() { c.to_lowercase().next().unwrap_or(c) }
-                    else { c.to_uppercase().next().unwrap_or(c) }
-                }).collect();
+                let toggled: String = selected
+                    .chars()
+                    .map(|c| {
+                        if c.is_uppercase() {
+                            c.to_lowercase().next().unwrap_or(c)
+                        } else {
+                            c.to_uppercase().next().unwrap_or(c)
+                        }
+                    })
+                    .collect();
                 self.selected_range = start..end;
                 self.edit_text(&toggled, cx);
             }
@@ -833,9 +854,14 @@ impl EditorState {
                 let line_count = self.display_map.line_count();
                 if let Some(hi_idx) = headings.iter().position(|h| h.line_idx == cursor_line) {
                     if let Some(next) = outline::next_sibling(cursor_line, &headings) {
-                        let next_idx = headings.iter().position(|h| h.line_idx == next.line_idx).unwrap();
-                        let _my_section_end = outline::section_end_line(hi_idx, &headings, line_count);
-                        let next_section_end = outline::section_end_line(next_idx, &headings, line_count);
+                        let next_idx = headings
+                            .iter()
+                            .position(|h| h.line_idx == next.line_idx)
+                            .unwrap();
+                        let _my_section_end =
+                            outline::section_end_line(hi_idx, &headings, line_count);
+                        let next_section_end =
+                            outline::section_end_line(next_idx, &headings, line_count);
                         let my_start = self.display_map.line_offset(cursor_line);
                         let next_start = self.display_map.line_offset(next.line_idx);
                         let next_end = if next_section_end < line_count {
@@ -903,9 +929,15 @@ impl EditorState {
             GrammarResult::InsertChar(ch) => {
                 self.dispatch(commands::EditorCommand::InsertChar(ch), window, cx);
             }
-            GrammarResult::DeleteRange { range, yanked, enter_insert } => {
+            GrammarResult::DeleteRange {
+                range,
+                yanked,
+                enter_insert,
+            } => {
                 self.grammar.register_content = yanked;
-                if enter_insert { self.begin_vim_edit_group(); }
+                if enter_insert {
+                    self.begin_vim_edit_group();
+                }
                 let target = range.start;
                 self.selected_range = range;
                 self.edit_text("", cx);
@@ -1087,20 +1119,29 @@ impl EditorState {
         match transient_id {
             "replace_char" => {
                 if cursor < content.len() {
-                    let next_char_len = content[cursor..].chars().next().map_or(1, |c| c.len_utf8());
+                    let next_char_len =
+                        content[cursor..].chars().next().map_or(1, |c| c.len_utf8());
                     let mut new_content = content.clone();
                     new_content.replace_range(cursor..cursor + next_char_len, &ch.to_string());
                     self.set_content(new_content, window, cx);
                 }
                 cx.notify();
             }
-            kind @ ("find_char_forward" | "til_char_forward"
-                  | "find_char_backward" | "til_char_backward") => {
+            kind @ ("find_char_forward" | "til_char_forward" | "find_char_backward"
+            | "til_char_backward") => {
                 let pos = match kind {
-                    "find_char_forward" => crate::keymap::find_char_forward(&content, cursor, ch, count),
-                    "til_char_forward" => crate::keymap::til_char_forward(&content, cursor, ch, count),
-                    "find_char_backward" => crate::keymap::find_char_backward(&content, cursor, ch, count),
-                    "til_char_backward" => crate::keymap::til_char_backward(&content, cursor, ch, count),
+                    "find_char_forward" => {
+                        crate::keymap::find_char_forward(&content, cursor, ch, count)
+                    }
+                    "til_char_forward" => {
+                        crate::keymap::til_char_forward(&content, cursor, ch, count)
+                    }
+                    "find_char_backward" => {
+                        crate::keymap::find_char_backward(&content, cursor, ch, count)
+                    }
+                    "til_char_backward" => {
+                        crate::keymap::til_char_backward(&content, cursor, ch, count)
+                    }
                     _ => cursor,
                 };
                 // Map to static str for storage
@@ -1133,7 +1174,9 @@ impl EditorState {
     ) -> Vec<ItemAction> {
         let content = self.content();
         let cursor = self.cursor;
-        let result = self.grammar.process(action, key, count, &content, cursor, stack);
+        let result = self
+            .grammar
+            .process(action, key, count, &content, cursor, stack);
         let actions = self.execute_grammar_result(result, count, vim, window, cx);
         actions
     }
@@ -1248,7 +1291,9 @@ impl EditorState {
                 if pos < content.len() {
                     let end = {
                         let mut p = pos + 1;
-                        while p < content.len() && !content.is_char_boundary(p) { p += 1; }
+                        while p < content.len() && !content.is_char_boundary(p) {
+                            p += 1;
+                        }
                         p
                     };
                     self.grammar.register_content = content[pos..end].to_string();
@@ -1263,7 +1308,9 @@ impl EditorState {
                     let content = self.content();
                     let start = {
                         let mut p = pos - 1;
-                        while p > 0 && !content.is_char_boundary(p) { p -= 1; }
+                        while p > 0 && !content.is_char_boundary(p) {
+                            p -= 1;
+                        }
                         p
                     };
                     self.grammar.register_content = content[start..pos].to_string();
@@ -1276,7 +1323,9 @@ impl EditorState {
                 let pos = self.cursor;
                 let mut end = pos;
                 for _ in 0..count {
-                    if end >= content.len() || content[end..].starts_with('\n') { break; }
+                    if end >= content.len() || content[end..].starts_with('\n') {
+                        break;
+                    }
                     end = self.next_grapheme(end);
                 }
                 if end > pos {
@@ -1291,13 +1340,19 @@ impl EditorState {
             }
             "yank-line" => {
                 let content = self.content();
-                let line_start = content[..self.cursor].rfind('\n').map(|i| i + 1).unwrap_or(0);
+                let line_start = content[..self.cursor]
+                    .rfind('\n')
+                    .map(|i| i + 1)
+                    .unwrap_or(0);
                 let mut end = line_start;
                 for _ in 0..count {
-                    end = content[end..].find('\n')
+                    end = content[end..]
+                        .find('\n')
                         .map(|offset| end + offset + 1)
                         .unwrap_or(content.len());
-                    if end == content.len() { break; }
+                    if end == content.len() {
+                        break;
+                    }
                 }
                 self.grammar.register_content = content[line_start..end].to_string();
             }
@@ -1331,7 +1386,10 @@ impl EditorState {
                 // o — open line below and enter insert
                 let content = self.content();
                 let pos = self.snap_to_char_boundary(self.cursor);
-                let line_end = content[pos..].find('\n').map(|p| pos + p).unwrap_or(content.len());
+                let line_end = content[pos..]
+                    .find('\n')
+                    .map(|p| pos + p)
+                    .unwrap_or(content.len());
                 self.begin_vim_edit_group();
                 self.move_to(line_end, cx);
                 self.edit_text("\n", cx);
@@ -1361,7 +1419,10 @@ impl EditorState {
                         // Line-wise paste: insert after current line
                         let content = self.content();
                         let pos = self.snap_to_char_boundary(self.cursor);
-                        let line_end = content[pos..].find('\n').map(|p| pos + p + 1).unwrap_or(content.len());
+                        let line_end = content[pos..]
+                            .find('\n')
+                            .map(|p| pos + p + 1)
+                            .unwrap_or(content.len());
                         self.move_to(line_end, cx);
                         self.edit_text(&text, cx);
                         self.move_to(line_end, cx);
@@ -1412,7 +1473,10 @@ impl EditorState {
                 // D — delete from cursor to end of line
                 let content = self.content();
                 let pos = self.snap_to_char_boundary(self.cursor);
-                let line_end = content[pos..].find('\n').map(|p| pos + p).unwrap_or(content.len());
+                let line_end = content[pos..]
+                    .find('\n')
+                    .map(|p| pos + p)
+                    .unwrap_or(content.len());
                 if pos < line_end {
                     self.grammar.register_content = content[pos..line_end].to_string();
                     self.selected_range = pos..line_end;
@@ -1423,7 +1487,10 @@ impl EditorState {
                 // C — change from cursor to end of line
                 let content = self.content();
                 let pos = self.snap_to_char_boundary(self.cursor);
-                let line_end = content[pos..].find('\n').map(|p| pos + p).unwrap_or(content.len());
+                let line_end = content[pos..]
+                    .find('\n')
+                    .map(|p| pos + p)
+                    .unwrap_or(content.len());
                 self.begin_vim_edit_group();
                 if pos < line_end {
                     self.grammar.register_content = content[pos..line_end].to_string();
@@ -1439,7 +1506,10 @@ impl EditorState {
                 let content = self.content();
                 let pos = self.snap_to_char_boundary(self.cursor);
                 let line_start = content[..pos].rfind('\n').map(|i| i + 1).unwrap_or(0);
-                let line_end = content[pos..].find('\n').map(|p| pos + p).unwrap_or(content.len());
+                let line_end = content[pos..]
+                    .find('\n')
+                    .map(|p| pos + p)
+                    .unwrap_or(content.len());
                 self.begin_vim_edit_group();
                 self.grammar.register_content = content[line_start..line_end].to_string();
                 self.selected_range = line_start..line_end;
@@ -1469,16 +1539,26 @@ impl EditorState {
             }
             "dot-repeat" => {
                 if let Some(transaction) = self.buffer.last_transaction() {
-                    let base = transaction.ops.first().map(|op| op.cursor_before).unwrap_or(0);
+                    let base = transaction
+                        .ops
+                        .first()
+                        .map(|op| op.cursor_before)
+                        .unwrap_or(0);
                     let repeat_at = self.cursor;
                     self.buffer.break_undo_coalescing();
                     self.buffer.begin_edit_group(self.selected_range.clone());
                     for _ in 0..count {
                         for op in &transaction.ops {
-                            let start = repeat_at.saturating_add_signed(op.range.start as isize - base as isize);
-                            let end = start.saturating_add(op.old_text.len()).min(self.content_len());
+                            let start = repeat_at
+                                .saturating_add_signed(op.range.start as isize - base as isize);
+                            let end = start
+                                .saturating_add(op.old_text.len())
+                                .min(self.content_len());
                             let content = self.content();
-                            if start <= end && content.is_char_boundary(start) && content.is_char_boundary(end) {
+                            if start <= end
+                                && content.is_char_boundary(start)
+                                && content.is_char_boundary(end)
+                            {
                                 self.selected_range = start..end;
                                 self.edit_text(&op.new_text, cx);
                             }
@@ -1491,7 +1571,9 @@ impl EditorState {
             "repeat-char-search" => {
                 let content = self.content();
                 let cursor = self.cursor;
-                if let Some(target) = crate::keymap::repeat_char_search(&self.grammar, &content, cursor, count) {
+                if let Some(target) =
+                    crate::keymap::repeat_char_search(&self.grammar, &content, cursor, count)
+                {
                     if vim.visual_active {
                         self.select_to(target, cx);
                     } else {
@@ -1502,7 +1584,12 @@ impl EditorState {
             "repeat-char-search-reverse" => {
                 let content = self.content();
                 let cursor = self.cursor;
-                if let Some(target) = crate::keymap::repeat_char_search_reverse(&self.grammar, &content, cursor, count) {
+                if let Some(target) = crate::keymap::repeat_char_search_reverse(
+                    &self.grammar,
+                    &content,
+                    cursor,
+                    count,
+                ) {
                     if vim.visual_active {
                         self.select_to(target, cx);
                     } else {
@@ -1571,7 +1658,10 @@ impl EditorState {
                 let content = self.content();
                 let cursor = self.cursor;
                 let sel = (self.selected_range.start, self.selected_range.end);
-                if let Some(cmds) = self.buffer.run_plugin_command(cmd_id, &content, cursor, sel) {
+                if let Some(cmds) = self
+                    .buffer
+                    .run_plugin_command(cmd_id, &content, cursor, sel)
+                {
                     for cmd in cmds {
                         self.dispatch(cmd, window, cx);
                     }
@@ -1646,8 +1736,7 @@ impl EditorState {
                         }
                     }
                     None => {
-                        self.status_message =
-                            Some(format!("E492: Not an editor command: {}", cmd));
+                        self.status_message = Some(format!("E492: Not an editor command: {}", cmd));
                     }
                 }
             }
@@ -1655,7 +1744,11 @@ impl EditorState {
         actions
     }
 
-    pub fn handle_set_command(&mut self, args: &str, vim: &crate::pane::VimSnapshot) -> (String, Vec<ItemAction>) {
+    pub fn handle_set_command(
+        &mut self,
+        args: &str,
+        vim: &crate::pane::VimSnapshot,
+    ) -> (String, Vec<ItemAction>) {
         if args.is_empty() {
             let mode_label = if vim.visual_active {
                 "VIS"
@@ -1664,16 +1757,21 @@ impl EditorState {
             } else {
                 "NOR"
             };
-            return (format!("vim={} mode={}", vim.vim_enabled, mode_label), vec![]);
+            return (
+                format!("vim={} mode={}", vim.vim_enabled, mode_label),
+                vec![],
+            );
         }
 
         match args {
-            "vim" => {
-                ("Vim mode enabled".into(), vec![ItemAction::SetVimEnabled(true), ItemAction::SyncVimFlags])
-            }
-            "novim" => {
-                ("Vim mode disabled".into(), vec![ItemAction::SetVimEnabled(false), ItemAction::SyncVimFlags])
-            }
+            "vim" => (
+                "Vim mode enabled".into(),
+                vec![ItemAction::SetVimEnabled(true), ItemAction::SyncVimFlags],
+            ),
+            "novim" => (
+                "Vim mode disabled".into(),
+                vec![ItemAction::SetVimEnabled(false), ItemAction::SyncVimFlags],
+            ),
             "number" | "nu" => ("Line numbers not yet implemented".into(), vec![]),
             "nonumber" | "nonu" => ("Line numbers not yet implemented".into(), vec![]),
             "wrap" => ("Soft wrap not yet implemented".into(), vec![]),
@@ -1770,12 +1868,10 @@ impl EditorState {
                 actions.extend(set_actions);
                 CommandOutcome::handled(actions)
             }
-            "toggle-vim" => {
-                CommandOutcome::handled(vec![
-                    ItemAction::SetVimEnabled(!vim.vim_enabled),
-                    ItemAction::SyncVimFlags,
-                ])
-            }
+            "toggle-vim" => CommandOutcome::handled(vec![
+                ItemAction::SetVimEnabled(!vim.vim_enabled),
+                ItemAction::SyncVimFlags,
+            ]),
             _ => CommandOutcome::Unhandled,
         }
     }
@@ -1823,7 +1919,10 @@ impl EditorState {
 
 fn line_start_at(content: &str, offset: usize) -> usize {
     let offset = offset.min(content.len());
-    content[..offset].rfind('\n').map(|index| index + 1).unwrap_or(0)
+    content[..offset]
+        .rfind('\n')
+        .map(|index| index + 1)
+        .unwrap_or(0)
 }
 
 fn line_end_including_newline(content: &str, line_start: usize) -> usize {
@@ -1838,12 +1937,16 @@ fn move_line_start(content: &str, start: usize, delta: isize) -> usize {
     if delta >= 0 {
         for _ in 0..delta as usize {
             let next = line_end_including_newline(content, target);
-            if next >= content.len() { break; }
+            if next >= content.len() {
+                break;
+            }
             target = next;
         }
     } else {
         for _ in 0..delta.unsigned_abs() {
-            if target == 0 { break; }
+            if target == 0 {
+                break;
+            }
             target = line_start_at(content, target - 1);
         }
     }
@@ -1962,10 +2065,18 @@ impl crate::ui::Scrollable for EditorState {
         // Match the chrome added by `EditorElement`: 24px top + 24px bottom padding.
         f32::from(self.display_map.total_height()) + 48.0
     }
-    fn scroll_offset(&self) -> Pixels { self.scroll_offset }
-    fn set_scroll_offset(&mut self, offset: Pixels) { self.scroll_offset = offset; }
-    fn drag_state(&self) -> Option<crate::ui::DragState> { self.drag_state }
-    fn set_drag_state(&mut self, drag: Option<crate::ui::DragState>) { self.drag_state = drag; }
+    fn scroll_offset(&self) -> Pixels {
+        self.scroll_offset
+    }
+    fn set_scroll_offset(&mut self, offset: Pixels) {
+        self.scroll_offset = offset;
+    }
+    fn drag_state(&self) -> Option<crate::ui::DragState> {
+        self.drag_state
+    }
+    fn set_drag_state(&mut self, drag: Option<crate::ui::DragState>) {
+        self.drag_state = drag;
+    }
 }
 
 pub enum EditorEvent {
