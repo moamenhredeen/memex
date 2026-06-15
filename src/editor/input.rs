@@ -168,12 +168,12 @@ impl EntityInputHandler for EditorState {
     ) -> Option<Bounds<Pixels>> {
         let range = self.range_from_utf16(&range_utf16);
         for ll in &self.last_line_layouts {
-            let line_end = ll.content_offset + ll.shaped_line.len();
+            let line_end = ll.content_offset + ll.source_len;
             if range.start >= ll.content_offset && range.start <= line_end {
                 let local_start = range.start - ll.content_offset;
-                let local_end = (range.end - ll.content_offset).min(ll.shaped_line.len());
-                let x1 = ll.shaped_line.x_for_index(local_start);
-                let x2 = ll.shaped_line.x_for_index(local_end);
+                let local_end = (range.end - ll.content_offset).min(ll.source_len);
+                let x1 = ll.shaped_line.x_for_index(ll.display_offset(local_start));
+                let x2 = ll.shaped_line.x_for_index(ll.display_offset(local_end));
                 let padding = px(24.);
                 let base_x = self
                     .last_bounds

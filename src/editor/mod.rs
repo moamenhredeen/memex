@@ -10,6 +10,7 @@ mod table;
 pub mod undo;
 mod view;
 
+use std::collections::HashMap;
 use std::ops::Range;
 
 use gpui::*;
@@ -51,6 +52,7 @@ pub struct EditorState {
     /// Set by any cursor-moving operation; cleared by `EditorElement` after
     /// it scrolls the cursor into view.
     pub needs_scroll_to_cursor: bool,
+    pub wikilink_titles: HashMap<String, String>,
     vim_edit_group_active: bool,
     visual_line_anchor: Option<usize>,
     _blink_sub: Subscription,
@@ -60,8 +62,21 @@ pub struct EditorState {
 pub struct LinePaintInfo {
     pub content_offset: usize,
     pub shaped_line: ShapedLine,
+    pub source_len: usize,
+    pub source_to_display: Vec<usize>,
+    pub display_to_source: Vec<usize>,
     pub y: Pixels,
     pub line_height: Pixels,
+}
+
+impl LinePaintInfo {
+    pub fn display_offset(&self, source_offset: usize) -> usize {
+        self.source_to_display[source_offset.min(self.source_len)]
+    }
+
+    pub fn source_offset(&self, display_offset: usize) -> usize {
+        self.display_to_source[display_offset.min(self.shaped_line.len())]
+    }
 }
 
 impl EditorState {
@@ -107,10 +122,16 @@ impl EditorState {
             drag_state: None,
             viewport_height: px(0.),
             needs_scroll_to_cursor: false,
+            wikilink_titles: HashMap::new(),
             vim_edit_group_active: false,
             visual_line_anchor: None,
             _blink_sub,
         }
+    }
+
+    pub fn set_wikilink_titles(&mut self, titles: HashMap<String, String>, cx: &mut Context<Self>) {
+        self.wikilink_titles = titles;
+        cx.notify();
     }
 
     /// Snapshot the buffer as a String (allocates). Use for read-heavy operations

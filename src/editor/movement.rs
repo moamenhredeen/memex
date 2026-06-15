@@ -46,8 +46,8 @@ impl EditorState {
         for ll in &self.last_line_layouts {
             if position.y >= ll.y && position.y < ll.y + ll.line_height {
                 let local_x = (position.x - bounds.left() - px(24.)).max(px(0.));
-                let idx_in_line = ll.shaped_line.closest_index_for_x(local_x);
-                return ll.content_offset + idx_in_line;
+                let display_idx = ll.shaped_line.closest_index_for_x(local_x);
+                return ll.content_offset + ll.source_offset(display_idx);
             }
         }
 

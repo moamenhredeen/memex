@@ -92,6 +92,28 @@ impl NoteIndex {
         self.by_id.get(id)
     }
 
+    /// Canonical titles keyed by every wikilink spelling.
+    pub fn wikilink_titles(&self) -> HashMap<String, String> {
+        let mut titles = HashMap::new();
+        for note in self.by_id.values() {
+            titles.insert(format!("id:{}", note.id), note.title.clone());
+        }
+        let keys: HashSet<&str> = self
+            .by_title
+            .keys()
+            .chain(self.by_alias.keys())
+            .map(String::as_str)
+            .collect();
+        for key in keys {
+            if let Some(ResolveHit::Unique(id)) = self.resolve_link(key)
+                && let Some(note) = self.get(id)
+            {
+                titles.insert(key.to_string(), note.title.clone());
+            }
+        }
+        titles
+    }
+
     /// All IDs that carry a given tag (case-insensitive match).
     pub fn notes_with_tag(&self, tag: &str) -> &[String] {
         self.by_tag
@@ -299,6 +321,27 @@ mod tests {
         n.aliases = vec!["Old Name".to_string()];
         let idx = NoteIndex::build(&contents_with(vec![n]));
         assert!(matches!(idx.resolve_link("old name"), Some(ResolveHit::Unique("a"))));
+    }
+
+    #[test]
+    fn wikilink_titles_use_canonical_title_for_id_and_alias() {
+        let mut n = note("a", "Canonical", &[], &[]);
+        n.aliases = vec!["Old Name".to_string()];
+        let idx = NoteIndex::build(&contents_with(vec![n]));
+        let titles = idx.wikilink_titles();
+
+        assert_eq!(titles.get("id:a").map(String::as_str), Some("Canonical"));
+        assert_eq!(titles.get("old name").map(String::as_str), Some("Canonical"));
+    }
+
+    #[test]
+    fn wikilink_titles_skip_ambiguous_targets() {
+        let idx = NoteIndex::build(&contents_with(vec![
+            note("a", "Dup", &[], &[]),
+            note("b", "Dup", &[], &[]),
+        ]));
+
+        assert!(!idx.wikilink_titles().contains_key("dup"));
     }
 
     #[test]

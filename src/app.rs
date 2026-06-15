@@ -134,6 +134,10 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         });
 
         let editor_state = cx.new(|cx| EditorState::from_document(initial_document, cx));
+        if let Some(vault) = state.vault.as_ref() {
+            let titles = vault.index.wikilink_titles();
+            editor_state.update(cx, |editor, cx| editor.set_wikilink_titles(titles, cx));
+        }
         let theme = theme::by_id(&state.config.theme).unwrap_or(theme::SOLARIZED_LIGHT);
         let editor_view = cx.new(|cx| EditorView::new(editor_state.clone(), theme, cx));
 
@@ -267,10 +271,18 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 if should_refresh {
                     let _ = cx.update(|cx| {
                         this.update(cx, |memex, cx| {
-                            if let Some(v) = memex.state.vault.as_mut() {
+                            let titles = if let Some(v) = memex.state.vault.as_mut() {
                                 let _ = v.refresh();
-                                cx.notify();
+                                Some(v.index.wikilink_titles())
+                            } else {
+                                None
+                            };
+                            if let Some(titles) = titles {
+                                memex.editor_state.update(cx, |editor, cx| {
+                                    editor.set_wikilink_titles(titles, cx);
+                                });
                             }
+                            cx.notify();
                         })
                         .ok();
                     });
@@ -599,6 +611,8 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         });
         if let Some(v) = self.state.vault.as_mut() {
             let _ = v.refresh();
+            let titles = v.index.wikilink_titles();
+            editor.update(cx, |state, cx| state.set_wikilink_titles(titles, cx));
         }
         self.minibuffer
             .set_message(format!("Renamed to '{}'", new_title));
@@ -767,13 +781,10 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         }
         // Search for a matching note in the vault
         if let Some(vault) = &self.state.vault {
-            let titles = vault.note_titles();
-            let target_lower = title.to_lowercase();
-            if let Some((_, path)) = titles
-                .iter()
-                .find(|(t, _)| t.to_lowercase() == target_lower)
+            if let Some(crate::vault::ResolveHit::Unique(id)) = vault.index.resolve_link(&title)
+                && let Some(note) = vault.index.get(id)
             {
-                let path = path.clone();
+                let path = note.path.clone();
                 self.open_note_by_path(path, window, cx);
                 return;
             }
@@ -2036,6 +2047,10 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         cx: &mut Context<Self>,
     ) -> ActiveItem {
         let editor_state = cx.new(|cx| EditorState::from_buffer(buffer, cx));
+        if let Some(vault) = self.state.vault.as_ref() {
+            let titles = vault.index.wikilink_titles();
+            editor_state.update(cx, |editor, cx| editor.set_wikilink_titles(titles, cx));
+        }
         let theme = self.theme;
         let editor_view = cx.new(|cx| EditorView::new(editor_state.clone(), theme, cx));
         let key_sub = cx.subscribe_in(

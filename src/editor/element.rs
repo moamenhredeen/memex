@@ -1,6 +1,7 @@
 use gpui::*;
+use std::collections::HashMap;
 
-use crate::markdown::{LineKind, StyleKind};
+use crate::markdown::{LineKind, StyleKind, StyleSpan};
 use crate::theme::Theme;
 
 use super::{EditorState, LinePaintInfo};
@@ -37,6 +38,89 @@ struct PrepaintLine {
     origin: Point<Pixels>,
     line_height: Pixels,
     content_offset: usize,
+    source_len: usize,
+    source_to_display: Vec<usize>,
+    display_to_source: Vec<usize>,
+}
+
+struct DisplayLine {
+    text: String,
+    spans: Vec<StyleSpan>,
+    source_to_display: Vec<usize>,
+    display_to_source: Vec<usize>,
+}
+
+fn wikilink_label(raw: &str, titles: &HashMap<String, String>) -> Option<String> {
+    let inner = raw.strip_prefix("[[")?.strip_suffix("]]")?;
+    let (target, alias) = inner
+        .split_once('|')
+        .map(|(target, alias)| (target.trim(), Some(alias.trim())))
+        .unwrap_or_else(|| (inner.trim(), None));
+    if let Some(alias) = alias.filter(|alias| !alias.is_empty()) {
+        return Some(alias.to_string());
+    }
+    Some(
+        titles
+            .get(&target.to_lowercase())
+            .cloned()
+            .unwrap_or_else(|| target.to_string()),
+    )
+}
+
+fn build_display_line(
+    source: &str,
+    spans: &[StyleSpan],
+    titles: &HashMap<String, String>,
+    cursor_offset: Option<usize>,
+) -> DisplayLine {
+    let mut text = String::new();
+    let mut display_spans = Vec::with_capacity(spans.len());
+    let mut source_to_display = vec![0; source.len() + 1];
+    let mut display_to_source = vec![0];
+
+    for span in spans {
+        let source_start = span.range.start.min(source.len());
+        let source_end = span.range.end.min(source.len());
+        let raw = &source[source_start..source_end];
+        let cursor_is_in_span =
+            cursor_offset.is_some_and(|offset| offset >= source_start && offset < source_end);
+        let replacement = if span.kind == StyleKind::Wikilink && !cursor_is_in_span {
+            wikilink_label(raw, titles).unwrap_or_else(|| raw.to_string())
+        } else {
+            raw.to_string()
+        };
+        let display_start = text.len();
+        text.push_str(&replacement);
+        let display_end = text.len();
+
+        if span.kind == StyleKind::Wikilink && replacement != raw {
+            for offset in source_start..source_end {
+                source_to_display[offset] = display_start;
+            }
+            source_to_display[source_end] = display_end;
+            display_to_source.resize(display_end + 1, source_start);
+            display_to_source[display_end] = source_end;
+        } else {
+            for offset in source_start..=source_end {
+                source_to_display[offset] = display_start + offset - source_start;
+            }
+            for offset in display_start + 1..=display_end {
+                display_to_source.push(source_start + offset - display_start);
+            }
+        }
+
+        display_spans.push(StyleSpan {
+            range: display_start..display_end,
+            kind: span.kind.clone(),
+        });
+    }
+
+    DisplayLine {
+        text,
+        spans: display_spans,
+        source_to_display,
+        display_to_source,
+    }
 }
 
 impl Element for EditorElement {
@@ -113,8 +197,7 @@ impl Element for EditorElement {
 
         // Virtual scrolling: only shape lines in viewport + overscan
         let overscan = 20;
-        let (vis_first, vis_last) =
-            dm.visible_range(scroll, bounds.size.height, overscan);
+        let (vis_first, vis_last) = dm.visible_range(scroll, bounds.size.height, overscan);
 
         let mut prepaint_lines = Vec::new();
         let mut cursor_quad: Option<PaintQuad> = None;
@@ -149,14 +232,26 @@ impl Element for EditorElement {
             let line_byte_end = line_text_end;
             let line_text = &content[line_start..line_text_end];
 
-            // Append "..." ellipsis for folded headings (org-mode style)
             let ellipsis_suffix = "...";
+            let cursor_offset = (cursor_pos >= line_start && cursor_pos <= line_byte_end)
+                .then_some(cursor_pos - line_start);
+            let mut display_line = build_display_line(
+                line_text,
+                &info.spans,
+                &state.wikilink_titles,
+                cursor_offset,
+            );
+            if heading_is_folded && !line_text.is_empty() {
+                display_line.text.push_str(ellipsis_suffix);
+                display_line
+                    .display_to_source
+                    .resize(display_line.text.len() + 1, line_text.len());
+            }
             let display_text: SharedString = if line_text.is_empty() {
+                display_line.display_to_source.push(0);
                 " ".into()
-            } else if heading_is_folded {
-                SharedString::from(format!("{}{}", line_text, ellipsis_suffix))
             } else {
-                SharedString::from(line_text.to_string())
+                SharedString::from(display_line.text.clone())
             };
 
             let mut runs: Vec<TextRun> = Vec::new();
@@ -177,163 +272,163 @@ impl Element for EditorElement {
                     strikethrough: None,
                 });
             } else {
-                for span in &info.spans {
-                    let span_start = span.range.start.min(line_text.len());
-                    let span_end = span.range.end.min(line_text.len());
+                for span in &display_line.spans {
+                    let span_start = span.range.start.min(display_line.text.len());
+                    let span_end = span.range.end.min(display_line.text.len());
                     let span_len = span_end - span_start;
                     if span_len == 0 {
                         continue;
                     }
 
-                    let (weight, fstyle, color, bg, underline, strike, use_mono) =
-                        match &span.kind {
-                            StyleKind::Normal => (
-                                info.kind.display_font_weight(),
-                                FontStyle::Normal,
-                                if matches!(info.kind, LineKind::Heading(_)) {
-                                    heading_color
-                                } else {
-                                    base_color
-                                },
-                                None,
-                                None,
-                                None,
-                                false,
-                            ),
-                            StyleKind::Bold => (
-                                FontWeight::BOLD,
-                                FontStyle::Normal,
-                                base_color,
-                                None,
-                                None,
-                                None,
-                                false,
-                            ),
-                            StyleKind::Italic => (
-                                info.kind.display_font_weight(),
-                                FontStyle::Italic,
-                                base_color,
-                                None,
-                                None,
-                                None,
-                                false,
-                            ),
-                            StyleKind::BoldItalic => (
-                                FontWeight::BOLD,
-                                FontStyle::Italic,
-                                base_color,
-                                None,
-                                None,
-                                None,
-                                false,
-                            ),
-                            StyleKind::Code => (
-                                FontWeight::NORMAL,
-                                FontStyle::Normal,
-                                code_color,
-                                Some(rgb(self.theme.code_background).into()),
-                                None,
-                                None,
-                                true,
-                            ),
-                            StyleKind::Strikethrough => (
-                                info.kind.display_font_weight(),
-                                FontStyle::Normal,
-                                dim_color,
-                                None,
-                                None,
-                                Some(StrikethroughStyle {
-                                    thickness: px(1.),
-                                    color: Some(dim_color),
-                                }),
-                                false,
-                            ),
-                            StyleKind::HeadingSyntax => (
-                                FontWeight::BOLD,
-                                FontStyle::Normal,
-                                dim_color,
-                                None,
-                                None,
-                                None,
-                                false,
-                            ),
-                            StyleKind::CodeFence => (
-                                FontWeight::NORMAL,
-                                FontStyle::Normal,
-                                dim_color,
-                                None,
-                                None,
-                                None,
-                                true,
-                            ),
-                            StyleKind::HrSyntax => (
-                                FontWeight::NORMAL,
-                                FontStyle::Normal,
-                                hr_color,
-                                None,
-                                None,
-                                None,
-                                false,
-                            ),
-                            StyleKind::ListBullet => (
-                                FontWeight::BOLD,
-                                FontStyle::Normal,
-                                dim_color,
-                                None,
-                                None,
-                                None,
-                                false,
-                            ),
-                            StyleKind::TableSyntax => (
-                                FontWeight::NORMAL,
-                                FontStyle::Normal,
-                                dim_color,
-                                None,
-                                None,
-                                None,
-                                true,
-                            ),
-                            StyleKind::BlockQuoteSyntax => (
-                                FontWeight::NORMAL,
-                                FontStyle::Normal,
-                                dim_color,
-                                None,
-                                None,
-                                None,
-                                false,
-                            ),
-                            StyleKind::Wikilink => (
-                                FontWeight::NORMAL,
-                                FontStyle::Normal,
-                                rgb(self.theme.accent).into(),
-                                None,
-                                Some(UnderlineStyle {
-                                    thickness: px(1.),
-                                    color: Some(rgb(self.theme.accent).into()),
-                                    wavy: false,
-                                }),
-                                None,
-                                false,
-                            ),
-                            StyleKind::Frontmatter => (
-                                FontWeight::NORMAL,
-                                FontStyle::Normal,
-                                dim_color,  // base1 — reads as metadata, not body
-                                None,
-                                None,
-                                None,
-                                false,
-                            ),
-                            StyleKind::Tag => (
-                                FontWeight::NORMAL,
-                                FontStyle::Normal,
-                                rgb(self.theme.warning).into(),
-                                None,
-                                None,
-                                None,
-                                false,
-                            ),
-                        };
+                    let (weight, fstyle, color, bg, underline, strike, use_mono) = match &span.kind
+                    {
+                        StyleKind::Normal => (
+                            info.kind.display_font_weight(),
+                            FontStyle::Normal,
+                            if matches!(info.kind, LineKind::Heading(_)) {
+                                heading_color
+                            } else {
+                                base_color
+                            },
+                            None,
+                            None,
+                            None,
+                            false,
+                        ),
+                        StyleKind::Bold => (
+                            FontWeight::BOLD,
+                            FontStyle::Normal,
+                            base_color,
+                            None,
+                            None,
+                            None,
+                            false,
+                        ),
+                        StyleKind::Italic => (
+                            info.kind.display_font_weight(),
+                            FontStyle::Italic,
+                            base_color,
+                            None,
+                            None,
+                            None,
+                            false,
+                        ),
+                        StyleKind::BoldItalic => (
+                            FontWeight::BOLD,
+                            FontStyle::Italic,
+                            base_color,
+                            None,
+                            None,
+                            None,
+                            false,
+                        ),
+                        StyleKind::Code => (
+                            FontWeight::NORMAL,
+                            FontStyle::Normal,
+                            code_color,
+                            Some(rgb(self.theme.code_background).into()),
+                            None,
+                            None,
+                            true,
+                        ),
+                        StyleKind::Strikethrough => (
+                            info.kind.display_font_weight(),
+                            FontStyle::Normal,
+                            dim_color,
+                            None,
+                            None,
+                            Some(StrikethroughStyle {
+                                thickness: px(1.),
+                                color: Some(dim_color),
+                            }),
+                            false,
+                        ),
+                        StyleKind::HeadingSyntax => (
+                            FontWeight::BOLD,
+                            FontStyle::Normal,
+                            dim_color,
+                            None,
+                            None,
+                            None,
+                            false,
+                        ),
+                        StyleKind::CodeFence => (
+                            FontWeight::NORMAL,
+                            FontStyle::Normal,
+                            dim_color,
+                            None,
+                            None,
+                            None,
+                            true,
+                        ),
+                        StyleKind::HrSyntax => (
+                            FontWeight::NORMAL,
+                            FontStyle::Normal,
+                            hr_color,
+                            None,
+                            None,
+                            None,
+                            false,
+                        ),
+                        StyleKind::ListBullet => (
+                            FontWeight::BOLD,
+                            FontStyle::Normal,
+                            dim_color,
+                            None,
+                            None,
+                            None,
+                            false,
+                        ),
+                        StyleKind::TableSyntax => (
+                            FontWeight::NORMAL,
+                            FontStyle::Normal,
+                            dim_color,
+                            None,
+                            None,
+                            None,
+                            true,
+                        ),
+                        StyleKind::BlockQuoteSyntax => (
+                            FontWeight::NORMAL,
+                            FontStyle::Normal,
+                            dim_color,
+                            None,
+                            None,
+                            None,
+                            false,
+                        ),
+                        StyleKind::Wikilink => (
+                            FontWeight::NORMAL,
+                            FontStyle::Normal,
+                            rgb(self.theme.accent).into(),
+                            None,
+                            Some(UnderlineStyle {
+                                thickness: px(1.),
+                                color: Some(rgb(self.theme.accent).into()),
+                                wavy: false,
+                            }),
+                            None,
+                            false,
+                        ),
+                        StyleKind::Frontmatter => (
+                            FontWeight::NORMAL,
+                            FontStyle::Normal,
+                            dim_color, // base1 — reads as metadata, not body
+                            None,
+                            None,
+                            None,
+                            false,
+                        ),
+                        StyleKind::Tag => (
+                            FontWeight::NORMAL,
+                            FontStyle::Normal,
+                            rgb(self.theme.warning).into(),
+                            None,
+                            None,
+                            None,
+                            false,
+                        ),
+                    };
 
                     let family = if use_mono || matches!(info.kind, LineKind::TableRow) {
                         SharedString::from("FiraCode Nerd Font Mono")
@@ -402,14 +497,15 @@ impl Element for EditorElement {
             // Cursor — render on the line where the cursor logically belongs
             if cursor_pos >= line_start && cursor_pos <= line_byte_end {
                 let idx_in_line = cursor_pos - line_start;
-                let cursor_x = shaped.x_for_index(idx_in_line);
+                let display_idx = display_line.source_to_display[idx_in_line];
+                let cursor_x = shaped.x_for_index(display_idx);
 
                 // Determine cursor shape based on vim mode
                 let cursor_color = rgb(self.theme.accent);
                 let cursor_shape = if vim_enabled && !is_insert {
                     // Block cursor for normal/visual modes
                     let next_x = if idx_in_line < line_text.len() {
-                        shaped.x_for_index(idx_in_line + 1)
+                        shaped.x_for_index(display_line.source_to_display[idx_in_line + 1])
                     } else {
                         cursor_x + px(8.) // fallback width at end of line
                     };
@@ -432,8 +528,10 @@ impl Element for EditorElement {
                 let sel_start = selected_range.start.max(line_start);
                 let sel_end = selected_range.end.min(line_byte_end);
                 if sel_start < sel_end {
-                    let x1 = shaped.x_for_index(sel_start - line_start);
-                    let x2 = shaped.x_for_index(sel_end - line_start);
+                    let x1 =
+                        shaped.x_for_index(display_line.source_to_display[sel_start - line_start]);
+                    let x2 =
+                        shaped.x_for_index(display_line.source_to_display[sel_end - line_start]);
                     selection_quads.push(fill(
                         Bounds::from_corners(
                             point(origin.x + x1, y),
@@ -449,6 +547,9 @@ impl Element for EditorElement {
                 origin,
                 line_height,
                 content_offset: line_start,
+                source_len: line_text.len(),
+                source_to_display: display_line.source_to_display,
+                display_to_source: display_line.display_to_source,
             });
         }
 
@@ -516,6 +617,9 @@ impl Element for EditorElement {
             line_paint_infos.push(LinePaintInfo {
                 content_offset: pl.content_offset,
                 shaped_line: pl.shaped.clone(),
+                source_len: pl.source_len,
+                source_to_display: pl.source_to_display.clone(),
+                display_to_source: pl.display_to_source.clone(),
                 y: pl.origin.y,
                 line_height: pl.line_height,
             });
@@ -536,5 +640,72 @@ impl Element for EditorElement {
             state.last_line_layouts = line_paint_infos;
             state.last_bounds = Some(bounds);
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_display_line;
+    use crate::markdown::parse_inline_styles;
+    use std::collections::HashMap;
+
+    #[test]
+    fn note_wikilink_renders_canonical_title() {
+        let source = "See [[id:abc]] now";
+        let spans = parse_inline_styles(source);
+        let titles = HashMap::from([("id:abc".to_string(), "My Note".to_string())]);
+
+        let display = build_display_line(source, &spans, &titles, None);
+
+        assert_eq!(display.text, "See My Note now");
+    }
+
+    #[test]
+    fn pdf_annotation_wikilink_renders_selected_text_alias() {
+        let source = "[[paper.pdf#annotation=memex:abc|selected text]]";
+        let spans = parse_inline_styles(source);
+
+        let display = build_display_line(source, &spans, &HashMap::new(), None);
+
+        assert_eq!(display.text, "selected text");
+        assert_eq!(display.display_to_source[1], 0);
+        assert_eq!(display.source_to_display[source.len()], display.text.len());
+    }
+
+    #[test]
+    fn unresolved_wikilink_renders_target_without_markup() {
+        let source = "[[Missing Note]]";
+        let spans = parse_inline_styles(source);
+
+        let display = build_display_line(source, &spans, &HashMap::new(), None);
+
+        assert_eq!(display.text, "Missing Note");
+    }
+
+    #[test]
+    fn wikilink_under_cursor_renders_raw_source() {
+        let source = "See [[id:abc]] now";
+        let spans = parse_inline_styles(source);
+        let titles = HashMap::from([("id:abc".to_string(), "My Note".to_string())]);
+
+        let display = build_display_line(source, &spans, &titles, Some(8));
+
+        assert_eq!(display.text, source);
+        assert_eq!(display.source_to_display[8], 8);
+        assert_eq!(display.display_to_source[8], 8);
+    }
+
+    #[test]
+    fn only_wikilink_under_cursor_renders_raw_source() {
+        let source = "[[id:a]] and [[id:b]]";
+        let spans = parse_inline_styles(source);
+        let titles = HashMap::from([
+            ("id:a".to_string(), "First".to_string()),
+            ("id:b".to_string(), "Second".to_string()),
+        ]);
+
+        let display = build_display_line(source, &spans, &titles, Some(3));
+
+        assert_eq!(display.text, "[[id:a]] and Second");
     }
 }
