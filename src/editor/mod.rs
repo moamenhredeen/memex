@@ -1,5 +1,6 @@
 mod blink;
 mod buffer;
+mod code_edit;
 pub mod commands;
 mod display_map;
 mod element;
@@ -295,6 +296,19 @@ impl EditorState {
             .marked_range
             .clone()
             .unwrap_or(self.selected_range.clone());
+        self.edit_text_with_cursor(new_text, range.start + new_text.len(), cx);
+    }
+
+    pub(crate) fn edit_text_with_cursor(
+        &mut self,
+        new_text: &str,
+        cursor_after: usize,
+        cx: &mut Context<Self>,
+    ) {
+        let range = self
+            .marked_range
+            .clone()
+            .unwrap_or(self.selected_range.clone());
 
         let old_text = self.buffer.slice_bytes(range.clone());
         let cursor_before = self.cursor;
@@ -302,26 +316,57 @@ impl EditorState {
 
         self.rope_replace(range.clone(), new_text);
 
-        let new_cursor = range.start + new_text.len();
-
         self.buffer.record_edit(
             undo::EditOp {
                 range: range.clone(),
                 old_text,
                 new_text: new_text.to_string(),
                 cursor_before,
-                cursor_after: new_cursor,
+                cursor_after,
             },
             selection_before,
         );
 
-        self.selected_range = new_cursor..new_cursor;
-        self.cursor = new_cursor;
+        self.selected_range = cursor_after..cursor_after;
+        self.cursor = cursor_after;
         self.marked_range.take();
         self.needs_scroll_to_cursor = true;
         self.blink_cursor.update(cx, |bc, cx| bc.pause(cx));
         cx.emit(EditorEvent::Changed);
         cx.notify();
+    }
+
+    fn apply_code_edit(&mut self, replacement: code_edit::CodeEdit, cx: &mut Context<Self>) {
+        if replacement.range.is_empty() && replacement.text.is_empty() {
+            self.move_to(replacement.cursor_after, cx);
+            return;
+        }
+        self.selected_range = replacement.range;
+        self.marked_range = None;
+        self.edit_text_with_cursor(&replacement.text, replacement.cursor_after, cx);
+    }
+
+    fn try_code_insert(&mut self, text: &str, range: Range<usize>, cx: &mut Context<Self>) -> bool {
+        let content = self.content();
+        if let Some(edit) = code_edit::smart_insert(&content, range, text) {
+            self.apply_code_edit(edit, cx);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn try_code_backspace(&mut self, cx: &mut Context<Self>) -> bool {
+        if !self.selected_range.is_empty() || self.marked_range.is_some() {
+            return false;
+        }
+        let content = self.content();
+        if let Some(edit) = code_edit::smart_backspace(&content, self.cursor_offset()) {
+            self.apply_code_edit(edit, cx);
+            true
+        } else {
+            false
+        }
     }
 
     pub fn cursor_offset(&self) -> usize {
@@ -618,6 +663,9 @@ impl EditorState {
                 self.grammar.register_content = text;
             }
             DeleteBackward => {
+                if self.try_code_backspace(cx) {
+                    return;
+                }
                 if self.selected_range.is_empty() {
                     self.select_to(self.prev_grapheme(self.cursor_offset()), cx);
                 }
@@ -634,7 +682,10 @@ impl EditorState {
                 self.edit_text("", cx);
             }
             InsertNewline => {
-                self.edit_text("\n", cx);
+                let range = self.selected_range.clone();
+                if !self.try_code_insert("\n", range, cx) {
+                    self.edit_text("\n", cx);
+                }
             }
             InsertTab => {
                 if !self.handle_table_tab(true, cx) {
@@ -644,7 +695,10 @@ impl EditorState {
             InsertChar(ch) => {
                 let mut buf = [0u8; 4];
                 let s = ch.encode_utf8(&mut buf);
-                self.edit_text(s, cx);
+                let range = self.selected_range.clone();
+                if !self.try_code_insert(s, range, cx) {
+                    self.edit_text(s, cx);
+                }
             }
             InsertText(text) => {
                 self.edit_text(&text, cx);

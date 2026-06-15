@@ -1,5 +1,7 @@
 use pulldown_cmark::{Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use std::collections::HashMap;
 use std::ops::Range;
+use std::sync::{Mutex, OnceLock};
 
 #[derive(Clone, Debug)]
 pub struct StyleSpan {
@@ -26,6 +28,15 @@ pub enum StyleKind {
     Frontmatter,
     /// Inline `#tag` reference.
     Tag,
+    SyntaxComment,
+    SyntaxString,
+    SyntaxNumber,
+    SyntaxKeyword,
+    SyntaxType,
+    SyntaxFunction,
+    SyntaxProperty,
+    SyntaxConstant,
+    SyntaxOperator,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -133,31 +144,35 @@ pub fn parse_document(content: &str) -> Vec<(LineInfo, usize)> {
 
     let line_kinds = determine_line_kinds(content, &raw_lines, &line_starts);
 
+    let code_spans = highlighted_code_spans(&raw_lines);
+
     raw_lines
         .iter()
         .enumerate()
         .map(|(i, line)| {
             let kind = line_kinds[i].clone();
-            let info = build_line_info(line, kind);
+            let info = build_line_info(line, kind, code_spans[i].clone());
             (info, line_starts[i])
         })
         .collect()
 }
 
-fn build_line_info(line: &str, kind: LineKind) -> LineInfo {
+fn build_line_info(line: &str, kind: LineKind, code_spans: Option<Vec<StyleSpan>>) -> LineInfo {
     let spans = match &kind {
         LineKind::CodeBlock => {
             let trimmed = line.trim();
-            if trimmed.starts_with("```") {
+            if is_fence_line(trimmed) {
                 vec![StyleSpan {
                     range: 0..line.len().max(1),
                     kind: StyleKind::CodeFence,
                 }]
             } else {
-                vec![StyleSpan {
-                    range: 0..line.len().max(1),
-                    kind: StyleKind::Code,
-                }]
+                code_spans.unwrap_or_else(|| {
+                    vec![StyleSpan {
+                        range: 0..line.len().max(1),
+                        kind: StyleKind::Code,
+                    }]
+                })
             }
         }
         LineKind::ThematicBreak => {
@@ -190,9 +205,8 @@ fn build_line_info(line: &str, kind: LineKind) -> LineInfo {
             // Style the `> ` prefix, parse inline for the rest
             let trimmed = line.trim_start();
             if let Some(rest) = trimmed.strip_prefix('>') {
-                let prefix_len = line.len() - trimmed.len()
-                    + 1
-                    + if rest.starts_with(' ') { 1 } else { 0 };
+                let prefix_len =
+                    line.len() - trimmed.len() + 1 + if rest.starts_with(' ') { 1 } else { 0 };
                 let mut spans = vec![StyleSpan {
                     range: 0..prefix_len,
                     kind: StyleKind::BlockQuoteSyntax,
@@ -214,11 +228,112 @@ fn build_line_info(line: &str, kind: LineKind) -> LineInfo {
     LineInfo { kind, spans }
 }
 
-fn determine_line_kinds(
-    content: &str,
-    raw_lines: &[&str],
-    line_starts: &[usize],
-) -> Vec<LineKind> {
+fn highlighted_code_spans(raw_lines: &[&str]) -> Vec<Option<Vec<StyleSpan>>> {
+    let mut result = vec![None; raw_lines.len()];
+    let mut line = 0;
+
+    while line < raw_lines.len() {
+        let Some((marker, marker_len, language)) = opening_fence(raw_lines[line]) else {
+            line += 1;
+            continue;
+        };
+
+        let end = (line + 1..raw_lines.len())
+            .find(|&candidate| closing_fence(raw_lines[candidate], marker, marker_len))
+            .unwrap_or(raw_lines.len());
+        let source = raw_lines[line + 1..end].join("\n");
+
+        if let Some(spans) = cached_highlight(language, &source) {
+            let mut source_offset = 0;
+            for (relative_line, text) in raw_lines[line + 1..end].iter().enumerate() {
+                let source_end = source_offset + text.len();
+                let mut line_spans = Vec::new();
+                for span in &spans {
+                    let start = span.range.start.max(source_offset);
+                    let end = span.range.end.min(source_end);
+                    if end > start {
+                        line_spans.push(StyleSpan {
+                            range: start - source_offset..end - source_offset,
+                            kind: span.kind.clone(),
+                        });
+                    }
+                }
+                if line_spans.is_empty() {
+                    line_spans.push(StyleSpan {
+                        range: 0..text.len(),
+                        kind: StyleKind::Code,
+                    });
+                }
+                result[line + 1 + relative_line] = Some(line_spans);
+                source_offset = source_end + 1;
+            }
+        }
+
+        line = if end < raw_lines.len() { end + 1 } else { end };
+    }
+
+    result
+}
+
+fn cached_highlight(language: &str, source: &str) -> Option<Vec<StyleSpan>> {
+    const MAX_CACHED_BLOCKS: usize = 256;
+
+    type Cache = HashMap<(String, String), Vec<StyleSpan>>;
+    static CACHE: OnceLock<Mutex<Cache>> = OnceLock::new();
+
+    let key = (language.trim().to_ascii_lowercase(), source.to_string());
+    let cache = CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+
+    if let Ok(cache) = cache.lock()
+        && let Some(spans) = cache.get(&key)
+    {
+        return Some(spans.clone());
+    }
+
+    let spans = crate::syntax::highlight(language, source)?;
+
+    if let Ok(mut cache) = cache.lock() {
+        if cache.len() >= MAX_CACHED_BLOCKS {
+            cache.clear();
+        }
+        cache.insert(key, spans.clone());
+    }
+
+    Some(spans)
+}
+
+fn opening_fence(line: &str) -> Option<(u8, usize, &str)> {
+    let trimmed = line.trim_start();
+    if line.len() - trimmed.len() > 3 {
+        return None;
+    }
+    let marker = *trimmed.as_bytes().first()?;
+    if marker != b'`' && marker != b'~' {
+        return None;
+    }
+    let marker_len = trimmed.bytes().take_while(|byte| *byte == marker).count();
+    if marker_len < 3 {
+        return None;
+    }
+    let info = trimmed[marker_len..].trim();
+    let language = info.split_whitespace().next().unwrap_or("");
+    Some((marker, marker_len, language))
+}
+
+fn closing_fence(line: &str, marker: u8, minimum_len: usize) -> bool {
+    let trimmed = line.trim_start();
+    if line.len() - trimmed.len() > 3 {
+        return false;
+    }
+    let marker_len = trimmed.bytes().take_while(|byte| *byte == marker).count();
+    marker_len >= minimum_len && trimmed[marker_len..].trim().is_empty()
+}
+
+fn is_fence_line(line: &str) -> bool {
+    opening_fence(line).is_some()
+}
+
+fn determine_line_kinds(content: &str, raw_lines: &[&str], line_starts: &[usize]) -> Vec<LineKind> {
     let num_lines = raw_lines.len();
     let mut kinds = vec![LineKind::Normal; num_lines];
 
@@ -602,9 +717,11 @@ pub fn is_separator_row(line: &str) -> bool {
         return false;
     }
     let inner = &trimmed[1..trimmed.len() - 1];
-    inner
-        .split('|')
-        .all(|cell| cell.trim().chars().all(|c| c == '-' || c == ':' || c == ' '))
+    inner.split('|').all(|cell| {
+        cell.trim()
+            .chars()
+            .all(|c| c == '-' || c == ':' || c == ' ')
+    })
 }
 
 /// Compute column widths from table rows (minimum 3).
@@ -624,11 +741,7 @@ pub fn compute_col_widths(rows: &[Vec<String>], is_separator: &[bool]) -> Vec<us
 }
 
 /// Format a table as aligned markdown text.
-pub fn format_table(
-    rows: &[Vec<String>],
-    is_separator: &[bool],
-    col_widths: &[usize],
-) -> String {
+pub fn format_table(rows: &[Vec<String>], is_separator: &[bool], col_widths: &[usize]) -> String {
     let mut out = String::new();
     for (ri, row) in rows.iter().enumerate() {
         out.push('|');
@@ -870,7 +983,7 @@ mod tests {
         let pos = cursor_pos_in_formatted_table(0, 0, &rows, &widths, &is_sep);
         assert_eq!(&formatted[pos - 4..pos], "Name");
 
-        // Row 0, Col 1: after "| Role" => pos should point after "Role"  
+        // Row 0, Col 1: after "| Role" => pos should point after "Role"
         let pos = cursor_pos_in_formatted_table(0, 1, &rows, &widths, &is_sep);
         assert_eq!(&formatted[pos - 4..pos], "Role");
 
@@ -954,6 +1067,17 @@ mod tests {
         assert_eq!(infos[0].0.kind, LineKind::Normal);
         assert_eq!(infos[2].0.kind, LineKind::CodeBlock);
         assert_eq!(infos[3].0.kind, LineKind::CodeBlock);
+        assert!(
+            infos[3]
+                .0
+                .spans
+                .iter()
+                .any(|span| span.kind == StyleKind::SyntaxKeyword)
+        );
+        assert!(infos[3].0.spans.iter().any(|span| matches!(
+            span.kind,
+            StyleKind::SyntaxNumber | StyleKind::SyntaxConstant
+        )));
         assert_eq!(infos[4].0.kind, LineKind::CodeBlock);
         assert_eq!(infos[6].0.kind, LineKind::Normal);
     }

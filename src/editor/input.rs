@@ -61,6 +61,10 @@ impl EntityInputHandler for EditorState {
             .or(self.marked_range.clone())
             .unwrap_or(self.selected_range.clone());
 
+        if self.marked_range.is_none() && self.try_code_insert(new_text, range.clone(), cx) {
+            return;
+        }
+
         // Capture old text for undo before mutating
         let old_text = self.buffer.slice_bytes(range.clone());
         let cursor_before = self.cursor;

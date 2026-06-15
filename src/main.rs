@@ -14,6 +14,7 @@ mod pane;
 mod pdf;
 mod plugin;
 mod state;
+mod syntax;
 mod theme;
 mod ui;
 mod vault;
