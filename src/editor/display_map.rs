@@ -8,6 +8,7 @@ use crate::markdown::{self, LineInfo, LineKind};
 /// to enable virtual scrolling (only shaping visible lines).
 pub struct DisplayMap {
     lines: Vec<CachedLine>,
+    content: Option<String>,
     /// Version of the content when last parsed
     version: u64,
     /// Total document height in pixels
@@ -30,6 +31,7 @@ impl DisplayMap {
     pub fn new(padding: Pixels) -> Self {
         Self {
             lines: Vec::new(),
+            content: None,
             version: 0,
             total_height: Pixels::ZERO,
             padding,
@@ -47,6 +49,10 @@ impl DisplayMap {
 
     /// Re-parse the document and update cached lines.
     pub fn update(&mut self, content: &str) {
+        if self.content.as_deref() == Some(content) {
+            return;
+        }
+        self.content = Some(content.to_string());
         let parsed = markdown::parse_document(content);
         let mut y = Pixels::ZERO;
         self.lines = parsed
@@ -99,6 +105,29 @@ impl DisplayMap {
 
     pub fn line_height(&self, idx: usize) -> Pixels {
         self.lines[idx].line_height
+    }
+
+    pub fn reset_line_heights(&mut self) {
+        for line in &mut self.lines {
+            line.line_height = line.info.kind.line_height();
+        }
+        let hidden: Vec<bool> = self.lines.iter().map(|line| line.hidden).collect();
+        self.update_visibility(&hidden);
+    }
+
+    pub fn update_line_heights(&mut self, heights: &[(usize, Pixels)]) -> bool {
+        let mut changed = false;
+        for &(index, height) in heights {
+            if let Some(line) = self.lines.get_mut(index) {
+                changed |= line.line_height != height;
+                line.line_height = height;
+            }
+        }
+        if changed {
+            let hidden: Vec<bool> = self.lines.iter().map(|line| line.hidden).collect();
+            self.update_visibility(&hidden);
+        }
+        changed
     }
 
     pub fn is_line_hidden(&self, idx: usize) -> bool {

@@ -49,6 +49,7 @@ pub struct EditorState {
     pub drag_state: Option<crate::ui::DragState>,
     /// Viewport height from last frame, used by follow-cursor scrolling.
     pub viewport_height: Pixels,
+    pub wrap_width: Pixels,
     /// Set by any cursor-moving operation; cleared by `EditorElement` after
     /// it scrolls the cursor into view.
     pub needs_scroll_to_cursor: bool,
@@ -61,12 +62,13 @@ pub struct EditorState {
 #[derive(Clone)]
 pub struct LinePaintInfo {
     pub content_offset: usize,
-    pub shaped_line: ShapedLine,
+    pub shaped_line: WrappedLine,
     pub origin_x: Pixels,
     pub source_len: usize,
     pub source_to_display: Vec<usize>,
     pub display_to_source: Vec<usize>,
     pub y: Pixels,
+    pub row_height: Pixels,
     pub line_height: Pixels,
 }
 
@@ -77,6 +79,12 @@ impl LinePaintInfo {
 
     pub fn source_offset(&self, display_offset: usize) -> usize {
         self.display_to_source[display_offset.min(self.shaped_line.len())]
+    }
+
+    pub fn display_position(&self, source_offset: usize) -> Point<Pixels> {
+        self.shaped_line
+            .position_for_index(self.display_offset(source_offset), self.row_height)
+            .unwrap_or_default()
     }
 }
 
@@ -122,6 +130,7 @@ impl EditorState {
             insert_mode: false,
             drag_state: None,
             viewport_height: px(0.),
+            wrap_width: px(0.),
             needs_scroll_to_cursor: false,
             wikilink_titles: HashMap::new(),
             vim_edit_group_active: false,
@@ -1774,8 +1783,8 @@ impl EditorState {
             ),
             "number" | "nu" => ("Line numbers not yet implemented".into(), vec![]),
             "nonumber" | "nonu" => ("Line numbers not yet implemented".into(), vec![]),
-            "wrap" => ("Soft wrap not yet implemented".into(), vec![]),
-            "nowrap" => ("Soft wrap not yet implemented".into(), vec![]),
+            "wrap" => ("Soft wrap is enabled".into(), vec![]),
+            "nowrap" => ("Soft wrap cannot be disabled yet".into(), vec![]),
             _ => (format!("Unknown option: {}", args), vec![]),
         }
     }
@@ -1908,8 +1917,26 @@ impl EditorState {
             return;
         }
         let cursor_line = self.display_map.line_for_offset(self.cursor);
-        let line_y: f32 = self.display_map.line_y(cursor_line).into();
-        let line_h: f32 = self.display_map.line_height(cursor_line).into();
+        let (line_y, line_h) = self
+            .last_line_layouts
+            .iter()
+            .find(|line| {
+                self.cursor >= line.content_offset
+                    && self.cursor <= line.content_offset + line.source_len
+            })
+            .map(|line| {
+                let position = line.display_position(self.cursor - line.content_offset);
+                (
+                    f32::from(self.display_map.line_y(cursor_line) + position.y),
+                    f32::from(line.row_height),
+                )
+            })
+            .unwrap_or_else(|| {
+                (
+                    f32::from(self.display_map.line_y(cursor_line)),
+                    f32::from(self.display_map.line_height(cursor_line)),
+                )
+            });
         let total: f32 = f32::from(self.display_map.total_height()) + 48.0;
         let scroll: f32 = self.scroll_offset.into();
         let new_scroll = scroll_cursor_into_view_math(scroll, viewport, total, line_y, line_h);

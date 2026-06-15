@@ -36,8 +36,9 @@ pub struct PrepaintState {
 }
 
 struct PrepaintLine {
-    shaped: ShapedLine,
+    shaped: WrappedLine,
     origin: Point<Pixels>,
+    row_height: Pixels,
     line_height: Pixels,
     content_offset: usize,
     source_len: usize,
@@ -51,6 +52,10 @@ fn content_inset(viewport_width: Pixels, editor_width: Pixels) -> Pixels {
     let viewport_width: f32 = viewport_width.into();
     let editor_width: f32 = editor_width.into();
     px(((viewport_width - editor_width) / 2.0).max(MIN_HORIZONTAL_PADDING))
+}
+
+fn content_width(viewport_width: Pixels, editor_width: Pixels) -> Pixels {
+    viewport_width - content_inset(viewport_width, editor_width) * 2.0
 }
 
 struct DisplayLine {
@@ -167,10 +172,17 @@ impl Element for EditorElement {
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
+        let horizontal_inset = content_inset(bounds.size.width, self.editor_width);
+        let wrap_width = content_width(bounds.size.width, self.editor_width);
+
         // Update display map if content changed (needs mutable access)
         self.state.update(cx, |state, _cx| {
             let content = state.content();
             state.display_map.update(&content);
+            if state.wrap_width != wrap_width {
+                state.wrap_width = wrap_width;
+                state.display_map.reset_line_heights();
+            }
             // Reapply outline fold visibility after display map refresh
             let kinds = state.display_map.line_kinds();
             let headings = crate::editor::outline::extract_headings(&kinds);
@@ -193,7 +205,6 @@ impl Element for EditorElement {
 
         let state = self.state.read(cx);
         let vertical_padding = px(24.);
-        let horizontal_inset = content_inset(bounds.size.width, self.editor_width);
         let scroll = state.scroll_offset;
         let cursor_pos = state.cursor;
         let selected_range = state.selected_range.clone();
@@ -218,6 +229,8 @@ impl Element for EditorElement {
         let code_color: Hsla = rgb(self.theme.cyan).into();
         let heading_color: Hsla = rgb(self.theme.text_strong).into();
         let hr_color: Hsla = rgb(self.theme.border).into();
+        let mut height_updates = Vec::new();
+        let mut accumulated_height_delta = px(0.);
 
         for i in vis_first..vis_last {
             // Skip lines hidden by outline folding
@@ -227,9 +240,12 @@ impl Element for EditorElement {
 
             let info = dm.line_info(i);
             let line_start = dm.line_offset(i);
-            let line_height = dm.line_height(i);
+            let cached_line_height = dm.line_height(i);
+            let row_height = info.kind.line_height();
             let font_size = info.kind.display_font_size();
-            let y = bounds.origin.y + vertical_padding - scroll + dm.line_y(i);
+            let y = bounds.origin.y + vertical_padding - scroll
+                + dm.line_y(i)
+                + accumulated_height_delta;
 
             // Check if this heading is folded (next line hidden)
             let heading_is_folded = matches!(&info.kind, LineKind::Heading(_))
@@ -501,7 +517,14 @@ impl Element for EditorElement {
                 }];
             }
 
-            let shaped = text_system.shape_line(display_text, font_size, &runs, None);
+            let shaped = text_system
+                .shape_text(display_text, font_size, &runs, Some(wrap_width), None)
+                .expect("single editor line should shape")
+                .pop()
+                .expect("single editor line should produce a layout");
+            let line_height = shaped.size(row_height).height;
+            height_updates.push((i, line_height));
+            accumulated_height_delta += line_height - cached_line_height;
 
             let origin = point(bounds.origin.x + horizontal_inset, y);
 
@@ -509,24 +532,37 @@ impl Element for EditorElement {
             if cursor_pos >= line_start && cursor_pos <= line_byte_end {
                 let idx_in_line = cursor_pos - line_start;
                 let display_idx = display_line.source_to_display[idx_in_line];
-                let cursor_x = shaped.x_for_index(display_idx);
+                let cursor_position = shaped
+                    .position_for_index(display_idx, row_height)
+                    .unwrap_or_default();
+                let cursor_x = cursor_position.x;
 
                 // Determine cursor shape based on vim mode
                 let cursor_color = rgb(self.theme.accent);
                 let cursor_shape = if vim_enabled && !is_insert {
                     // Block cursor for normal/visual modes
                     let next_x = if idx_in_line < line_text.len() {
-                        shaped.x_for_index(display_line.source_to_display[idx_in_line + 1])
+                        let next_position = shaped
+                            .position_for_index(
+                                display_line.source_to_display[idx_in_line + 1],
+                                row_height,
+                            )
+                            .unwrap_or(cursor_position);
+                        if next_position.y == cursor_position.y {
+                            next_position.x
+                        } else {
+                            cursor_x + px(8.)
+                        }
                     } else {
                         cursor_x + px(8.) // fallback width at end of line
                     };
                     let block_w = (next_x - cursor_x).max(px(8.));
-                    size(block_w, line_height)
+                    size(block_w, row_height)
                 } else {
-                    size(px(2.), line_height)
+                    size(px(2.), row_height)
                 };
 
-                let cursor_y = y;
+                let cursor_y = y + cursor_position.y;
 
                 cursor_quad = Some(fill(
                     Bounds::new(point(origin.x + cursor_x, cursor_y), cursor_shape),
@@ -539,23 +575,61 @@ impl Element for EditorElement {
                 let sel_start = selected_range.start.max(line_start);
                 let sel_end = selected_range.end.min(line_byte_end);
                 if sel_start < sel_end {
-                    let x1 =
-                        shaped.x_for_index(display_line.source_to_display[sel_start - line_start]);
-                    let x2 =
-                        shaped.x_for_index(display_line.source_to_display[sel_end - line_start]);
-                    selection_quads.push(fill(
-                        Bounds::from_corners(
-                            point(origin.x + x1, y),
-                            point(origin.x + x2, y + line_height),
-                        ),
-                        rgba((self.theme.accent << 8) | 0x30),
-                    ));
+                    let start = shaped
+                        .position_for_index(
+                            display_line.source_to_display[sel_start - line_start],
+                            row_height,
+                        )
+                        .unwrap_or_default();
+                    let end = shaped
+                        .position_for_index(
+                            display_line.source_to_display[sel_end - line_start],
+                            row_height,
+                        )
+                        .unwrap_or(start);
+                    let color = rgba((self.theme.accent << 8) | 0x30);
+                    if start.y == end.y {
+                        selection_quads.push(fill(
+                            Bounds::from_corners(
+                                point(origin.x + start.x, y + start.y),
+                                point(origin.x + end.x, y + start.y + row_height),
+                            ),
+                            color,
+                        ));
+                    } else {
+                        selection_quads.push(fill(
+                            Bounds::from_corners(
+                                point(origin.x + start.x, y + start.y),
+                                point(origin.x + wrap_width, y + start.y + row_height),
+                            ),
+                            color,
+                        ));
+                        let mut row_y = start.y + row_height;
+                        while row_y < end.y {
+                            selection_quads.push(fill(
+                                Bounds::new(
+                                    point(origin.x, y + row_y),
+                                    size(wrap_width, row_height),
+                                ),
+                                color,
+                            ));
+                            row_y += row_height;
+                        }
+                        selection_quads.push(fill(
+                            Bounds::from_corners(
+                                point(origin.x, y + end.y),
+                                point(origin.x + end.x, y + end.y + row_height),
+                            ),
+                            color,
+                        ));
+                    }
                 }
             }
 
             prepaint_lines.push(PrepaintLine {
                 shaped,
                 origin,
+                row_height,
                 line_height,
                 content_offset: line_start,
                 source_len: line_text.len(),
@@ -563,6 +637,12 @@ impl Element for EditorElement {
                 display_to_source: display_line.display_to_source,
             });
         }
+
+        self.state.update(cx, |state, cx| {
+            if state.display_map.update_line_heights(&height_updates) {
+                cx.notify();
+            }
+        });
 
         // Default cursor if none set (e.g. cursor at very end of document beyond visible lines)
         if cursor_quad.is_none() {
@@ -623,7 +703,9 @@ impl Element for EditorElement {
             {
                 continue;
             }
-            let _ = pl.shaped.paint(pl.origin, pl.line_height, window, cx);
+            let _ = pl
+                .shaped
+                .paint(pl.origin, pl.row_height, TextAlign::Left, None, window, cx);
 
             line_paint_infos.push(LinePaintInfo {
                 content_offset: pl.content_offset,
@@ -633,6 +715,7 @@ impl Element for EditorElement {
                 source_to_display: pl.source_to_display.clone(),
                 display_to_source: pl.display_to_source.clone(),
                 y: pl.origin.y,
+                row_height: pl.row_height,
                 line_height: pl.line_height,
             });
         }

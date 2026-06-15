@@ -172,11 +172,11 @@ impl EntityInputHandler for EditorState {
             if range.start >= ll.content_offset && range.start <= line_end {
                 let local_start = range.start - ll.content_offset;
                 let local_end = (range.end - ll.content_offset).min(ll.source_len);
-                let x1 = ll.shaped_line.x_for_index(ll.display_offset(local_start));
-                let x2 = ll.shaped_line.x_for_index(ll.display_offset(local_end));
+                let start = ll.display_position(local_start);
+                let end = ll.display_position(local_end);
                 return Some(Bounds::from_corners(
-                    point(ll.origin_x + x1, ll.y),
-                    point(ll.origin_x + x2, ll.y + ll.line_height),
+                    point(ll.origin_x + start.x, ll.y + start.y),
+                    point(ll.origin_x + end.x, ll.y + end.y + ll.row_height),
                 ));
             }
         }
