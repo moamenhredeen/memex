@@ -24,12 +24,18 @@ fn register_motions(stack: &mut LayerStack) {
     stack.register_motion("line-start", MotionImpl::Native(motion_line_start));
     stack.register_motion("line-end", MotionImpl::Native(motion_line_end));
     stack.register_motion("first-non-whitespace", MotionImpl::Native(motion_first_non_whitespace));
+    stack.register_motion("line-first-non-whitespace", MotionImpl::Native(motion_line_first_non_whitespace));
+    stack.register_motion("last-non-whitespace", MotionImpl::Native(motion_last_non_whitespace));
     stack.register_motion("word-forward", MotionImpl::Native(motion_word_forward));
     stack.register_motion("word-backward", MotionImpl::Native(motion_word_backward));
     stack.register_motion("word-end", MotionImpl::Native(motion_word_end));
+    stack.register_motion("word-end-backward", MotionImpl::Native(motion_word_end_backward));
     stack.register_motion("big-word-forward", MotionImpl::Native(motion_big_word_forward));
     stack.register_motion("big-word-backward", MotionImpl::Native(motion_big_word_backward));
     stack.register_motion("big-word-end", MotionImpl::Native(motion_big_word_end));
+    stack.register_motion("big-word-end-backward", MotionImpl::Native(motion_big_word_end_backward));
+    stack.register_motion("next-line-first-non-whitespace", MotionImpl::Native(motion_next_line_first_non_whitespace));
+    stack.register_motion("prev-line-first-non-whitespace", MotionImpl::Native(motion_prev_line_first_non_whitespace));
     stack.register_motion("doc-start", MotionImpl::Native(motion_doc_start));
     stack.register_motion("doc-end", MotionImpl::Native(motion_doc_end));
     stack.register_motion("paragraph-forward", MotionImpl::Native(motion_paragraph_forward));
@@ -127,13 +133,35 @@ pub fn motion_line_end(content: &str, cursor: usize, _count: usize) -> usize {
 pub fn motion_first_non_whitespace(content: &str, cursor: usize, _count: usize) -> usize {
     let line_start = content[..cursor].rfind('\n').map(|i| i + 1).unwrap_or(0);
     let line = &content[line_start..];
-    let offset = line.chars().take_while(|c| c.is_whitespace() && *c != '\n').count();
-    // Need byte offset not char count
     let byte_offset: usize = line.chars()
         .take_while(|c| c.is_whitespace() && *c != '\n')
         .map(|c| c.len_utf8())
         .sum();
     line_start + byte_offset
+}
+
+pub fn motion_line_first_non_whitespace(content: &str, cursor: usize, count: usize) -> usize {
+    let target = motion_down(content, cursor, count.saturating_sub(1));
+    motion_first_non_whitespace(content, target, 1)
+}
+
+pub fn motion_last_non_whitespace(content: &str, cursor: usize, _count: usize) -> usize {
+    let line_start = motion_line_start(content, cursor, 1);
+    let line_end = motion_line_end(content, cursor, 1);
+    content[line_start..line_end]
+        .char_indices()
+        .rev()
+        .find(|(_, ch)| !ch.is_whitespace())
+        .map(|(offset, _)| line_start + offset)
+        .unwrap_or(line_start)
+}
+
+pub fn motion_next_line_first_non_whitespace(content: &str, cursor: usize, count: usize) -> usize {
+    motion_first_non_whitespace(content, motion_down(content, cursor, count), 1)
+}
+
+pub fn motion_prev_line_first_non_whitespace(content: &str, cursor: usize, count: usize) -> usize {
+    motion_first_non_whitespace(content, motion_up(content, cursor, count), 1)
 }
 
 pub fn motion_word_forward(content: &str, cursor: usize, count: usize) -> usize {
@@ -273,6 +301,41 @@ pub fn motion_word_end(content: &str, cursor: usize, count: usize) -> usize {
     pos
 }
 
+fn char_class(ch: char) -> u8 {
+    if ch.is_whitespace() { 0 } else if ch.is_alphanumeric() || ch == '_' { 1 } else { 2 }
+}
+
+fn motion_end_backward_by_class(
+    content: &str,
+    cursor: usize,
+    count: usize,
+    class: impl Fn(char) -> u8,
+) -> usize {
+    let mut pos = cursor.min(content.len());
+    for _ in 0..count {
+        if pos == 0 { break; }
+        if pos < content.len() {
+            let current_class = class(content[pos..].chars().next().unwrap());
+            if current_class != 0 {
+                while pos > 0 {
+                    let prev = content[..pos].chars().last().unwrap();
+                    if class(prev) != current_class { break; }
+                    pos = prev_char_boundary(content, pos);
+                }
+            }
+        }
+        pos = prev_char_boundary(content, pos);
+        while pos > 0 && class(content[pos..].chars().next().unwrap()) == 0 {
+            pos = prev_char_boundary(content, pos);
+        }
+    }
+    pos
+}
+
+pub fn motion_word_end_backward(content: &str, cursor: usize, count: usize) -> usize {
+    motion_end_backward_by_class(content, cursor, count, char_class)
+}
+
 pub fn motion_big_word_forward(content: &str, cursor: usize, count: usize) -> usize {
     let mut pos = cursor;
     for _ in 0..count {
@@ -325,6 +388,10 @@ pub fn motion_big_word_end(content: &str, cursor: usize, count: usize) -> usize 
         }
     }
     pos
+}
+
+pub fn motion_big_word_end_backward(content: &str, cursor: usize, count: usize) -> usize {
+    motion_end_backward_by_class(content, cursor, count, |ch| u8::from(!ch.is_whitespace()))
 }
 
 pub fn motion_doc_start(_content: &str, _cursor: usize, _count: usize) -> usize {
@@ -499,6 +566,10 @@ fn register_vim_layers(stack: &mut LayerStack) {
         .bind("0", Action::Motion("line-start"))
         .bind("$", Action::Motion("line-end"))
         .bind("^", Action::Motion("first-non-whitespace"))
+        .bind("_", Action::Motion("line-first-non-whitespace"))
+        .bind("+", Action::Motion("next-line-first-non-whitespace"))
+        .bind("enter", Action::Motion("next-line-first-non-whitespace"))
+        .bind("-", Action::Motion("prev-line-first-non-whitespace"))
         .bind("shift-g", Action::Motion("doc-end"))
         .bind("}", Action::Motion("paragraph-forward"))
         .bind("{", Action::Motion("paragraph-backward"))
@@ -535,6 +606,8 @@ fn register_vim_layers(stack: &mut LayerStack) {
         .bind("shift-d", Action::Command("delete-to-end"))
         .bind("shift-c", Action::Command("change-to-end"))
         .bind("shift-s", Action::Command("change-line"))
+        .bind("s", Action::Command("substitute-char"))
+        .bind("shift-y", Action::Command("yank-line"))
         .bind("~", Action::Command("toggle-case"))
         .bind(":", Action::Command("command-palette"))
         .bind(".", Action::Command("dot-repeat"));
@@ -542,7 +615,12 @@ fn register_vim_layers(stack: &mut LayerStack) {
     // Multi-key sequences (trie-based)
     normal = normal
         .bind_seq("g g", Action::Command("goto-doc-start"))
-        .bind_seq("g _", Action::Command("goto-last-non-ws"));
+        .bind_seq("g e", Action::Motion("word-end-backward"))
+        .bind_seq("g shift-e", Action::Motion("big-word-end-backward"))
+        .bind_seq("g 0", Action::Motion("line-start"))
+        .bind_seq("g ^", Action::Motion("first-non-whitespace"))
+        .bind_seq("g $", Action::Motion("line-end"))
+        .bind_seq("g _", Action::Motion("last-non-whitespace"));
 
     // Transient waits (for char capture — f/t/r need arbitrary char input)
     normal = normal
@@ -555,7 +633,11 @@ fn register_vim_layers(stack: &mut LayerStack) {
     // Scrolling
     normal = normal
         .bind("ctrl-d", Action::Command("scroll-half-down"))
-        .bind("ctrl-u", Action::Command("scroll-half-up"));
+        .bind("ctrl-u", Action::Command("scroll-half-up"))
+        .bind("ctrl-f", Action::Command("scroll-page-down"))
+        .bind("ctrl-b", Action::Command("scroll-page-up"))
+        .bind("ctrl-e", Action::Command("scroll-line-down"))
+        .bind("ctrl-y", Action::Command("scroll-line-up"));
 
     // Char search repeat
     normal = normal
@@ -583,10 +665,35 @@ fn register_vim_layers(stack: &mut LayerStack) {
         .bind("w", Action::Motion("word-forward"))
         .bind("b", Action::Motion("word-backward"))
         .bind("e", Action::Motion("word-end"))
+        .bind("shift-w", Action::Motion("big-word-forward"))
+        .bind("shift-b", Action::Motion("big-word-backward"))
+        .bind("shift-e", Action::Motion("big-word-end"))
         .bind("0", Action::Motion("line-start"))
         .bind("$", Action::Motion("line-end"))
         .bind("^", Action::Motion("first-non-whitespace"))
-        .bind("shift-g", Action::Motion("doc-end"));
+        .bind("_", Action::Motion("line-first-non-whitespace"))
+        .bind("+", Action::Motion("next-line-first-non-whitespace"))
+        .bind("enter", Action::Motion("next-line-first-non-whitespace"))
+        .bind("-", Action::Motion("prev-line-first-non-whitespace"))
+        .bind("shift-g", Action::Motion("doc-end"))
+        .bind("}", Action::Motion("paragraph-forward"))
+        .bind("{", Action::Motion("paragraph-backward"))
+        .bind("%", Action::Motion("matching-bracket"));
+
+    visual = visual
+        .bind_seq("g g", Action::Motion("doc-start"))
+        .bind_seq("g e", Action::Motion("word-end-backward"))
+        .bind_seq("g shift-e", Action::Motion("big-word-end-backward"))
+        .bind_seq("g 0", Action::Motion("line-start"))
+        .bind_seq("g ^", Action::Motion("first-non-whitespace"))
+        .bind_seq("g $", Action::Motion("line-end"))
+        .bind_seq("g _", Action::Motion("last-non-whitespace"))
+        .bind("f", Action::PushTransient("transient:find-char"))
+        .bind("t", Action::PushTransient("transient:til-char"))
+        .bind("shift-f", Action::PushTransient("transient:find-char-back"))
+        .bind("shift-t", Action::PushTransient("transient:til-char-back"))
+        .bind(";", Action::Command("repeat-char-search"))
+        .bind(",", Action::Command("repeat-char-search-reverse"));
 
     // Operators (act on selection)
     visual = visual
@@ -611,8 +718,8 @@ fn register_vim_layers(stack: &mut LayerStack) {
     // ── vim:visual-line ──
     let mut vline = Layer::new("vim:visual-line").with_group("vim-state");
     vline = vline
-        .bind("j", Action::Motion("down"))
-        .bind("k", Action::Motion("up"))
+        .bind("j", Action::Command("visual-line-down"))
+        .bind("k", Action::Command("visual-line-up"))
         .bind("d", Action::Command("delete-selection"))
         .bind("y", Action::Command("yank-selection"))
         .bind("c", Action::Command("change-selection"))
@@ -838,6 +945,25 @@ mod tests {
     }
 
     #[test]
+    fn test_motion_word_end_backward() {
+        let content = "one two.three four";
+        assert_eq!(motion_word_end_backward(content, 14, 1), 12);
+        assert_eq!(motion_word_end_backward(content, 14, 2), 7);
+        assert_eq!(motion_big_word_end_backward(content, 14, 1), 12);
+        assert_eq!(motion_big_word_end_backward(content, 14, 2), 2);
+    }
+
+    #[test]
+    fn test_line_first_non_whitespace_motions() {
+        let content = "one\n   two\n  three";
+        assert_eq!(motion_line_first_non_whitespace(content, 1, 2), 7);
+        assert_eq!(motion_next_line_first_non_whitespace(content, 1, 1), 7);
+        assert_eq!(motion_next_line_first_non_whitespace(content, 1, 2), 13);
+        assert_eq!(motion_prev_line_first_non_whitespace(content, 15, 1), 7);
+        assert_eq!(motion_last_non_whitespace("one  \n", 0, 1), 2);
+    }
+
+    #[test]
     fn test_motion_doc_start_end() {
         assert_eq!(motion_doc_start("hello", 3, 1), 0);
         assert_eq!(motion_doc_end("hello", 0, 1), 5);
@@ -869,6 +995,30 @@ mod tests {
             let result = stack.resolve_in_trie(node, &g2);
             assert!(matches!(result, Some(KeyTrie::Leaf(Action::Command("goto-doc-start")))));
         }
+    }
+
+    #[test]
+    fn test_new_normal_bindings_resolve() {
+        let mut stack = LayerStack::new();
+        register_defaults(&mut stack);
+        stack.activate_layer("vim:normal");
+
+        let s = super::super::action::KeyCombo::parse("s");
+        assert!(matches!(stack.resolve(&s), Some(KeyTrie::Leaf(Action::Command("substitute-char")))));
+        let page = super::super::action::KeyCombo::parse("ctrl-f");
+        assert!(matches!(stack.resolve(&page), Some(KeyTrie::Leaf(Action::Command("scroll-page-down")))));
+    }
+
+    #[test]
+    fn test_visual_line_uses_linewise_movement_commands() {
+        let mut stack = LayerStack::new();
+        register_defaults(&mut stack);
+        stack.activate_layer("vim:visual-line");
+
+        let down = super::super::action::KeyCombo::parse("j");
+        assert!(matches!(stack.resolve(&down), Some(KeyTrie::Leaf(Action::Command("visual-line-down")))));
+        let up = super::super::action::KeyCombo::parse("k");
+        assert!(matches!(stack.resolve(&up), Some(KeyTrie::Leaf(Action::Command("visual-line-up")))));
     }
 
     #[test]

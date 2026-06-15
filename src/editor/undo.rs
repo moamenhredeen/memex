@@ -192,6 +192,10 @@ impl UndoHistory {
         !self.redo_stack.is_empty()
     }
 
+    pub fn last_transaction(&self) -> Option<Transaction> {
+        self.undo_stack.last().cloned()
+    }
+
     /// Force the current coalescing group to end, so the next edit
     /// starts a fresh transaction.
     pub fn break_coalescing(&mut self) {

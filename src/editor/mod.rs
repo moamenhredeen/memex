@@ -51,6 +51,8 @@ pub struct EditorState {
     /// Set by any cursor-moving operation; cleared by `EditorElement` after
     /// it scrolls the cursor into view.
     pub needs_scroll_to_cursor: bool,
+    vim_edit_group_active: bool,
+    visual_line_anchor: Option<usize>,
     _blink_sub: Subscription,
 }
 
@@ -101,6 +103,8 @@ impl EditorState {
             drag_state: None,
             viewport_height: px(0.),
             needs_scroll_to_cursor: false,
+            vim_edit_group_active: false,
+            visual_line_anchor: None,
             _blink_sub,
         }
     }
@@ -876,6 +880,7 @@ impl EditorState {
             }
             GrammarResult::DeleteRange { range, yanked, enter_insert } => {
                 self.grammar.register_content = yanked;
+                if enter_insert { self.begin_vim_edit_group(); }
                 let target = range.start;
                 self.selected_range = range;
                 self.edit_text("", cx);
@@ -910,28 +915,7 @@ impl EditorState {
                 }
             }
             GrammarResult::ActivateLayer(layer_id) => {
-                // Handle side effects of layer change
-                match layer_id {
-                    "vim:insert" => {
-                        self.buffer.break_undo_coalescing();
-                    }
-                    "vim:normal" => {
-                        if !self.selected_range.is_empty() {
-                            let pos = self.selected_range.start;
-                            self.move_to(pos, cx);
-                        }
-                        self.buffer.break_undo_coalescing();
-                    }
-                    "vim:visual" | "vim:visual-line" => {
-                        if self.selected_range.is_empty() {
-                            let pos = self.cursor;
-                            self.selected_range = pos..self.next_grapheme(pos);
-                            self.selection_reversed = false;
-                        }
-                    }
-                    _ => {}
-                }
-                cx.notify();
+                self.on_layer_activated(layer_id, cx);
                 actions.push(ItemAction::SyncVimFlags);
             }
             GrammarResult::PushTransient(_) => {
@@ -997,9 +981,11 @@ impl EditorState {
     pub fn on_layer_activated(&mut self, layer_id: &str, cx: &mut Context<Self>) {
         match layer_id {
             "vim:insert" => {
-                self.buffer.break_undo_coalescing();
+                self.begin_vim_edit_group();
             }
             "vim:normal" => {
+                self.end_vim_edit_group();
+                self.visual_line_anchor = None;
                 if !self.selected_range.is_empty() {
                     let pos = self.selected_range.start;
                     self.selected_range = pos..pos;
@@ -1007,7 +993,8 @@ impl EditorState {
                 }
                 self.buffer.break_undo_coalescing();
             }
-            "vim:visual" | "vim:visual-line" => {
+            "vim:visual" => {
+                self.visual_line_anchor = None;
                 if self.selected_range.is_empty() {
                     let pos = self.cursor;
                     let end = self.next_grapheme(pos);
@@ -1015,8 +1002,49 @@ impl EditorState {
                     self.selection_reversed = false;
                 }
             }
+            "vim:visual-line" => {
+                let content = self.content();
+                let line_start = line_start_at(&content, self.cursor);
+                let line_end = line_end_including_newline(&content, line_start);
+                self.visual_line_anchor = Some(line_start);
+                self.selected_range = line_start..line_end;
+                self.selection_reversed = false;
+                self.cursor = line_start;
+            }
             _ => {}
         }
+        cx.notify();
+    }
+
+    fn begin_vim_edit_group(&mut self) {
+        if !self.vim_edit_group_active {
+            self.buffer.break_undo_coalescing();
+            self.buffer.begin_edit_group(self.selected_range.clone());
+            self.vim_edit_group_active = true;
+        }
+    }
+
+    fn end_vim_edit_group(&mut self) {
+        if self.vim_edit_group_active {
+            self.buffer.end_edit_group();
+            self.vim_edit_group_active = false;
+        }
+    }
+
+    fn extend_visual_line_selection(&mut self, line_delta: isize, cx: &mut Context<Self>) {
+        let content = self.content();
+        let anchor = self
+            .visual_line_anchor
+            .unwrap_or_else(|| line_start_at(&content, self.cursor));
+        let current = line_start_at(&content, self.cursor);
+        let target = move_line_start(&content, current, line_delta);
+        let range = visual_line_range(&content, anchor, target);
+
+        self.visual_line_anchor = Some(anchor);
+        self.selected_range = range;
+        self.selection_reversed = target < anchor;
+        self.cursor = target;
+        self.needs_scroll_to_cursor = true;
         cx.notify();
     }
 
@@ -1144,6 +1172,7 @@ impl EditorState {
                 }
             }
             "change-selection" => {
+                self.begin_vim_edit_group();
                 if vim.visual_active {
                     let (s, e) = self.ordered_selection();
                     let content = self.content();
@@ -1154,6 +1183,8 @@ impl EditorState {
                 self.buffer.break_undo_coalescing();
                 cx.notify();
             }
+            "visual-line-down" => self.extend_visual_line_selection(count as isize, cx),
+            "visual-line-up" => self.extend_visual_line_selection(-(count as isize), cx),
             "indent-selection" => self.dispatch(EditorCommand::IndentSelection, window, cx),
             "dedent-selection" => self.dispatch(EditorCommand::DedentSelection, window, cx),
             "toggle-case-selection" => {
@@ -1215,6 +1246,36 @@ impl EditorState {
                     self.edit_text("", cx);
                 }
             }
+            "substitute-char" => {
+                let content = self.content();
+                let pos = self.cursor;
+                let mut end = pos;
+                for _ in 0..count {
+                    if end >= content.len() || content[end..].starts_with('\n') { break; }
+                    end = self.next_grapheme(end);
+                }
+                if end > pos {
+                    self.begin_vim_edit_group();
+                    self.grammar.register_content = content[pos..end].to_string();
+                    self.selected_range = pos..end;
+                    self.edit_text("", cx);
+                }
+                actions.push(ItemAction::ActivateLayer("vim:insert"));
+                self.buffer.break_undo_coalescing();
+                cx.notify();
+            }
+            "yank-line" => {
+                let content = self.content();
+                let line_start = content[..self.cursor].rfind('\n').map(|i| i + 1).unwrap_or(0);
+                let mut end = line_start;
+                for _ in 0..count {
+                    end = content[end..].find('\n')
+                        .map(|offset| end + offset + 1)
+                        .unwrap_or(content.len());
+                    if end == content.len() { break; }
+                }
+                self.grammar.register_content = content[line_start..end].to_string();
+            }
             "append-after" => {
                 // a — move right one char and enter insert
                 let pos = self.next_grapheme(self.cursor);
@@ -1246,6 +1307,7 @@ impl EditorState {
                 let content = self.content();
                 let pos = self.snap_to_char_boundary(self.cursor);
                 let line_end = content[pos..].find('\n').map(|p| pos + p).unwrap_or(content.len());
+                self.begin_vim_edit_group();
                 self.move_to(line_end, cx);
                 self.edit_text("\n", cx);
                 actions.push(ItemAction::ActivateLayer("vim:insert"));
@@ -1257,6 +1319,7 @@ impl EditorState {
                 let content = self.content();
                 let pos = self.snap_to_char_boundary(self.cursor);
                 let line_start = content[..pos].rfind('\n').map(|i| i + 1).unwrap_or(0);
+                self.begin_vim_edit_group();
                 self.move_to(line_start, cx);
                 self.edit_text("\n", cx);
                 let new_pos = line_start;
@@ -1336,6 +1399,7 @@ impl EditorState {
                 let content = self.content();
                 let pos = self.snap_to_char_boundary(self.cursor);
                 let line_end = content[pos..].find('\n').map(|p| pos + p).unwrap_or(content.len());
+                self.begin_vim_edit_group();
                 if pos < line_end {
                     self.grammar.register_content = content[pos..line_end].to_string();
                     self.selected_range = pos..line_end;
@@ -1351,6 +1415,7 @@ impl EditorState {
                 let pos = self.snap_to_char_boundary(self.cursor);
                 let line_start = content[..pos].rfind('\n').map(|i| i + 1).unwrap_or(0);
                 let line_end = content[pos..].find('\n').map(|p| pos + p).unwrap_or(content.len());
+                self.begin_vim_edit_group();
                 self.grammar.register_content = content[line_start..line_end].to_string();
                 self.selected_range = line_start..line_end;
                 self.edit_text("", cx);
@@ -1378,8 +1443,25 @@ impl EditorState {
                 }
             }
             "dot-repeat" => {
-                // . — repeat last change (not yet implemented, placeholder)
-                // TODO: implement dot-repeat
+                if let Some(transaction) = self.buffer.last_transaction() {
+                    let base = transaction.ops.first().map(|op| op.cursor_before).unwrap_or(0);
+                    let repeat_at = self.cursor;
+                    self.buffer.break_undo_coalescing();
+                    self.buffer.begin_edit_group(self.selected_range.clone());
+                    for _ in 0..count {
+                        for op in &transaction.ops {
+                            let start = repeat_at.saturating_add_signed(op.range.start as isize - base as isize);
+                            let end = start.saturating_add(op.old_text.len()).min(self.content_len());
+                            let content = self.content();
+                            if start <= end && content.is_char_boundary(start) && content.is_char_boundary(end) {
+                                self.selected_range = start..end;
+                                self.edit_text(&op.new_text, cx);
+                            }
+                        }
+                    }
+                    self.buffer.end_edit_group();
+                    self.buffer.break_undo_coalescing();
+                }
             }
             "repeat-char-search" => {
                 let content = self.content();
@@ -1407,27 +1489,24 @@ impl EditorState {
             // overscroll past the last line and leave the scrollbar thumb
             // stranded at the bottom.
             "scroll-half-down" => {
-                let total = <EditorState as crate::ui::Scrollable>::total_height(self);
-                let viewport: f32 = self.viewport_height.into();
-                let max = px((total - viewport).max(0.0));
-                self.scroll_offset = (self.scroll_offset + px(200.)).clamp(px(0.), max);
-                cx.notify();
+                self.scroll_by_amount(self.viewport_height / 2.0, cx);
             }
             "scroll-half-up" => {
-                let total = <EditorState as crate::ui::Scrollable>::total_height(self);
-                let viewport: f32 = self.viewport_height.into();
-                let max = px((total - viewport).max(0.0));
-                self.scroll_offset = (self.scroll_offset - px(200.)).clamp(px(0.), max);
-                cx.notify();
+                self.scroll_by_amount(-self.viewport_height / 2.0, cx);
+            }
+            "scroll-page-down" => self.scroll_by_amount(self.viewport_height, cx),
+            "scroll-page-up" => self.scroll_by_amount(-self.viewport_height, cx),
+            "scroll-line-down" => {
+                let line = self.display_map.line_for_offset(self.cursor);
+                self.scroll_by_amount(self.display_map.line_height(line) * count as f32, cx);
+            }
+            "scroll-line-up" => {
+                let line = self.display_map.line_for_offset(self.cursor);
+                self.scroll_by_amount(-self.display_map.line_height(line) * count as f32, cx);
             }
             // Go-to commands (from g prefix trie)
             "goto-doc-start" => {
                 self.move_to(0, cx);
-            }
-            "goto-last-non-ws" => {
-                let content = self.content();
-                let target = crate::keymap::defaults::motion_line_end(&content, self.cursor, 1);
-                self.move_to(target, cx);
             }
             // App-level commands (forwarded via events)
             "save" => {
@@ -1691,6 +1770,14 @@ impl EditorState {
         vec![]
     }
 
+    fn scroll_by_amount(&mut self, amount: Pixels, cx: &mut Context<Self>) {
+        let total = <EditorState as crate::ui::Scrollable>::total_height(self);
+        let viewport: f32 = self.viewport_height.into();
+        let max = px((total - viewport).max(0.0));
+        self.scroll_offset = (self.scroll_offset + amount).clamp(px(0.), max);
+        cx.notify();
+    }
+
     /// Adjust `scroll_offset` so the cursor is visible in the viewport.
     /// A small margin keeps the cursor from sitting flush against the edge.
     /// No-op if the viewport height hasn't been recorded yet.
@@ -1707,6 +1794,41 @@ impl EditorState {
         let new_scroll = scroll_cursor_into_view_math(scroll, viewport, total, line_y, line_h);
         self.scroll_offset = px(new_scroll);
     }
+}
+
+fn line_start_at(content: &str, offset: usize) -> usize {
+    let offset = offset.min(content.len());
+    content[..offset].rfind('\n').map(|index| index + 1).unwrap_or(0)
+}
+
+fn line_end_including_newline(content: &str, line_start: usize) -> usize {
+    content[line_start..]
+        .find('\n')
+        .map(|offset| line_start + offset + 1)
+        .unwrap_or(content.len())
+}
+
+fn move_line_start(content: &str, start: usize, delta: isize) -> usize {
+    let mut target = line_start_at(content, start);
+    if delta >= 0 {
+        for _ in 0..delta as usize {
+            let next = line_end_including_newline(content, target);
+            if next >= content.len() { break; }
+            target = next;
+        }
+    } else {
+        for _ in 0..delta.unsigned_abs() {
+            if target == 0 { break; }
+            target = line_start_at(content, target - 1);
+        }
+    }
+    target
+}
+
+fn visual_line_range(content: &str, anchor: usize, target: usize) -> Range<usize> {
+    let first = line_start_at(content, anchor.min(target));
+    let last = line_start_at(content, anchor.max(target));
+    first..line_end_including_newline(content, last)
 }
 
 /// Pure helper for `scroll_cursor_into_view` — exposed for unit tests.
@@ -1741,7 +1863,7 @@ pub fn scroll_cursor_into_view_math(
 
 #[cfg(test)]
 mod scroll_tests {
-    use super::scroll_cursor_into_view_math;
+    use super::{move_line_start, scroll_cursor_into_view_math, visual_line_range};
 
     // Helper: 100-line doc, 20px lines, 500px viewport, 24+24px padding.
     // TOTAL (2048) > VIEWPORT (500) so max_scroll > 0 and we can exercise clamping.
@@ -1749,6 +1871,23 @@ mod scroll_tests {
     const VIEWPORT: f32 = 500.0;
     const TOTAL: f32 = 100.0 * 20.0 + 48.0;
     const PADDING: f32 = 24.0;
+
+    #[test]
+    fn visual_line_ranges_include_complete_lines() {
+        let content = "one\ntwo\nthree";
+        assert_eq!(visual_line_range(content, 4, 4), 4..8);
+        assert_eq!(visual_line_range(content, 4, 8), 4..13);
+        assert_eq!(visual_line_range(content, 4, 0), 0..8);
+    }
+
+    #[test]
+    fn visual_line_movement_clamps_and_honors_counts() {
+        let content = "one\ntwo\nthree";
+        assert_eq!(move_line_start(content, 0, 2), 8);
+        assert_eq!(move_line_start(content, 8, -2), 0);
+        assert_eq!(move_line_start(content, 0, -1), 0);
+        assert_eq!(move_line_start(content, 8, 4), 8);
+    }
 
     #[test]
     fn cursor_above_viewport_scrolls_up() {

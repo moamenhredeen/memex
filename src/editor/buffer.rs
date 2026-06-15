@@ -129,6 +129,10 @@ impl EditorBuffer {
         self.inner.borrow_mut().history.redo()
     }
 
+    pub fn last_transaction(&self) -> Option<Transaction> {
+        self.inner.borrow().history.last_transaction()
+    }
+
     pub fn run_plugin_command(
         &self,
         name: &str,
