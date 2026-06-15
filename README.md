@@ -7,6 +7,7 @@ Memex is a single-binary desktop app with a WYSIWYG markdown editor, PDF viewer,
 ## Features
 
 ### Markdown Editor
+
 - **WYSIWYG rendering** — headings, bold, italic, strikethrough, code, blockquotes, and links are rendered inline as you type
 - **Tables** — Tab/Shift-Tab auto-aligns columns and navigates between cells
 - **Task lists** — clickable checkboxes toggle `- [ ]` / `- [x]` on click
@@ -14,6 +15,7 @@ Memex is a single-binary desktop app with a WYSIWYG markdown editor, PDF viewer,
 - **Outline navigation** — promote/demote headings, move sections up/down, jump between headings
 
 ### Wikilinks & Knowledge Graph
+
 - **`[[wikilinks]]`** — type `[[` to trigger autocomplete via the minibuffer; click any wikilink to navigate to the target note
 - **Backlinks** — `:backlinks` shows all notes that reference the current note
 - **Node graph** — force-directed graph visualization of your vault's notes and their connections (like Obsidian's graph view)
@@ -22,6 +24,7 @@ Memex is a single-binary desktop app with a WYSIWYG markdown editor, PDF viewer,
   - Open as a split panel alongside the editor
 
 ### PDF Viewer
+
 - Built-in PDF rendering via [MuPDF](https://mupdf.com)
 - Table of contents, bookmarks, full-text search
 - Zoom, rotate, dark mode, two-page layout
@@ -29,6 +32,7 @@ Memex is a single-binary desktop app with a WYSIWYG markdown editor, PDF viewer,
 - Opens inline or in a right split panel
 
 ### Split View
+
 - Side-by-side panels — editor + PDF, editor + graph, or any combination
 - `Ctrl+H` / `Ctrl+L` to switch focus between panes
 - `:sp` / `:vs` to split the current pane, then open a note, PDF, or graph there
@@ -36,21 +40,25 @@ Memex is a single-binary desktop app with a WYSIWYG markdown editor, PDF viewer,
 - `:q` to close the current pane (or quit when it is the last pane)
 
 ### Vim Mode
+
 - Normal, insert, visual, and motion modes
 - Leader key sequences (e.g. `space f f` for note search, `space v s` for vault switch)
 - Toggleable — `:set-vim` / `:set-novim`
 
 ### Vault Management
+
 - **Multi-vault** — switch between vaults with `:vault-switch`, open new ones with `:vault-open`
 - **Recent vaults** — MRU-ordered vault list persisted across sessions
 - **Global config** — optional TOML settings with strong native defaults
 
 ### Minibuffer (Command Palette)
+
 - Fuzzy-filtered command palette (`:` or `M-x`)
 - Note search and creation (`Ctrl+P`)
 - Contextual delegates: note search, vault switch, PDF TOC, wikilink autocomplete, backlinks
 
 ### Other
+
 - **Undo/redo** with full history
 - **Rhai plugin system** — extend with custom commands and keybindings
 - **Configurable** — global configuration via TOML; Rhai is reserved for plugins
