@@ -1235,7 +1235,10 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         let mut candidates: Vec<Candidate> = results
             .into_iter()
             .map(|(title, path)| {
-                let is_pdf = path.extension().and_then(|e| e.to_str()) == Some("pdf");
+                let is_pdf = path
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"));
                 let label = if is_pdf {
                     format!("📄 {}", title)
                 } else {
@@ -2053,7 +2056,11 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         cx: &mut Context<Self>,
     ) {
         // Check if this is a PDF — open in right split when editor is the left pane
-        if path.extension().and_then(|e| e.to_str()) == Some("pdf") {
+        if path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"))
+        {
             self.open_pdf_in_split(path, window, cx);
             return;
         }
@@ -2080,7 +2087,11 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if path.extension().and_then(|e| e.to_str()) == Some("pdf") {
+        if path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"))
+        {
             self.open_pdf_in_split(path, window, cx);
         } else {
             let key = ResourceKey::Markdown(path.clone());
@@ -2486,7 +2497,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             None => return Vec::new(),
         };
 
-        let titles = vault.note_titles();
+        let titles = vault.openable_titles();
 
         if query.is_empty() {
             return titles.into_iter().take(MAX_RESULTS).collect();

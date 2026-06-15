@@ -74,6 +74,31 @@ impl Vault {
             .collect()
     }
 
+    /// Files available from the note picker. PDFs live under attachments,
+    /// but are openable because the application provides a dedicated viewer.
+    pub fn openable_titles(&self) -> Vec<(String, PathBuf)> {
+        let mut entries = self.note_titles();
+        entries.extend(
+            self.contents
+                .attachments
+                .iter()
+                .filter(|path| {
+                    path.extension()
+                        .and_then(|extension| extension.to_str())
+                        .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"))
+                })
+                .map(|path| {
+                    let title = path
+                        .file_stem()
+                        .and_then(|stem| stem.to_str())
+                        .unwrap_or("PDF")
+                        .to_string();
+                    (title, path.clone())
+                }),
+        );
+        entries
+    }
+
     /// First editable note in deterministic scan order.
     /// Attachments are intentionally excluded.
     pub fn first_note_path(&self) -> Option<PathBuf> {
@@ -286,6 +311,24 @@ mod tests {
             Some(vault.layout().notes.join("note.md"))
         );
 
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn openable_titles_include_only_pdf_attachments() {
+        let dir = std::env::temp_dir().join("memex-test-vault-openable-pdfs");
+        std::fs::remove_dir_all(&dir).ok();
+        std::fs::create_dir_all(dir.join("attachments/reference")).unwrap();
+        std::fs::write(dir.join("attachments/reference/manual.PDF"), b"pdf").unwrap();
+        std::fs::write(dir.join("attachments/cover.png"), b"image").unwrap();
+
+        let vault = Vault::open(dir.clone()).unwrap();
+        let entries = vault.openable_titles();
+
+        assert!(entries.iter().any(|(title, path)| {
+            title == "manual" && path.ends_with("attachments/reference/manual.PDF")
+        }));
+        assert!(!entries.iter().any(|(_, path)| path.ends_with("cover.png")));
         std::fs::remove_dir_all(&dir).ok();
     }
 
