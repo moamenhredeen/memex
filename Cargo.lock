@@ -3520,21 +3520,20 @@ dependencies = [
 
 [[package]]
 name = "mupdf"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7a60c91abaf541e5291ca470efcb7d80d0ad834dcca7fa8f8576aa789a9813b1"
+version = "0.8.0"
+source = "git+https://github.com/messense/mupdf-rs?rev=7f0cb930884145f7b3f62451d178ab1fa432e565#7f0cb930884145f7b3f62451d178ab1fa432e565"
 dependencies = [
  "bitflags 2.11.0",
  "mupdf-sys",
  "once_cell",
+ "percent-encoding",
  "zerocopy",
 ]
 
 [[package]]
 name = "mupdf-sys"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "182cb40642a37e5980a03285664c2c100f5dbde781165c137fd49ff9c06fd5c5"
+version = "0.8.0"
+source = "git+https://github.com/messense/mupdf-rs?rev=7f0cb930884145f7b3f62451d178ab1fa432e565#7f0cb930884145f7b3f62451d178ab1fa432e565"
 dependencies = [
  "bindgen 0.72.1",
  "cc",

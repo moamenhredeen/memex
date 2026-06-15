@@ -7,6 +7,10 @@ use crate::ui::Scrollbar;
 use crate::keymap::{Action, KeyCombo, KeyTrie, Layer, build_pdf_layer};
 use crate::theme::Theme;
 
+fn top_spacer_height(page_y_offset: f32) -> f32 {
+    (page_y_offset - super::PADDING_Y - super::PAGE_GAP).max(0.0)
+}
+
 /// Emitted by [`PdfView`] when a keybinding resolves to a command.
 /// The app shell subscribes and runs the command through
 /// `ActiveItem::execute_command`.
@@ -103,19 +107,22 @@ impl Render for PdfView {
 
         // Build the page column with spacers for off-screen pages
         let mut pages_column = div()
-            .id("pdf-pages")
             .w_full()
             .flex()
             .flex_col()
             .items_center()
             .gap(px(8.));
+        let mut child_pages = Vec::new();
 
         // Top spacer covering all pages above visible range
         if vis_first > 0 {
+            // The flex column inserts PAGE_GAP after this spacer. Exclude that
+            // gap here so the rendered page top still matches PageLayout::y_offset.
             let top_spacer_height =
-                self.state.read(cx).page_layout(vis_first).0 - super::PADDING_Y;
+                top_spacer_height(self.state.read(cx).page_layout(vis_first).0);
             pages_column =
                 pages_column.child(div().id("pdf-spacer-top").h(px(top_spacer_height)));
+            child_pages.push(None);
         }
 
         // Visible pages: rendered images or loading placeholders
@@ -136,12 +143,12 @@ impl Render for PdfView {
                 .relative();
 
             if let Some(image) = maybe_image {
-                // Collect search highlights for this page
-                let search_highlights: Vec<(bool, f32, f32, f32, f32)> = {
+                // Collect transient overlays for this page.
+                let (search_highlights, selection_highlights, annotation_highlights) = {
                     let st = self.state.read(cx);
                     let scale = st.page_scale(page_idx);
                     let current = st.search_current;
-                    st.search_hits_for_page(page_idx)
+                    let search: Vec<(bool, f32, f32, f32, f32)> = st.search_hits_for_page(page_idx)
                         .into_iter()
                         .map(|(global_idx, hit)| {
                             let q = &hit.quad;
@@ -153,30 +160,21 @@ impl Render for PdfView {
                             let y2 = q.ll.y.max(q.lr.y) * scale;
                             (global_idx == current, x, y, x2 - x, y2 - y)
                         })
-                        .collect()
+                        .collect();
+                    let selection = st.selection_quads_for_page(page_idx);
+                    let annotation = st.selected_annotation_quads_for_page(page_idx);
+                    (search, selection, annotation)
                 };
 
-                // Rendered page with click handler for links
+                // Start a text selection. A click without a drag selects an
+                // existing annotation or follows an internal link on mouse-up.
                 page_div = page_div
-                    .cursor_pointer()
+                    .cursor(CursorStyle::IBeam)
                     .on_mouse_down(MouseButton::Left, move |e, _window, cx| {
                         state.update(cx, |s, cx| {
-                            let (page_y_offset, page_width, _) = s.page_layout(page_idx);
-                            let scroll: f32 = s.scroll_offset.into();
-                            let page_x_start = (vw - page_width) / 2.0;
-
-                            let click_x = f32::from(e.position.x) - page_x_start;
-                            let click_y =
-                                f32::from(e.position.y) + scroll - page_y_offset;
-
-                            if click_x >= 0.0 && click_x <= page_width && click_y >= 0.0
-                            {
-                                if let Some(target) =
-                                    s.hit_test_link(page_idx, click_x, click_y)
-                                {
-                                    s.goto_page(target);
-                                    cx.notify();
-                                }
+                            if let Some(point) = s.screen_to_page_point(page_idx, vw, e.position) {
+                                s.begin_text_selection(page_idx, point);
+                                cx.notify();
                             }
                         });
                     })
@@ -207,6 +205,20 @@ impl Render for PdfView {
                             .bg(color),
                     );
                 }
+                for (kind, quads, color) in [
+                    ("selection", selection_highlights, rgba(0x4A90E260)),
+                    ("annotation", annotation_highlights, rgba(0xFF8C0080)),
+                ] {
+                    let scale = self.state.read(cx).page_scale(page_idx);
+                    for (i, quad) in quads.iter().enumerate() {
+                        let rect = mupdf::Rect::from(quad.clone());
+                        page_div = page_div.child(
+                            div().id(ElementId::Name(format!("{}-{}-{}", kind, page_idx, i).into()))
+                                .absolute().left(px(rect.x0 * scale)).top(px(rect.y0 * scale))
+                                .w(px(rect.width() * scale)).h(px(rect.height() * scale)).bg(color),
+                        );
+                    }
+                }
             } else {
                 // Loading placeholder
                 page_div = page_div.child(
@@ -221,6 +233,7 @@ impl Render for PdfView {
             }
 
             pages_column = pages_column.child(page_div);
+            child_pages.push(Some(page_idx));
         }
 
         // Bottom spacer covering all pages below visible range
@@ -231,8 +244,16 @@ impl Render for PdfView {
             if bottom_spacer > 0.0 {
                 pages_column = pages_column
                     .child(div().id("pdf-spacer-bottom").h(px(bottom_spacer)));
+                child_pages.push(None);
             }
         }
+
+        let bounds_state = self.state.clone();
+        pages_column = pages_column.on_children_prepainted(move |bounds, _window, cx| {
+            let measured = child_pages.iter().copied().zip(bounds)
+                .filter_map(|(page, bounds)| page.map(|page| (page, bounds)));
+            bounds_state.update(cx, |state, _| state.set_rendered_page_bounds(measured));
+        });
 
         let neg_scroll = -scroll_offset;
 
@@ -255,6 +276,34 @@ impl Render for PdfView {
                     cx.emit(PdfViewEvent::Command(cmd));
                     cx.stop_propagation();
                 }
+            }))
+            .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, window, cx| {
+                if e.pressed_button != Some(MouseButton::Left) { return; }
+                let vw: f32 = window.viewport_size().width.into();
+                this.state.update(cx, |state, cx| {
+                    if let Some((page, point)) = state.screen_to_document_point(vw, e.position) {
+                        state.update_text_selection(page, point);
+                        cx.notify();
+                    }
+                });
+            }))
+            .on_mouse_up(MouseButton::Left, cx.listener(|this, e: &MouseUpEvent, window, cx| {
+                let vw: f32 = window.viewport_size().width.into();
+                this.state.update(cx, |state, cx| {
+                    let point = state.screen_to_document_point(vw, e.position);
+                    match state.finish_text_selection() {
+                        Ok(true) => cx.notify(),
+                        Ok(false) => {
+                            if let Some((page, point)) = point {
+                                if let Some(target) = state.hit_test_link_point(page, point) {
+                                    state.goto_page(target);
+                                }
+                            }
+                            cx.notify();
+                        }
+                        Err(error) => eprintln!("PDF selection failed: {}", error),
+                    }
+                });
             }))
             .child(
                 div()
@@ -282,5 +331,15 @@ impl Render for PdfView {
                     cx.notify();
                 });
             }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::top_spacer_height;
+
+    #[test]
+    fn virtual_spacer_does_not_double_count_flex_gap() {
+        assert_eq!(top_spacer_height(524.0), 500.0);
     }
 }

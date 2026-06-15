@@ -114,6 +114,13 @@ impl ActiveItem {
         }
     }
 
+    pub fn pdf_state(&self) -> Option<Entity<PdfState>> {
+        match self {
+            Self::Pdf { state, .. } => Some(state.clone()),
+            _ => None,
+        }
+    }
+
     /// Display name for the mode-line badge.
     #[allow(dead_code)]
     pub fn display_name(&self) -> &str {

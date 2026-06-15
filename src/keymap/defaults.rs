@@ -829,6 +829,9 @@ pub fn build_pdf_layer() -> Layer {
         .bind("W", Action::Command("pdf-fit-page"))
         .bind("r", Action::Command("pdf-rotate-cw"))
         .bind("R", Action::Command("pdf-rotate-ccw"))
+        .bind("h", Action::Command("pdf-highlight-selection"))
+        .bind("x", Action::Command("pdf-delete-annotation"))
+        .bind("escape", Action::Command("pdf-clear-selection"))
         .bind("y", Action::Command("pdf-copy-link"))
         .bind("Y", Action::Command("pdf-extract-text"))
         // Search
@@ -1079,6 +1082,9 @@ mod tests {
         assert_eq!(pdf_cmd_for("/"), Some("pdf-search"));
         assert_eq!(pdf_cmd_for("o"), Some("pdf-toc"));
         assert_eq!(pdf_cmd_for("P"), Some("pdf-goto-page"));
+        assert_eq!(pdf_cmd_for("h"), Some("pdf-highlight-selection"));
+        assert_eq!(pdf_cmd_for("x"), Some("pdf-delete-annotation"));
+        assert_eq!(pdf_cmd_for("escape"), Some("pdf-clear-selection"));
     }
 
     #[test]

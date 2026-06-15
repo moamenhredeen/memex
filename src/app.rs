@@ -68,6 +68,23 @@ enum BufferContent {
     Graph(std::path::PathBuf),
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum PdfLinkTarget {
+    Page(usize),
+    Annotation(String),
+}
+
+fn parse_pdf_link(target: &str) -> Option<(&str, PdfLinkTarget)> {
+    let (file, fragment) = target.split_once('#')?;
+    if !file.to_lowercase().ends_with(".pdf") { return None; }
+    if let Some(page) = fragment.strip_prefix("page=") {
+        return page.parse::<usize>().ok().filter(|page| *page > 0)
+            .map(|page| (file, PdfLinkTarget::Page(page)));
+    }
+    fragment.strip_prefix("annotation=").filter(|id| !id.is_empty())
+        .map(|id| (file, PdfLinkTarget::Annotation(id.to_string())))
+}
+
 impl Memex {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut state = AppState::new();
@@ -740,6 +757,22 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
 
     /// Follow a [[wikilink]]: open the note if it exists, create it otherwise.
     fn follow_wikilink(&mut self, title: String, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some((filename, target)) = parse_pdf_link(&title) {
+            let path = self.state.vault.as_ref().and_then(|vault| {
+                vault.contents.attachments.iter().find(|path| {
+                    path.file_name().and_then(|name| name.to_str())
+                        .is_some_and(|name| name.eq_ignore_ascii_case(filename))
+                }).cloned()
+            });
+            match path {
+                Some(path) => self.open_pdf_target(path, target, window, cx),
+                None => {
+                    self.minibuffer.set_message(format!("PDF not found: {}", filename));
+                    cx.notify();
+                }
+            }
+            return;
+        }
         // Search for a matching note in the vault
         if let Some(vault) = &self.state.vault {
             let titles = vault.note_titles();
@@ -2288,6 +2321,33 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         self.show_item_in_focused(buffer, item, window, cx);
     }
 
+    fn open_pdf_target(
+        &mut self,
+        path: std::path::PathBuf,
+        target: PdfLinkTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((buffer, item)) = self.prepare_pdf(path, window, cx) else { return; };
+        let Some(state) = item.pdf_state() else { return; };
+        let found = state.update(cx, |state, _| match &target {
+            PdfLinkTarget::Page(page) => {
+                if *page <= state.page_count { state.goto_page_number(*page); true } else { false }
+            }
+            PdfLinkTarget::Annotation(id) => state.goto_annotation(id),
+        });
+        if !found {
+            let message = match target {
+                PdfLinkTarget::Page(page) => format!("PDF page not found: {}", page),
+                PdfLinkTarget::Annotation(id) => format!("PDF annotation not found: {}", id),
+            };
+            self.minibuffer.set_message(message);
+            cx.notify();
+            return;
+        }
+        self.show_item_in_focused(buffer, item, window, cx);
+    }
+
     fn prepare_pdf(
         &mut self,
         path: std::path::PathBuf,
@@ -3181,5 +3241,18 @@ fn command_to_candidate(cmd: &Command) -> Candidate {
         detail: Some(detail),
         is_action: false,
         data: cmd.id.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod pdf_link_tests {
+    use super::{parse_pdf_link, PdfLinkTarget};
+
+    #[test]
+    fn parses_pdf_page_and_annotation_links() {
+        assert_eq!(parse_pdf_link("paper.pdf#page=12"), Some(("paper.pdf", PdfLinkTarget::Page(12))));
+        assert_eq!(parse_pdf_link("paper.pdf#annotation=memex:abc"), Some(("paper.pdf", PdfLinkTarget::Annotation("memex:abc".into()))));
+        assert_eq!(parse_pdf_link("paper.pdf#page=0"), None);
+        assert_eq!(parse_pdf_link("note#page=1"), None);
     }
 }

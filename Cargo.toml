@@ -13,7 +13,7 @@ fuzzy-matcher = "0.3.7"
 gpui = "0.2"
 gpui-component = "0.5"
 gpui-component-assets = "0.5"
-mupdf = { version = "0.6", default-features = false }
+mupdf = { git = "https://github.com/messense/mupdf-rs", rev = "7f0cb930884145f7b3f62451d178ab1fa432e565", default-features = false }
 notify = "7"
 notify-debouncer-full = "0.4"
 rhai = "1.24.0"
