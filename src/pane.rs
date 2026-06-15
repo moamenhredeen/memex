@@ -52,6 +52,8 @@ pub enum ItemAction {
     Dismiss,
     /// Copy text to the system clipboard.
     WriteClipboard(String),
+    /// Copy text and populate the editors' unnamed Vim register.
+    Yank(String),
     /// Request the app to activate a keymap layer (e.g., "vim:insert", "vim:normal").
     ActivateLayer(&'static str),
     /// Request the app to toggle vim enabled/disabled.

@@ -1047,6 +1047,16 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 ItemAction::WriteClipboard(text) => {
                     cx.write_to_clipboard(ClipboardItem::new_string(text));
                 }
+                ItemAction::Yank(text) => {
+                    cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+                    let editors: Vec<_> = self.window_items.values()
+                        .filter_map(ActiveItem::editor_state)
+                        .collect();
+                    for editor in editors {
+                        editor.update(cx, |state, _| state.set_yank_register(text.clone()));
+                    }
+                    self.editor_state.update(cx, |state, _| state.set_yank_register(text.clone()));
+                }
                 ItemAction::ActivateLayer(layer_id) => {
                     // Editor-owned layers now — route into the editor view.
                     self.active_editor_view().update(cx, |view, cx| {

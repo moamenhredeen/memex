@@ -65,6 +65,10 @@ pub struct LinePaintInfo {
 }
 
 impl EditorState {
+    pub fn set_yank_register(&mut self, text: String) {
+        self.grammar.register_content = text;
+    }
+
     pub fn new(content: String, _window: &mut Window, cx: &mut Context<Self>) -> Self {
         Self::from_document(Document::scratch(content), cx)
     }

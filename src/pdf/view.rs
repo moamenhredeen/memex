@@ -282,7 +282,9 @@ impl Render for PdfView {
                 let vw: f32 = window.viewport_size().width.into();
                 this.state.update(cx, |state, cx| {
                     if let Some((page, point)) = state.screen_to_document_point(vw, e.position) {
-                        state.update_text_selection(page, point);
+                        if let Err(error) = state.update_text_selection(page, point) {
+                            eprintln!("PDF selection preview failed: {}", error);
+                        }
                         cx.notify();
                     }
                 });

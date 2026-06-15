@@ -7,6 +7,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{Cursor, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use fuzzy_matcher::FuzzyMatcher;
 use fuzzy_matcher::skim::SkimMatcherV2;
@@ -90,6 +91,7 @@ struct SelectionDrag {
     page: usize,
     start: Point,
     current: Point,
+    last_preview_at: Instant,
 }
 
 use crate::ui::{DragState, Scrollable};
@@ -139,6 +141,7 @@ pub struct PdfState {
     pub annotations: Vec<PdfAnnotationInfo>,
     pub selected_annotation: Option<(usize, i32)>,
     selection_drag: Option<SelectionDrag>,
+    render_generation: u64,
 }
 
 impl PdfState {
@@ -181,21 +184,37 @@ impl PdfState {
             annotations,
             selected_annotation: None,
             selection_drag: None,
+            render_generation: 0,
         })
     }
 
     pub fn begin_text_selection(&mut self, page: usize, point: Point) {
         self.text_selection = None;
         self.selected_annotation = None;
-        self.selection_drag = Some(SelectionDrag { page, start: point, current: point });
+        self.selection_drag = Some(SelectionDrag {
+            page,
+            start: point,
+            current: point,
+            last_preview_at: Instant::now() - Duration::from_millis(50),
+        });
     }
 
-    pub fn update_text_selection(&mut self, page: usize, point: Point) {
-        if let Some(drag) = self.selection_drag.as_mut() {
-            if drag.page == page {
-                drag.current = point;
-            }
+    pub fn update_text_selection(&mut self, page: usize, point: Point) -> Result<(), String> {
+        let Some(mut drag) = self.selection_drag else { return Ok(()); };
+        if drag.page != page { return Ok(()); }
+        drag.current = point;
+        let now = Instant::now();
+        let should_preview = now.duration_since(drag.last_preview_at) >= Duration::from_millis(24);
+        if should_preview {
+            drag.last_preview_at = now;
         }
+        self.selection_drag = Some(drag);
+        if should_preview
+            && ((drag.start.x - point.x).abs() >= 2.0 || (drag.start.y - point.y).abs() >= 2.0)
+        {
+            self.text_selection = extract_selection(&self.raw_bytes, page, drag.start, point)?;
+        }
+        Ok(())
     }
 
     pub fn finish_text_selection(&mut self) -> Result<bool, String> {
@@ -283,7 +302,7 @@ impl PdfState {
     fn reload_annotations(&mut self) -> Result<(), String> {
         self.raw_bytes = Arc::new(fs::read(&self.path).map_err(|e| e.to_string())?);
         self.annotations = load_annotations(&self.path)?;
-        self.invalidate_cache();
+        self.render_generation = self.render_generation.wrapping_add(1);
         Ok(())
     }
 
@@ -542,6 +561,7 @@ impl PdfState {
 
             let raw_bytes = self.raw_bytes.clone();
             let zoom = self.zoom;
+            let generation = self.render_generation;
 
             cx.spawn(async move |this, cx| {
                 let result = cx
@@ -553,7 +573,7 @@ impl PdfState {
 
                 this.update(cx, |state, cx| {
                     state.pending_renders.remove(&page_index);
-                    if let Some(rendered) = result {
+                    if state.render_generation == generation && let Some(rendered) = result {
                         state.page_cache.insert(page_index, rendered);
                         cx.notify();
                     }
@@ -561,6 +581,30 @@ impl PdfState {
                 .ok();
             })
             .detach();
+        }
+    }
+
+    /// Re-render pages after an annotation write while retaining the previous
+    /// images until their replacements are ready.
+    fn refresh_render_pages(&mut self, pages: &[usize], cx: &mut Context<Self>) {
+        for &page_index in pages {
+            if page_index >= self.page_count { continue; }
+            self.pending_renders.insert(page_index);
+            let raw_bytes = self.raw_bytes.clone();
+            let zoom = self.zoom;
+            let generation = self.render_generation;
+            cx.spawn(async move |this, cx| {
+                let result = cx.background_executor()
+                    .spawn(async move { render_page_background(&raw_bytes, page_index, zoom) })
+                    .await;
+                this.update(cx, |state, cx| {
+                    state.pending_renders.remove(&page_index);
+                    if state.render_generation == generation && let Some(rendered) = result {
+                        state.page_cache.insert(page_index, rendered);
+                        cx.notify();
+                    }
+                }).ok();
+            }).detach();
         }
     }
 
@@ -573,6 +617,7 @@ impl PdfState {
 
     /// Invalidate cached pages and recompute layouts (e.g., after zoom change).
     pub fn invalidate_cache(&mut self) {
+        self.render_generation = self.render_generation.wrapping_add(1);
         self.page_cache.clear();
         self.pending_renders.clear();
         if let Ok(doc) = Document::from_bytes(&self.raw_bytes, "") {
@@ -1013,13 +1058,26 @@ impl PdfState {
             }
             "pdf-highlight-selection" => {
                 match self.create_highlight() {
-                    Ok(_) => vec![ItemAction::SetMessage("PDF highlight saved".into())],
+                    Ok(_) => {
+                        if let Some((page, _)) = self.selected_annotation {
+                            self.refresh_render_pages(&[page], cx);
+                        }
+                        cx.notify();
+                        vec![ItemAction::SetMessage("PDF highlight saved".into())]
+                    }
                     Err(error) => vec![ItemAction::SetMessage(error)],
                 }
             }
             "pdf-delete-annotation" => {
+                let page = self.selected_annotation.map(|(page, _)| page);
                 match self.delete_selected_annotation() {
-                    Ok(()) => vec![ItemAction::SetMessage("PDF annotation deleted".into())],
+                    Ok(()) => {
+                        if let Some(page) = page {
+                            self.refresh_render_pages(&[page], cx);
+                        }
+                        cx.notify();
+                        vec![ItemAction::SetMessage("PDF annotation deleted".into())]
+                    }
                     Err(error) => vec![ItemAction::SetMessage(error)],
                 }
             }
@@ -1031,14 +1089,14 @@ impl PdfState {
             "pdf-copy-link" => {
                 match self.selected_annotation_link() {
                     Ok(Some(link)) => vec![
-                        ItemAction::WriteClipboard(link.clone()),
+                        ItemAction::Yank(link.clone()),
                         ItemAction::SetMessage(format!("Copied: {}", link)),
                     ],
                     Ok(None) => {
                         let (first, _) = self.visible_range(vh);
                         let filename = self.path.file_name().and_then(|n| n.to_str()).unwrap_or("file.pdf");
                         let link = format!("[[{}#page={}]]", filename, first + 1);
-                        vec![ItemAction::WriteClipboard(link.clone()), ItemAction::SetMessage(format!("Copied: {}", link))]
+                        vec![ItemAction::Yank(link.clone()), ItemAction::SetMessage(format!("Copied: {}", link))]
                     }
                     Err(error) => vec![ItemAction::SetMessage(error)],
                 }
