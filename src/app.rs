@@ -12,7 +12,7 @@ use crate::pane::{ActiveItem, CommandOutcome, ItemAction, VimSnapshot};
 use crate::pdf::{PdfState, PdfView, PdfViewEvent};
 use crate::state::AppState;
 use crate::theme::{self, Theme};
-use crate::workspace::{BufferId, SplitAxis, WindowId, WindowLayout, WindowStore, Workspace};
+use crate::workspace::{BufferId, Workspace, WorkspaceDisplay, WorkspaceFocus};
 
 const MAX_RESULTS: usize = 15;
 
@@ -28,7 +28,8 @@ actions!(
         FocusLeftPane,
         FocusRightPane,
         SearchContent,
-        ToggleBacklinks
+        ToggleBacklinks,
+        ToggleSecondaryMaximize
     ]
 );
 
@@ -37,9 +38,9 @@ pub struct Memex {
     editor_state: Entity<EditorState>,
     editor_view: Entity<EditorView>,
     workspace: Workspace<ResourceKey, BufferContent>,
-    window_items: WindowStore<ActiveItem>,
+    editor_item: ActiveItem,
+    secondary: Option<SecondaryContent>,
     editor_buffer: BufferId,
-    editor_window: WindowId,
     minibuffer: Minibuffer,
     minibuffer_focus: FocusHandle,
     global_commands: Vec<Command>,
@@ -47,8 +48,6 @@ pub struct Memex {
     /// every vault switch; a polling task spawned in `new` drains its
     /// event channel and calls `refresh` on the active vault.
     vault_watcher: Option<crate::vault::VaultWatcher>,
-    /// Whether the backlinks panel is visible below the editor.
-    show_backlinks: bool,
     theme: Theme,
     _subscriptions: Vec<Subscription>,
 }
@@ -68,6 +67,11 @@ enum BufferContent {
     Graph(std::path::PathBuf),
 }
 
+enum SecondaryContent {
+    Item { item: ActiveItem },
+    Backlinks,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum PdfLinkTarget {
     Page(usize),
@@ -76,12 +80,19 @@ enum PdfLinkTarget {
 
 fn parse_pdf_link(target: &str) -> Option<(&str, PdfLinkTarget)> {
     let (file, fragment) = target.split_once('#')?;
-    if !file.to_lowercase().ends_with(".pdf") { return None; }
+    if !file.to_lowercase().ends_with(".pdf") {
+        return None;
+    }
     if let Some(page) = fragment.strip_prefix("page=") {
-        return page.parse::<usize>().ok().filter(|page| *page > 0)
+        return page
+            .parse::<usize>()
+            .ok()
+            .filter(|page| *page > 0)
             .map(|page| (file, PdfLinkTarget::Page(page)));
     }
-    fragment.strip_prefix("annotation=").filter(|id| !id.is_empty())
+    fragment
+        .strip_prefix("annotation=")
+        .filter(|id| !id.is_empty())
         .map(|id| (file, PdfLinkTarget::Annotation(id.to_string())))
 }
 
@@ -210,24 +221,20 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             editor_resource,
             BufferContent::Markdown(editor_state.read(cx).buffer.clone()),
         );
-        let editor_buffer = workspace.focused_buffer();
-        let editor_window = workspace.focused_window;
-        let mut window_items = WindowStore::default();
-        window_items.insert(editor_window, editor_item);
+        let editor_buffer = workspace.editor_buffer;
 
         let mut this = Self {
             state,
             editor_state: editor_state.clone(),
             editor_view: editor_view.clone(),
             workspace,
-            window_items,
+            editor_item,
+            secondary: None,
             editor_buffer,
-            editor_window,
             minibuffer: Minibuffer::new(),
             minibuffer_focus: cx.focus_handle(),
             global_commands: Self::global_commands(),
             vault_watcher: None,
-            show_backlinks: false,
             theme,
             _subscriptions: vec![editor_sub, editor_key_sub],
         };
@@ -299,87 +306,80 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         self.active_editor_state().read(cx).is_dirty()
     }
 
-    fn item_for_window(&self, window: WindowId) -> &ActiveItem {
-        self.window_items
-            .get(window)
-            .expect("live window must have presentation state")
-    }
-
     fn focused_item(&self) -> &ActiveItem {
-        self.item_for_window(self.workspace.focused_window)
+        if self.workspace.focus == WorkspaceFocus::Secondary {
+            if let Some(SecondaryContent::Item { item, .. }) = &self.secondary {
+                return item;
+            }
+        }
+        &self.editor_item
     }
 
     fn active_editor_state(&self) -> Entity<EditorState> {
-        self.focused_item()
-            .editor_state()
-            .unwrap_or_else(|| self.editor_state.clone())
+        self.editor_state.clone()
     }
 
     fn active_editor_view(&self) -> Entity<EditorView> {
-        self.focused_item()
-            .editor_view()
-            .unwrap_or_else(|| self.editor_view.clone())
+        self.editor_view.clone()
     }
 
-    fn secondary_window(&self) -> Option<WindowId> {
-        self.workspace
-            .layout
-            .window_ids()
-            .into_iter()
-            .find(|id| *id != self.editor_window)
+    fn focus_editor(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.workspace.focus = WorkspaceFocus::Editor;
+        self.editor_item.focus(window, cx);
+        cx.notify();
     }
 
-    fn focus_workspace_window(
-        &mut self,
-        id: WindowId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if self.workspace.focus(id) {
-            self.item_for_window(id).focus(window, cx);
-            cx.notify();
+    fn focus_secondary(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.secondary.is_none() {
+            return;
         }
+        self.workspace.focus = WorkspaceFocus::Secondary;
+        if let Some(SecondaryContent::Item { item, .. }) = &self.secondary {
+            item.focus(window, cx);
+        }
+        cx.notify();
     }
 
-    fn render_window_layout(&self, layout: &WindowLayout, cx: &mut Context<Self>) -> AnyElement {
-        match layout {
-            WindowLayout::Window(workspace_window) => {
-                let id = workspace_window.id;
-                let view = self.item_for_window(id).view_element();
-                div()
-                    .id(ElementId::Name(format!("workspace-window-{:?}", id).into()))
-                    .flex_1()
-                    .size_full()
-                    .overflow_hidden()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(move |this, _e: &MouseDownEvent, window, cx| {
-                            this.focus_workspace_window(id, window, cx);
-                        }),
-                    )
-                    .child(view)
-                    .into_any_element()
-            }
-            WindowLayout::Split { axis, children, .. } => {
-                let children = children
-                    .iter()
-                    .map(|child| self.render_window_layout(child, cx))
-                    .collect::<Vec<_>>();
-                match axis {
-                    SplitAxis::Horizontal => h_flex()
-                        .flex_1()
-                        .size_full()
-                        .overflow_hidden()
-                        .children(children)
-                        .into_any_element(),
-                    SplitAxis::Vertical => v_flex()
-                        .flex_1()
-                        .size_full()
-                        .overflow_hidden()
-                        .children(children)
-                        .into_any_element(),
-                }
-            }
+    fn render_workspace(&self, cx: &mut Context<Self>) -> AnyElement {
+        let editor = div()
+            .id("editor-slot")
+            .flex_1()
+            .size_full()
+            .overflow_hidden()
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, window, cx| this.focus_editor(window, cx)),
+            )
+            .child(self.editor_item.view_element());
+        let secondary = self.secondary.as_ref().map(|content| {
+            let child = match content {
+                SecondaryContent::Item { item, .. } => item.view_element().into_any_element(),
+                SecondaryContent::Backlinks => self.render_backlinks_panel(cx).into_any_element(),
+            };
+            div()
+                .id("secondary-slot")
+                .flex_1()
+                .size_full()
+                .overflow_hidden()
+                .border_l_1()
+                .border_color(rgb(self.theme.border))
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|this, _, window, cx| this.focus_secondary(window, cx)),
+                )
+                .child(child)
+                .into_any_element()
+        });
+        match (self.workspace.display, secondary) {
+            (WorkspaceDisplay::EditorOnly, _) | (_, None) => editor.into_any_element(),
+            (WorkspaceDisplay::SideBySide, Some(secondary)) => h_flex()
+                .flex_1()
+                .size_full()
+                .overflow_hidden()
+                .child(editor)
+                .child(secondary)
+                .into_any_element(),
+            (WorkspaceDisplay::SecondaryOnly, Some(secondary)) => secondary,
         }
     }
 
@@ -387,14 +387,6 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         let vim = self.vim_enabled(cx);
         self.minibuffer
             .activate(DelegateKind::NoteSearch, "Find note:", vim);
-        self.minibuffer_focus.focus(window);
-        cx.notify();
-    }
-
-    fn activate_split_note_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let vim = self.vim_enabled(cx);
-        self.minibuffer
-            .activate(DelegateKind::SplitNoteSearch, "Split open:", vim);
         self.minibuffer_focus.focus(window);
         cx.notify();
     }
@@ -433,14 +425,6 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         let vim = self.vim_enabled(cx);
         self.minibuffer
             .activate(DelegateKind::WikilinkAutocomplete, "Link to:", vim);
-        self.minibuffer_focus.focus(window);
-        cx.notify();
-    }
-
-    fn activate_backlinks(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let vim = self.vim_enabled(cx);
-        self.minibuffer
-            .activate(DelegateKind::Backlinks, "Backlinks:", vim);
         self.minibuffer_focus.focus(window);
         cx.notify();
     }
@@ -488,7 +472,8 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
 
     fn apply_theme(&mut self, theme: Theme, cx: &mut Context<Self>) {
         self.theme = theme;
-        for item in self.window_items.values() {
+        self.editor_item.set_theme(theme, cx);
+        if let Some(SecondaryContent::Item { item, .. }) = &self.secondary {
             item.set_theme(theme, cx);
         }
         self.minibuffer
@@ -759,15 +744,22 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
     fn follow_wikilink(&mut self, title: String, window: &mut Window, cx: &mut Context<Self>) {
         if let Some((filename, target)) = parse_pdf_link(&title) {
             let path = self.state.vault.as_ref().and_then(|vault| {
-                vault.contents.attachments.iter().find(|path| {
-                    path.file_name().and_then(|name| name.to_str())
-                        .is_some_and(|name| name.eq_ignore_ascii_case(filename))
-                }).cloned()
+                vault
+                    .contents
+                    .attachments
+                    .iter()
+                    .find(|path| {
+                        path.file_name()
+                            .and_then(|name| name.to_str())
+                            .is_some_and(|name| name.eq_ignore_ascii_case(filename))
+                    })
+                    .cloned()
             });
             match path {
                 Some(path) => self.open_pdf_target(path, target, window, cx),
                 None => {
-                    self.minibuffer.set_message(format!("PDF not found: {}", filename));
+                    self.minibuffer
+                        .set_message(format!("PDF not found: {}", filename));
                     cx.notify();
                 }
             }
@@ -853,9 +845,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         match &self.minibuffer.delegate_kind {
             DelegateKind::Command => self.palette_candidates(&self.minibuffer.input),
             DelegateKind::NoteSearch => self.get_note_candidates(),
-            DelegateKind::SplitNoteSearch => self.get_note_candidates(),
             DelegateKind::WikilinkAutocomplete => self.get_wikilink_candidates(),
-            DelegateKind::Backlinks => self.get_backlink_candidates(cx),
             DelegateKind::VaultSwitch => self.get_vault_switch_candidates(),
             DelegateKind::VaultOpen => self.get_vault_open_candidates(),
             DelegateKind::TagList => self.get_tag_list_candidates(),
@@ -915,15 +905,6 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     self.create_note_by_title(&title, window, cx);
                 }
             }
-            DelegateKind::SplitNoteSearch => {
-                if let Some(candidate) = candidates.get(selected) {
-                    if !candidate.is_action {
-                        let path = std::path::PathBuf::from(&candidate.data);
-                        self.dismiss_minibuffer(window, cx);
-                        self.open_in_split_by_path(path, window, cx);
-                    }
-                }
-            }
             DelegateKind::WikilinkAutocomplete => {
                 if let Some(candidate) = candidates.get(selected) {
                     let title = candidate.data.clone();
@@ -934,13 +915,6 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     let title = input.clone();
                     self.dismiss_minibuffer(window, cx);
                     self.insert_wikilink_completion(&title, window, cx);
-                }
-            }
-            DelegateKind::Backlinks => {
-                if let Some(candidate) = candidates.get(selected) {
-                    let path = std::path::PathBuf::from(&candidate.data);
-                    self.dismiss_minibuffer(window, cx);
-                    self.open_note_by_path(path, window, cx);
                 }
             }
             DelegateKind::VaultSwitch => {
@@ -1049,13 +1023,8 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 }
                 ItemAction::Yank(text) => {
                     cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
-                    let editors: Vec<_> = self.window_items.values()
-                        .filter_map(ActiveItem::editor_state)
-                        .collect();
-                    for editor in editors {
-                        editor.update(cx, |state, _| state.set_yank_register(text.clone()));
-                    }
-                    self.editor_state.update(cx, |state, _| state.set_yank_register(text.clone()));
+                    self.editor_state
+                        .update(cx, |state, _| state.set_yank_register(text.clone()));
                 }
                 ItemAction::ActivateLayer(layer_id) => {
                     // Editor-owned layers now — route into the editor view.
@@ -1119,24 +1088,16 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             "open-graph" => {
                 self.open_graph(window, cx);
             }
-            "split" => {
-                self.split_focused_window(SplitAxis::Vertical, window, cx);
+            "backlinks" => {
+                self.show_backlinks(window, cx);
             }
-            "vsplit" => {
-                self.split_focused_window(SplitAxis::Horizontal, window, cx);
-            }
-            "split-open" => {
-                self.activate_split_note_search(window, cx);
-            }
-            "only" | "only-window" => {
-                if self.workspace.only_focused() {
-                    let focused = self.workspace.focused_window;
-                    self.window_items.retain_only(focused);
+            "toggle-secondary-maximize" | "secondary-maximize" => {
+                if self.workspace.toggle_secondary_maximized() {
                     cx.notify();
                 }
             }
-            "backlinks" => {
-                self.activate_backlinks(window, cx);
+            "close-secondary" => {
+                self.close_secondary(window, cx);
             }
             "today" | "daily" | "journal" => {
                 self.open_or_create_journal(window, cx);
@@ -1187,8 +1148,11 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 }
             }
             "toggle-backlinks" | "backlinks-panel" => {
-                self.show_backlinks = !self.show_backlinks;
-                cx.notify();
+                if matches!(self.secondary, Some(SecondaryContent::Backlinks)) {
+                    self.close_secondary(window, cx);
+                } else {
+                    self.show_backlinks(window, cx);
+                }
             }
             "attach" | "paste-image" => {
                 self.attach_from_clipboard(window, cx);
@@ -1371,53 +1335,6 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 detail,
                 is_action: false,
                 data,
-            })
-            .collect()
-    }
-
-    /// Build candidates for backlinks — notes that link to the current note.
-    fn get_backlink_candidates(&self, cx: &App) -> Vec<Candidate> {
-        let current_title = self.current_document_title(cx);
-        if current_title.is_empty() {
-            return vec![];
-        }
-        let vault = match &self.state.vault {
-            Some(v) => v,
-            None => return vec![],
-        };
-        let backlinks = vault.find_backlinks(&current_title);
-        let query = &self.minibuffer.input;
-
-        if query.is_empty() {
-            return backlinks
-                .into_iter()
-                .map(|(title, path)| Candidate {
-                    label: title,
-                    detail: None,
-                    is_action: false,
-                    data: path.to_string_lossy().to_string(),
-                })
-                .collect();
-        }
-
-        let matcher = SkimMatcherV2::default();
-        let mut scored: Vec<(i64, String, std::path::PathBuf)> = backlinks
-            .into_iter()
-            .filter_map(|(title, path)| {
-                matcher
-                    .fuzzy_match(&title, query)
-                    .map(|score| (score, title, path))
-            })
-            .collect();
-        scored.sort_by(|a, b| b.0.cmp(&a.0));
-        scored
-            .into_iter()
-            .take(MAX_RESULTS)
-            .map(|(_, title, path)| Candidate {
-                label: title,
-                detail: None,
-                is_action: false,
-                data: path.to_string_lossy().to_string(),
             })
             .collect()
     }
@@ -1827,8 +1744,8 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             },
             Command {
                 id: "quit",
-                name: "Close Pane",
-                description: "Close the current pane, or quit if it is the last pane",
+                name: "Close Secondary or Quit",
+                description: "Close the focused secondary slot, otherwise quit",
                 aliases: &["q", "exit"],
                 binding: Some(":q"),
             },
@@ -1905,37 +1822,23 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             Command {
                 id: "open-graph",
                 name: "Open Graph",
-                description: "Open the vault graph in the current pane",
+                description: "Open the vault graph in the secondary slot",
                 aliases: &["graph"],
                 binding: None,
             },
             Command {
-                id: "split",
-                name: "Split Pane",
-                description: "Split the current pane horizontally",
-                aliases: &["sp"],
-                binding: Some(":sp"),
-            },
-            Command {
-                id: "vsplit",
-                name: "Vertical Split",
-                description: "Split the current pane vertically",
-                aliases: &["vs"],
-                binding: Some(":vs"),
-            },
-            Command {
-                id: "split-open",
-                name: "Split Open",
-                description: "Open a note or PDF in the right split panel",
-                aliases: &[],
+                id: "toggle-secondary-maximize",
+                name: "Toggle Secondary Maximize",
+                description: "Toggle the secondary slot between side-by-side and full width",
+                aliases: &["secondary-maximize", "maximize-tool"],
                 binding: None,
             },
             Command {
-                id: "only-window",
-                name: "Only Window",
-                description: "Make the focused window occupy the workspace",
-                aliases: &["only"],
-                binding: Some(":only"),
+                id: "close-secondary",
+                name: "Close Secondary",
+                description: "Close the secondary slot and return focus to the editor",
+                aliases: &[],
+                binding: None,
             },
             Command {
                 id: "backlinks",
@@ -2002,8 +1905,8 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             },
             Command {
                 id: "toggle-backlinks",
-                name: "Toggle Backlinks Panel",
-                description: "Show or hide the backlinks panel below the editor",
+                name: "Toggle Backlinks",
+                description: "Show or hide backlinks in the secondary slot",
                 aliases: &["backlinks-panel"],
                 binding: Some("Ctrl+Shift+B"),
             },
@@ -2126,53 +2029,6 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         cx.notify();
     }
 
-    /// Open a note or PDF in a new right split pane.
-    fn open_in_split_by_path(
-        &mut self,
-        path: std::path::PathBuf,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if path
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"))
-        {
-            let Some((buffer, item)) = self.prepare_pdf(path, window, cx) else {
-                return;
-            };
-            self.show_item_in_new_split(buffer, item, SplitAxis::Horizontal, window, cx);
-        } else {
-            let key = ResourceKey::Markdown(path.clone());
-            let buffer = if let Some(buffer) = self.workspace.buffers.id_for_resource(&key) {
-                buffer
-            } else {
-                let document = match Document::open(path) {
-                    Ok(document) => document,
-                    Err(e) => {
-                        self.minibuffer
-                            .set_message(format!("Failed to read: {}", e));
-                        return;
-                    }
-                };
-                self.workspace
-                    .buffers
-                    .open_with(key, || BufferContent::Markdown(EditorBuffer::new(document)))
-            };
-            let editor_buffer = match self
-                .workspace
-                .buffers
-                .get(buffer)
-                .expect("opened markdown buffer must exist")
-            {
-                BufferContent::Markdown(buffer) => buffer.clone(),
-                _ => unreachable!("markdown resource must contain markdown buffer"),
-            };
-            let item = self.create_editor_item(editor_buffer, window, cx);
-            self.show_item_in_new_split(buffer, item, SplitAxis::Horizontal, window, cx);
-        }
-    }
-
     fn create_editor_item(
         &mut self,
         buffer: EditorBuffer,
@@ -2250,14 +2106,12 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             .editor_view()
             .expect("new markdown item must expose editor view");
 
-        let focused = self.workspace.focused_window;
-        self.workspace.switch_window_buffer(focused, buffer_id);
-        self.window_items.insert(focused, item);
-        self.editor_window = focused;
+        self.workspace.show_editor(buffer_id);
         self.editor_buffer = buffer_id;
         self.editor_state = editor_state;
         self.editor_view = editor_view;
-        self.focus_workspace_window(focused, window, cx);
+        self.editor_item = item;
+        self.focus_editor(window, cx);
     }
 
     fn open_document_buffer(
@@ -2319,16 +2173,11 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         })
     }
 
-    fn open_pdf(
-        &mut self,
-        path: std::path::PathBuf,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
+    fn open_pdf(&mut self, path: std::path::PathBuf, window: &mut Window, cx: &mut Context<Self>) {
         let Some((buffer, item)) = self.prepare_pdf(path, window, cx) else {
             return;
         };
-        self.show_item_in_focused(buffer, item, window, cx);
+        self.show_secondary_item(buffer, item, window, cx);
     }
 
     fn open_pdf_target(
@@ -2338,11 +2187,41 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some((buffer, item)) = self.prepare_pdf(path, window, cx) else { return; };
-        let Some(state) = item.pdf_state() else { return; };
+        if let Some(SecondaryContent::Item { item, .. }) = &self.secondary {
+            if let Some(state) = item.pdf_state() {
+                if state.read(cx).path == path {
+                    let found = state.update(cx, |state, _| match &target {
+                        PdfLinkTarget::Page(page) => {
+                            if *page <= state.page_count {
+                                state.goto_page_number(*page);
+                                true
+                            } else {
+                                false
+                            }
+                        }
+                        PdfLinkTarget::Annotation(id) => state.goto_annotation(id),
+                    });
+                    if found {
+                        self.focus_secondary(window, cx);
+                        return;
+                    }
+                }
+            }
+        }
+        let Some((buffer, item)) = self.prepare_pdf(path, window, cx) else {
+            return;
+        };
+        let Some(state) = item.pdf_state() else {
+            return;
+        };
         let found = state.update(cx, |state, _| match &target {
             PdfLinkTarget::Page(page) => {
-                if *page <= state.page_count { state.goto_page_number(*page); true } else { false }
+                if *page <= state.page_count {
+                    state.goto_page_number(*page);
+                    true
+                } else {
+                    false
+                }
             }
             PdfLinkTarget::Annotation(id) => state.goto_annotation(id),
         });
@@ -2355,7 +2234,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             cx.notify();
             return;
         }
-        self.show_item_in_focused(buffer, item, window, cx);
+        self.show_secondary_item(buffer, item, window, cx);
     }
 
     fn prepare_pdf(
@@ -2388,33 +2267,16 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         Some((buffer, item))
     }
 
-    fn show_item_in_focused(
+    fn show_secondary_item(
         &mut self,
         buffer: BufferId,
         item: ActiveItem,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let focused = self.workspace.focused_window;
-        self.workspace.switch_window_buffer(focused, buffer);
-        self.window_items.insert(focused, item);
-        self.focus_workspace_window(focused, window, cx);
-    }
-
-    fn show_item_in_new_split(
-        &mut self,
-        buffer: BufferId,
-        item: ActiveItem,
-        axis: SplitAxis,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let split = self
-            .workspace
-            .split_focused(axis, buffer)
-            .expect("focused window must be splittable");
-        self.window_items.insert(split, item);
-        self.focus_workspace_window(split, window, cx);
+        self.workspace.show_secondary(Some(buffer));
+        self.secondary = Some(SecondaryContent::Item { item });
+        self.focus_secondary(window, cx);
     }
 
     fn open_graph(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2446,7 +2308,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             _ => unreachable!("graph resource must contain graph buffer"),
         };
         let graph_item = self.create_graph_item(&graph_path, window, cx);
-        self.show_item_in_focused(buffer, graph_item, window, cx);
+        self.show_secondary_item(buffer, graph_item, window, cx);
     }
 
     fn create_graph_item(
@@ -2507,47 +2369,23 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
     }
 
     fn close_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let closed = self.workspace.focused_window;
-        if self.workspace.close_focused() {
-            self.window_items.remove(closed);
-            let focused = self.workspace.focused_window;
-            self.item_for_window(focused).focus(window, cx);
-            cx.notify();
+        if self.workspace.focus == WorkspaceFocus::Secondary && self.secondary.is_some() {
+            self.close_secondary(window, cx);
         } else {
             cx.quit();
         }
     }
 
-    fn split_focused_window(
-        &mut self,
-        axis: SplitAxis,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let buffer = self.workspace.focused_buffer();
-        let Some(item) = self.create_item_for_buffer(buffer, window, cx) else {
-            return;
-        };
-        self.show_item_in_new_split(buffer, item, axis, window, cx);
+    fn close_secondary(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.secondary = None;
+        self.workspace.close_secondary();
+        self.focus_editor(window, cx);
     }
 
-    fn create_item_for_buffer(
-        &mut self,
-        buffer: BufferId,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Option<ActiveItem> {
-        let content = self
-            .workspace
-            .buffers
-            .get(buffer)
-            .expect("live window buffer must exist")
-            .clone();
-        match content {
-            BufferContent::Markdown(buffer) => Some(self.create_editor_item(buffer, window, cx)),
-            BufferContent::Pdf(path) => self.create_pdf_item(&path, window, cx),
-            BufferContent::Graph(path) => Some(self.create_graph_item(&path, window, cx)),
-        }
+    fn show_backlinks(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.secondary = Some(SecondaryContent::Backlinks);
+        self.workspace.show_secondary(None);
+        self.focus_secondary(window, cx);
     }
 
     fn create_note_by_title(&mut self, title: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -2717,9 +2555,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             .child(Icon::new(IconName::WindowClose))
     }
 
-    /// Backlinks panel — always-visible strip below the editor listing
-    /// every note that links to the current one. Toggled with
-    /// Ctrl+Shift+B. Empty state shows a subtle nudge.
+    /// Backlinks secondary view for the current editor note.
     fn render_backlinks_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let current_title = self.current_document_title(cx);
         let backlinks = self
@@ -2796,13 +2632,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             }
         }
 
-        v_flex()
-            .w_full()
-            .h(px(160.))
-            .border_t_1()
-            .border_color(rgb(self.theme.border))
-            .child(header)
-            .child(list)
+        v_flex().w_full().h_full().child(header).child(list)
     }
 
     fn render_mode_line(&self, cx: &mut Context<Self>) -> impl IntoElement {
@@ -3078,15 +2908,13 @@ impl Render for Memex {
                 if this.minibuffer.active {
                     return;
                 }
-                this.focus_workspace_window(this.editor_window, window, cx);
+                this.focus_editor(window, cx);
             }))
             .on_action(cx.listener(|this, _: &FocusRightPane, window, cx| {
                 if this.minibuffer.active {
                     return;
                 }
-                if let Some(secondary) = this.secondary_window() {
-                    this.focus_workspace_window(secondary, window, cx);
-                }
+                this.focus_secondary(window, cx);
             }))
             .on_action(cx.listener(|this, _: &SearchContent, window, cx| {
                 if this.minibuffer.active {
@@ -3094,22 +2922,29 @@ impl Render for Memex {
                 }
                 this.activate_content_search(window, cx);
             }))
-            .on_action(cx.listener(|this, _: &ToggleBacklinks, _window, cx| {
+            .on_action(cx.listener(|this, _: &ToggleBacklinks, window, cx| {
                 if this.minibuffer.active {
                     return;
                 }
-                this.show_backlinks = !this.show_backlinks;
-                cx.notify();
+                if matches!(this.secondary, Some(SecondaryContent::Backlinks)) {
+                    this.close_secondary(window, cx);
+                } else {
+                    this.show_backlinks(window, cx);
+                }
             }))
+            .on_action(
+                cx.listener(|this, _: &ToggleSecondaryMaximize, _window, cx| {
+                    if this.minibuffer.active {
+                        return;
+                    }
+                    if this.workspace.toggle_secondary_maximized() {
+                        cx.notify();
+                    }
+                }),
+            )
             // Custom title bar with drag + window controls
             .child(self.render_title_bar(cx))
-            .child(self.render_window_layout(&self.workspace.layout, cx))
-            // Optional backlinks panel below the content (Ctrl+Shift+B)
-            .children(if self.show_backlinks {
-                Some(self.render_backlinks_panel(cx).into_any_element())
-            } else {
-                None
-            })
+            .child(self.render_workspace(cx))
             // Mode line (always visible, like emacs mode-line)
             .child(self.render_mode_line(cx))
             // Minibuffer area (below mode line, like emacs)
@@ -3256,12 +3091,18 @@ fn command_to_candidate(cmd: &Command) -> Candidate {
 
 #[cfg(test)]
 mod pdf_link_tests {
-    use super::{parse_pdf_link, PdfLinkTarget};
+    use super::{PdfLinkTarget, parse_pdf_link};
 
     #[test]
     fn parses_pdf_page_and_annotation_links() {
-        assert_eq!(parse_pdf_link("paper.pdf#page=12"), Some(("paper.pdf", PdfLinkTarget::Page(12))));
-        assert_eq!(parse_pdf_link("paper.pdf#annotation=memex:abc"), Some(("paper.pdf", PdfLinkTarget::Annotation("memex:abc".into()))));
+        assert_eq!(
+            parse_pdf_link("paper.pdf#page=12"),
+            Some(("paper.pdf", PdfLinkTarget::Page(12)))
+        );
+        assert_eq!(
+            parse_pdf_link("paper.pdf#annotation=memex:abc"),
+            Some(("paper.pdf", PdfLinkTarget::Annotation("memex:abc".into())))
+        );
         assert_eq!(parse_pdf_link("paper.pdf#page=0"), None);
         assert_eq!(parse_pdf_link("note#page=1"), None);
     }

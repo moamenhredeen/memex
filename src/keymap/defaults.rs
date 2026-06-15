@@ -838,6 +838,7 @@ pub fn build_pdf_layer() -> Layer {
         .bind("/", Action::Command("pdf-search"))
         .bind("n", Action::Command("pdf-search-next"))
         .bind("N", Action::Command("pdf-search-prev"))
+        .bind("q", Action::Command("quit"))
 }
 
 fn register_pdf_layer(stack: &mut LayerStack) {
@@ -853,6 +854,7 @@ pub fn build_graph_layer() -> Layer {
         .bind("0", Action::Command("reset-zoom"))
         .bind("c", Action::Command("center-graph"))
         .bind("l", Action::Command("toggle-local-graph"))
+        .bind("q", Action::Command("quit"))
 }
 
 fn register_graph_layer(stack: &mut LayerStack) {
@@ -1085,6 +1087,7 @@ mod tests {
         assert_eq!(pdf_cmd_for("h"), Some("pdf-highlight-selection"));
         assert_eq!(pdf_cmd_for("x"), Some("pdf-delete-annotation"));
         assert_eq!(pdf_cmd_for("escape"), Some("pdf-clear-selection"));
+        assert_eq!(pdf_cmd_for("q"), Some("quit"));
     }
 
     #[test]
@@ -1112,7 +1115,7 @@ mod tests {
         assert_eq!(graph_cmd_for("0"), Some("reset-zoom"));
         assert_eq!(graph_cmd_for("c"), Some("center-graph"));
         assert_eq!(graph_cmd_for("l"), Some("toggle-local-graph"));
-        assert_eq!(graph_cmd_for("q"), None);
+        assert_eq!(graph_cmd_for("q"), Some("quit"));
     }
 
     #[test]

@@ -48,6 +48,7 @@ fn main() {
                 gpui::KeyBinding::new("ctrl-l", app::FocusRightPane, None),
                 gpui::KeyBinding::new("ctrl-shift-f", app::SearchContent, None),
                 gpui::KeyBinding::new("ctrl-shift-b", app::ToggleBacklinks, None),
+                gpui::KeyBinding::new("ctrl-shift-enter", app::ToggleSecondaryMaximize, None),
             ]);
 
             cx.on_window_closed(|cx| {

@@ -28,7 +28,10 @@ pub enum MinibufferResult {
     /// Close the minibuffer.
     Dismiss,
     /// Close and execute the command with given id and raw input.
-    Execute { command_id: String, raw_input: String },
+    Execute {
+        command_id: String,
+        raw_input: String,
+    },
     /// Close and open a file/note at this path.
     OpenPath(String),
     /// Close and create a new note with this title.
@@ -51,12 +54,8 @@ pub enum DelegateKind {
     Command,
     /// Note search (Ctrl+P, :notes) — fuzzy-searches vault notes.
     NoteSearch,
-    /// Note search that opens result in the right split panel.
-    SplitNoteSearch,
     /// Wikilink autocomplete — inserts [[selected-title]] at cursor.
     WikilinkAutocomplete,
-    /// Backlinks — shows notes that link to the current note.
-    Backlinks,
     /// Recent vaults picker (:vault-switch) — MRU-ordered registered vaults.
     VaultSwitch,
     /// Directory browser (:vault-open) — navigate filesystem to choose a vault.
@@ -209,12 +208,7 @@ impl Minibuffer {
 
     // ── Insert mode ──────────────────────────────────────────────────
 
-    fn handle_insert(
-        &mut self,
-        key: &str,
-        ctrl: bool,
-        candidate_count: usize,
-    ) -> MinibufferAction {
+    fn handle_insert(&mut self, key: &str, ctrl: bool, candidate_count: usize) -> MinibufferAction {
         if ctrl {
             return self.handle_ctrl(key, candidate_count);
         }
@@ -390,10 +384,7 @@ impl Minibuffer {
                 MinibufferAction::Updated
             }
             "^" | "_" => {
-                self.cursor = self
-                    .input
-                    .find(|c: char| !c.is_whitespace())
-                    .unwrap_or(0);
+                self.cursor = self.input.find(|c: char| !c.is_whitespace()).unwrap_or(0);
                 MinibufferAction::Updated
             }
             "w" => {
