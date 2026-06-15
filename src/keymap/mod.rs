@@ -410,7 +410,7 @@ mod tests {
             match result {
                 ResolvedKey::Unhandled => {}
                 ResolvedKey::Action(Action::Command(cmd), _)
-                    if cmd == "zoom-in" || cmd == "center-graph" || cmd == "close-graph" => {
+                    if cmd == "zoom-in" || cmd == "center-graph" => {
                     panic!("editor insert keymap leaked graph command {}", cmd);
                 }
                 _ => {} // fine — other bindings are editor-specific

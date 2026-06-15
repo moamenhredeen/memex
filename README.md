@@ -31,7 +31,9 @@ Memex is a single-binary desktop app with a WYSIWYG markdown editor, PDF viewer,
 ### Split View
 - Side-by-side panels — editor + PDF, editor + graph, or any combination
 - `Ctrl+H` / `Ctrl+L` to switch focus between panes
-- `:split-open` (or `:vs`) to open any note or PDF in the right split
+- `:sp` / `:vs` to split the current pane, then open a note, PDF, or graph there
+- `:split-open` to choose a note or PDF and open it directly in a right split
+- `:q` to close the current pane (or quit when it is the last pane)
 
 ### Vim Mode
 - Normal, insert, visual, and motion modes

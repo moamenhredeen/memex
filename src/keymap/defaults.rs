@@ -850,7 +850,6 @@ pub fn build_graph_layer() -> Layer {
         .bind("0", Action::Command("reset-zoom"))
         .bind("c", Action::Command("center-graph"))
         .bind("l", Action::Command("toggle-local-graph"))
-        .bind("q", Action::Command("close-graph"))
 }
 
 fn register_graph_layer(stack: &mut LayerStack) {
@@ -1107,7 +1106,7 @@ mod tests {
         assert_eq!(graph_cmd_for("0"), Some("reset-zoom"));
         assert_eq!(graph_cmd_for("c"), Some("center-graph"));
         assert_eq!(graph_cmd_for("l"), Some("toggle-local-graph"));
-        assert_eq!(graph_cmd_for("q"), Some("close-graph"));
+        assert_eq!(graph_cmd_for("q"), None);
     }
 
     #[test]

@@ -300,13 +300,6 @@ impl GraphState {
                 aliases: &[],
                 binding: Some("l"),
             },
-            Command {
-                id: "close-graph",
-                name: "Graph: Close",
-                description: "Close the graph panel",
-                aliases: &[],
-                binding: Some("q"),
-            },
         ]
     }
 
@@ -345,10 +338,6 @@ impl GraphState {
                 } else {
                     vec![ItemAction::SetMessage("No root note selected".into())]
                 }
-            }
-            "close-graph" => {
-                // The app handles this by checking for the close action
-                vec![ItemAction::SetMessage("__close_split__".into())]
             }
             _ => return CommandOutcome::Unhandled,
         };

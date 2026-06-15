@@ -144,7 +144,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                         this.minibuffer.set_message("Written");
                     }
                     EditorEvent::RequestQuit => {
-                        cx.quit();
+                        this.close_window(window, cx);
                     }
                     EditorEvent::RequestOpen(path) => {
                         let path = std::path::PathBuf::from(path.clone());
@@ -997,13 +997,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
     ) {
         for action in actions {
             match action {
-                ItemAction::SetMessage(msg) => {
-                    if msg == "__close_split__" {
-                        self.close_window(window, cx);
-                    } else {
-                        self.minibuffer.set_message(msg);
-                    }
-                }
+                ItemAction::SetMessage(msg) => self.minibuffer.set_message(msg),
                 ItemAction::ActivateDelegate {
                     id,
                     prompt,
@@ -1067,11 +1061,11 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 self.minibuffer.set_message("Written");
             }
             "quit" => {
-                cx.quit();
+                self.close_window(window, cx);
             }
             "wq" => {
                 self.save(window, cx);
-                cx.quit();
+                self.close_window(window, cx);
             }
             "vault-switch" => {
                 self.activate_vault_switch(window, cx);
@@ -1082,11 +1076,14 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             "open-graph" => {
                 self.open_graph(window, cx);
             }
+            "split" => {
+                self.split_focused_window(SplitAxis::Vertical, window, cx);
+            }
+            "vsplit" => {
+                self.split_focused_window(SplitAxis::Horizontal, window, cx);
+            }
             "split-open" => {
                 self.activate_split_note_search(window, cx);
-            }
-            "close-split" | "close-graph" => {
-                self.close_window(window, cx);
             }
             "only" | "only-window" => {
                 if self.workspace.only_focused() {
@@ -1787,8 +1784,8 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             },
             Command {
                 id: "quit",
-                name: "Quit",
-                description: "Quit memex",
+                name: "Close Pane",
+                description: "Close the current pane, or quit if it is the last pane",
                 aliases: &["q", "exit"],
                 binding: Some(":q"),
             },
@@ -1865,21 +1862,28 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             Command {
                 id: "open-graph",
                 name: "Open Graph",
-                description: "Open the vault graph in a split panel",
+                description: "Open the vault graph in the current pane",
                 aliases: &["graph"],
                 binding: None,
+            },
+            Command {
+                id: "split",
+                name: "Split Pane",
+                description: "Split the current pane horizontally",
+                aliases: &["sp"],
+                binding: Some(":sp"),
+            },
+            Command {
+                id: "vsplit",
+                name: "Vertical Split",
+                description: "Split the current pane vertically",
+                aliases: &["vs"],
+                binding: Some(":vs"),
             },
             Command {
                 id: "split-open",
                 name: "Split Open",
                 description: "Open a note or PDF in the right split panel",
-                aliases: &["vs", "vsplit", "split"],
-                binding: None,
-            },
-            Command {
-                id: "close-split",
-                name: "Close Split",
-                description: "Close the right split panel",
                 aliases: &[],
                 binding: None,
             },
@@ -2055,13 +2059,12 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // Check if this is a PDF — open in right split when editor is the left pane
         if path
             .extension()
             .and_then(|extension| extension.to_str())
             .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"))
         {
-            self.open_pdf_in_split(path, window, cx);
+            self.open_pdf(path, window, cx);
             return;
         }
 
@@ -2080,7 +2083,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         cx.notify();
     }
 
-    /// Open a note or PDF in the right split pane.
+    /// Open a note or PDF in a new right split pane.
     fn open_in_split_by_path(
         &mut self,
         path: std::path::PathBuf,
@@ -2092,7 +2095,10 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             .and_then(|extension| extension.to_str())
             .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"))
         {
-            self.open_pdf_in_split(path, window, cx);
+            let Some((buffer, item)) = self.prepare_pdf(path, window, cx) else {
+                return;
+            };
+            self.show_item_in_new_split(buffer, item, SplitAxis::Horizontal, window, cx);
         } else {
             let key = ResourceKey::Markdown(path.clone());
             let buffer = if let Some(buffer) = self.workspace.buffers.id_for_resource(&key) {
@@ -2120,7 +2126,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 _ => unreachable!("markdown resource must contain markdown buffer"),
             };
             let item = self.create_editor_item(editor_buffer, window, cx);
-            self.show_item_in_secondary(buffer, item, window, cx);
+            self.show_item_in_new_split(buffer, item, SplitAxis::Horizontal, window, cx);
         }
     }
 
@@ -2155,7 +2161,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     cx.notify();
                 }
                 EditorEvent::RequestSave => this.save(window, cx),
-                EditorEvent::RequestQuit => cx.quit(),
+                EditorEvent::RequestQuit => this.close_window(window, cx),
                 EditorEvent::RequestOpen(path) => {
                     this.open_note_by_path(path.into(), window, cx);
                 }
@@ -2201,20 +2207,14 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             .editor_view()
             .expect("new markdown item must expose editor view");
 
-        if self.workspace.layout.window(self.editor_window).is_some() {
-            self.workspace
-                .switch_window_buffer(self.editor_window, buffer_id);
-        } else {
-            self.editor_window = self
-                .workspace
-                .split_focused(SplitAxis::Horizontal, buffer_id)
-                .expect("focused window must be splittable");
-        }
-        self.window_items.insert(self.editor_window, item);
+        let focused = self.workspace.focused_window;
+        self.workspace.switch_window_buffer(focused, buffer_id);
+        self.window_items.insert(focused, item);
+        self.editor_window = focused;
         self.editor_buffer = buffer_id;
         self.editor_state = editor_state;
         self.editor_view = editor_view;
-        self.focus_workspace_window(self.editor_window, window, cx);
+        self.focus_workspace_window(focused, window, cx);
     }
 
     fn open_document_buffer(
@@ -2276,12 +2276,24 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         })
     }
 
-    fn open_pdf_in_split(
+    fn open_pdf(
         &mut self,
         path: std::path::PathBuf,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let Some((buffer, item)) = self.prepare_pdf(path, window, cx) else {
+            return;
+        };
+        self.show_item_in_focused(buffer, item, window, cx);
+    }
+
+    fn prepare_pdf(
+        &mut self,
+        path: std::path::PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<(BufferId, ActiveItem)> {
         let key = ResourceKey::Pdf(path.clone());
         let buffer = if let Some(buffer) = self.workspace.buffers.id_for_resource(&key) {
             buffer
@@ -2301,30 +2313,38 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         };
         let item = match self.create_pdf_item(&pdf_path, window, cx) {
             Some(item) => item,
-            None => return,
+            None => return None,
         };
-        self.show_item_in_secondary(buffer, item, window, cx);
+        Some((buffer, item))
     }
 
-    /// Display an item in the secondary window, creating that window when needed.
-    fn show_item_in_secondary(
+    fn show_item_in_focused(
         &mut self,
         buffer: BufferId,
         item: ActiveItem,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let secondary = if let Some(secondary) = self.secondary_window() {
-            self.workspace.switch_window_buffer(secondary, buffer);
-            secondary
-        } else {
-            self.workspace.focus(self.editor_window);
-            self.workspace
-                .split_focused(SplitAxis::Horizontal, buffer)
-                .expect("editor window must be splittable")
-        };
-        self.window_items.insert(secondary, item);
-        self.focus_workspace_window(secondary, window, cx);
+        let focused = self.workspace.focused_window;
+        self.workspace.switch_window_buffer(focused, buffer);
+        self.window_items.insert(focused, item);
+        self.focus_workspace_window(focused, window, cx);
+    }
+
+    fn show_item_in_new_split(
+        &mut self,
+        buffer: BufferId,
+        item: ActiveItem,
+        axis: SplitAxis,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let split = self
+            .workspace
+            .split_focused(axis, buffer)
+            .expect("focused window must be splittable");
+        self.window_items.insert(split, item);
+        self.focus_workspace_window(split, window, cx);
     }
 
     fn open_graph(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2356,7 +2376,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             _ => unreachable!("graph resource must contain graph buffer"),
         };
         let graph_item = self.create_graph_item(&graph_path, window, cx);
-        self.show_item_in_secondary(buffer, graph_item, window, cx);
+        self.show_item_in_focused(buffer, graph_item, window, cx);
     }
 
     fn create_graph_item(
@@ -2423,6 +2443,40 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             let focused = self.workspace.focused_window;
             self.item_for_window(focused).focus(window, cx);
             cx.notify();
+        } else {
+            cx.quit();
+        }
+    }
+
+    fn split_focused_window(
+        &mut self,
+        axis: SplitAxis,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let buffer = self.workspace.focused_buffer();
+        let Some(item) = self.create_item_for_buffer(buffer, window, cx) else {
+            return;
+        };
+        self.show_item_in_new_split(buffer, item, axis, window, cx);
+    }
+
+    fn create_item_for_buffer(
+        &mut self,
+        buffer: BufferId,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<ActiveItem> {
+        let content = self
+            .workspace
+            .buffers
+            .get(buffer)
+            .expect("live window buffer must exist")
+            .clone();
+        match content {
+            BufferContent::Markdown(buffer) => Some(self.create_editor_item(buffer, window, cx)),
+            BufferContent::Pdf(path) => self.create_pdf_item(&path, window, cx),
+            BufferContent::Graph(path) => Some(self.create_graph_item(&path, window, cx)),
         }
     }
 
