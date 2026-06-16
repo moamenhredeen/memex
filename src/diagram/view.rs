@@ -1,6 +1,6 @@
 use gpui::*;
 
-use super::{DiagramState, Element};
+use super::{DiagramState, Element, Tool};
 use crate::keymap::{Action, KeyContext, KeymapSystem, ResolvedKey};
 use crate::theme::Theme;
 
@@ -12,11 +12,22 @@ pub enum DiagramViewEvent {
 
 impl EventEmitter<DiagramViewEvent> for DiagramView {}
 
+/// In-progress pointer interaction.
+enum Drag {
+    /// Panning the camera: (mouse_x, mouse_y, pan_x_start, pan_y_start).
+    Pan(f32, f32, f32, f32),
+    /// Moving the selection: mouse-down world point + each element's origin.
+    Move {
+        start: (f64, f64),
+        origins: Vec<(usize, f64, f64)>,
+        moved: bool,
+    },
+}
+
 pub struct DiagramView {
     state: Entity<DiagramState>,
     keymap: KeymapSystem,
-    /// Pan drag anchor: (mouse_x, mouse_y, pan_x_start, pan_y_start).
-    drag_start: Option<(f32, f32, f32, f32)>,
+    drag: Option<Drag>,
     theme: Theme,
 }
 
@@ -25,7 +36,7 @@ impl DiagramView {
         Self {
             state,
             keymap: KeymapSystem::new(false),
-            drag_start: None,
+            drag: None,
             theme,
         }
     }
@@ -313,10 +324,11 @@ impl Render for DiagramView {
         let ds = self.state.read(cx);
         let focus = ds.focus_handle.clone();
         let theme = self.theme;
-        let count = ds.element_count();
         let zoom = ds.zoom;
         let pan_x = ds.pan_x;
         let pan_y = ds.pan_y;
+        let tool = ds.tool;
+        let selected = ds.selected.clone();
         let elements = ds.file.elements.clone();
         let bg = ds
             .file
@@ -347,29 +359,84 @@ impl Render for DiagramView {
                 cx.listener(move |this, e: &MouseDownEvent, _window, cx| {
                     let mx: f32 = e.position.x.into();
                     let my: f32 = e.position.y.into();
-                    let ds = this.state.read(cx);
-                    this.drag_start = Some((mx, my, ds.pan_x, ds.pan_y));
+                    let (tool, world, hit, pan_x, pan_y) = {
+                        let ds = this.state.read(cx);
+                        let (wx, wy) = ds.screen_to_world(mx, my);
+                        (ds.tool, (wx, wy), ds.hit_test(wx, wy), ds.pan_x, ds.pan_y)
+                    };
+                    match tool {
+                        Tool::Select => {
+                            if let Some(idx) = hit {
+                                this.state.update(cx, |s, _| s.select_only(idx));
+                                let origins = this.state.read(cx).selected_origins();
+                                this.drag = Some(Drag::Move {
+                                    start: world,
+                                    origins,
+                                    moved: false,
+                                });
+                            } else {
+                                this.state.update(cx, |s, _| s.clear_selection());
+                                this.drag = Some(Drag::Pan(mx, my, pan_x, pan_y));
+                            }
+                            cx.notify();
+                        }
+                        // Creation tools arrive in Phase 3b; pan for now.
+                        _ => {
+                            this.drag = Some(Drag::Pan(mx, my, pan_x, pan_y));
+                        }
+                    }
                 }),
             )
             .on_mouse_move(cx.listener(move |this, e: &MouseMoveEvent, _window, cx| {
-                if let Some((sx, sy, pan_x0, pan_y0)) = this.drag_start {
-                    if e.pressed_button == Some(MouseButton::Left) {
-                        let mx: f32 = e.position.x.into();
-                        let my: f32 = e.position.y.into();
+                if e.pressed_button != Some(MouseButton::Left) {
+                    this.drag = None;
+                    return;
+                }
+                let mx: f32 = e.position.x.into();
+                let my: f32 = e.position.y.into();
+                enum Act {
+                    Pan(f32, f32, f32, f32),
+                    Move((f64, f64), Vec<(usize, f64, f64)>),
+                }
+                let act = match &this.drag {
+                    Some(Drag::Pan(a, b, c, d)) => Some(Act::Pan(*a, *b, *c, *d)),
+                    Some(Drag::Move { start, origins, .. }) => {
+                        Some(Act::Move(*start, origins.clone()))
+                    }
+                    None => None,
+                };
+                match act {
+                    Some(Act::Pan(sx, sy, px0, py0)) => {
                         this.state.update(cx, |s, _| {
-                            s.pan_x = pan_x0 + (mx - sx);
-                            s.pan_y = pan_y0 + (my - sy);
+                            s.pan_x = px0 + (mx - sx);
+                            s.pan_y = py0 + (my - sy);
                         });
                         cx.notify();
-                    } else {
-                        this.drag_start = None;
                     }
+                    Some(Act::Move(start, origins)) => {
+                        let (wx, wy) = this.state.read(cx).screen_to_world(mx, my);
+                        let (dx, dy) = (wx - start.0, wy - start.1);
+                        this.state.update(cx, |s, _| {
+                            for (i, ox, oy) in &origins {
+                                s.set_element_position(*i, ox + dx, oy + dy);
+                            }
+                        });
+                        if let Some(Drag::Move { moved, .. }) = &mut this.drag {
+                            *moved = true;
+                        }
+                        cx.notify();
+                    }
+                    None => {}
                 }
             }))
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(|this, _e: &MouseUpEvent, _window, _cx| {
-                    this.drag_start = None;
+                cx.listener(|this, _e: &MouseUpEvent, _window, cx| {
+                    if let Some(Drag::Move { moved: true, .. }) = &this.drag {
+                        this.state.update(cx, |s, _| s.dirty = true);
+                        cx.notify();
+                    }
+                    this.drag = None;
                 }),
             )
             .on_scroll_wheel(cx.listener(|this, e: &ScrollWheelEvent, _window, cx| {
@@ -390,35 +457,115 @@ impl Render for DiagramView {
                 cx.notify();
             }))
             .child(
-                canvas(move |_bounds, _window, _cx| {}, {
-                    move |bounds, _prepaint: (), window, cx| {
-                        let ox: f32 = bounds.origin.x.into();
-                        let oy: f32 = bounds.origin.y.into();
-                        for el in &elements {
-                            if el.is_deleted {
-                                continue;
-                            }
-                            paint_element(
-                                window,
-                                cx,
-                                el,
-                                zoom,
-                                ox + pan_x,
-                                oy + pan_y,
-                                fallback_stroke,
-                            );
+                canvas(
+                    {
+                        let state = self.state.clone();
+                        move |bounds, _window, cx| {
+                            let ox: f32 = bounds.origin.x.into();
+                            let oy: f32 = bounds.origin.y.into();
+                            state.update(cx, |s, _| s.set_viewport_origin(ox, oy));
                         }
-                    }
-                })
+                    },
+                    {
+                        let accent = rgba((theme.accent << 8) | 0xFF);
+                        move |bounds, _prepaint: (), window, cx| {
+                            let ox: f32 = bounds.origin.x.into();
+                            let oy: f32 = bounds.origin.y.into();
+                            for el in &elements {
+                                if el.is_deleted {
+                                    continue;
+                                }
+                                paint_element(
+                                    window,
+                                    cx,
+                                    el,
+                                    zoom,
+                                    ox + pan_x,
+                                    oy + pan_y,
+                                    fallback_stroke,
+                                );
+                            }
+                            // Selection outlines.
+                            for &idx in &selected {
+                                let Some(el) = elements.get(idx) else {
+                                    continue;
+                                };
+                                if el.is_deleted {
+                                    continue;
+                                }
+                                let sx = el.x as f32 * zoom + ox + pan_x;
+                                let sy = el.y as f32 * zoom + oy + pan_y;
+                                let w = el.width as f32 * zoom;
+                                let h = el.height as f32 * zoom;
+                                let pad = 3.0;
+                                let corners = [
+                                    (sx - pad, sy - pad),
+                                    (sx + w + pad, sy - pad),
+                                    (sx + w + pad, sy + h + pad),
+                                    (sx - pad, sy + h + pad),
+                                ];
+                                stroke_polyline(window, &corners, 1.5, accent, true);
+                            }
+                        }
+                    },
+                )
                 .size_full(),
             )
-            .children((count == 0).then(|| {
+            .child(self.render_palette(tool, cx))
+    }
+}
+
+impl DiagramView {
+    /// Build the floating tool palette.
+    fn render_palette(&self, active: Tool, cx: &mut Context<Self>) -> impl IntoElement {
+        const TOOLS: [(&str, &str, Tool); 8] = [
+            ("Sel", "diagram-tool-select", Tool::Select),
+            ("Rect", "diagram-tool-rectangle", Tool::Rectangle),
+            ("Ellip", "diagram-tool-ellipse", Tool::Ellipse),
+            ("Diam", "diagram-tool-diamond", Tool::Diamond),
+            ("Arrow", "diagram-tool-arrow", Tool::Arrow),
+            ("Line", "diagram-tool-line", Tool::Line),
+            ("Draw", "diagram-tool-draw", Tool::Draw),
+            ("Text", "diagram-tool-text", Tool::Text),
+        ];
+        let theme = self.theme;
+        let mut row = div()
+            .absolute()
+            .top_2()
+            .left_2()
+            .flex()
+            .flex_row()
+            .gap_1();
+        for (label, cmd, tool) in TOOLS {
+            let is_active = active == tool;
+            row = row.child(
                 div()
-                    .absolute()
-                    .top_4()
-                    .left_4()
-                    .text_color(rgb(theme.text_muted))
-                    .child(SharedString::from("Empty diagram"))
-            }))
+                    .id(cmd)
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .border_1()
+                    .border_color(rgb(theme.text_muted))
+                    .bg(rgb(if is_active {
+                        theme.accent
+                    } else {
+                        theme.background
+                    }))
+                    .text_color(rgb(if is_active {
+                        theme.background
+                    } else {
+                        theme.text
+                    }))
+                    .child(SharedString::from(label))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |_this, _e: &MouseDownEvent, _window, cx| {
+                            cx.emit(DiagramViewEvent::Command(cmd));
+                            cx.stop_propagation();
+                        }),
+                    ),
+            );
+        }
+        row
     }
 }

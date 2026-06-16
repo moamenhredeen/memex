@@ -24,6 +24,36 @@ pub use import::import_file;
 pub use model::{Element, ExcalidrawFile};
 pub use view::{DiagramView, DiagramViewEvent};
 
+/// The active editing tool.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Tool {
+    Select,
+    Rectangle,
+    Ellipse,
+    Diamond,
+    Arrow,
+    Line,
+    Draw,
+    Text,
+}
+
+impl Tool {
+    /// excalidraw element type string this tool creates (None for Select).
+    #[allow(dead_code)] // used by creation in Phase 3b
+    pub fn element_type(self) -> Option<&'static str> {
+        match self {
+            Tool::Select => None,
+            Tool::Rectangle => Some("rectangle"),
+            Tool::Ellipse => Some("ellipse"),
+            Tool::Diamond => Some("diamond"),
+            Tool::Arrow => Some("arrow"),
+            Tool::Line => Some("line"),
+            Tool::Draw => Some("freedraw"),
+            Tool::Text => Some("text"),
+        }
+    }
+}
+
 /// Live state for an open diagram.
 pub struct DiagramState {
     /// On-disk path of the `.excalidraw` file.
@@ -35,6 +65,15 @@ pub struct DiagramState {
     /// Camera pan offset in screen pixels.
     pub pan_x: f32,
     pub pan_y: f32,
+    /// Active editing tool.
+    pub tool: Tool,
+    /// Indices into `file.elements` of the current selection.
+    pub selected: Vec<usize>,
+    /// Unsaved changes pending.
+    pub dirty: bool,
+    /// Screen origin of the canvas, stashed each paint for hit-testing.
+    origin_x: f32,
+    origin_y: f32,
     pub focus_handle: FocusHandle,
 }
 
@@ -46,6 +85,11 @@ impl DiagramState {
             zoom: 1.0,
             pan_x: 0.0,
             pan_y: 0.0,
+            tool: Tool::Select,
+            selected: Vec::new(),
+            dirty: false,
+            origin_x: 0.0,
+            origin_y: 0.0,
             focus_handle: cx.focus_handle(),
         }
     }
@@ -106,6 +150,94 @@ impl DiagramState {
         self.pan_y = viewport_h / 2.0 - center_y * self.zoom;
     }
 
+    // ─── Camera transforms ──────────────────────────────────────────────
+
+    /// Record the canvas screen origin (called from the paint pass) so mouse
+    /// handlers can map window coordinates into world space.
+    pub fn set_viewport_origin(&mut self, x: f32, y: f32) {
+        self.origin_x = x;
+        self.origin_y = y;
+    }
+
+    /// Map a screen (window) point to world coordinates.
+    pub fn screen_to_world(&self, sx: f32, sy: f32) -> (f64, f64) {
+        let wx = (sx - self.origin_x - self.pan_x) / self.zoom;
+        let wy = (sy - self.origin_y - self.pan_y) / self.zoom;
+        (wx as f64, wy as f64)
+    }
+
+    // ─── Selection & editing ────────────────────────────────────────────
+
+    /// Topmost non-deleted element at the given world point, if any.
+    pub fn hit_test(&self, wx: f64, wy: f64) -> Option<usize> {
+        // World-space click tolerance (constant in screen pixels).
+        let pad = 6.0 / self.zoom.max(0.01) as f64;
+        for (i, el) in self.file.elements.iter().enumerate().rev() {
+            if el.is_deleted {
+                continue;
+            }
+            let (x0, y0, x1, y1) = (
+                el.x.min(el.x + el.width),
+                el.y.min(el.y + el.height),
+                el.x.max(el.x + el.width),
+                el.y.max(el.y + el.height),
+            );
+            if wx >= x0 - pad && wx <= x1 + pad && wy >= y0 - pad && wy <= y1 + pad {
+                return Some(i);
+            }
+        }
+        None
+    }
+
+    pub fn select_only(&mut self, index: usize) {
+        self.selected = vec![index];
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.selected.clear();
+    }
+
+    /// World-space (x, y) of each selected element, for drag anchoring.
+    pub fn selected_origins(&self) -> Vec<(usize, f64, f64)> {
+        self.selected
+            .iter()
+            .filter_map(|&i| self.file.elements.get(i).map(|el| (i, el.x, el.y)))
+            .collect()
+    }
+
+    /// Move a specific element to an absolute world position.
+    pub fn set_element_position(&mut self, index: usize, x: f64, y: f64) {
+        if let Some(el) = self.file.elements.get_mut(index) {
+            el.x = x;
+            el.y = y;
+        }
+    }
+
+    /// Mark the selected elements deleted (excalidraw `isDeleted`).
+    pub fn delete_selected(&mut self) -> usize {
+        let mut n = 0;
+        for &i in &self.selected {
+            if let Some(el) = self.file.elements.get_mut(i)
+                && !el.is_deleted
+            {
+                el.is_deleted = true;
+                n += 1;
+            }
+        }
+        self.selected.clear();
+        if n > 0 {
+            self.dirty = true;
+        }
+        n
+    }
+
+    /// Persist the document to disk, clearing the dirty flag on success.
+    pub fn save(&mut self) -> Result<(), String> {
+        self.file.save(&self.path)?;
+        self.dirty = false;
+        Ok(())
+    }
+
     // ─── PaneItem interface ─────────────────────────────────────────────
 
     pub fn commands() -> Vec<Command> {
@@ -138,6 +270,76 @@ impl DiagramState {
                 aliases: &[],
                 binding: Some("c"),
             },
+            Command {
+                id: "diagram-save",
+                name: "Diagram: Save",
+                description: "Write the diagram to disk",
+                aliases: &[],
+                binding: Some("s"),
+            },
+            Command {
+                id: "diagram-delete",
+                name: "Diagram: Delete Selection",
+                description: "Delete the selected elements",
+                aliases: &[],
+                binding: Some("d"),
+            },
+            Command {
+                id: "diagram-tool-select",
+                name: "Diagram: Select Tool",
+                description: "Switch to the selection tool",
+                aliases: &[],
+                binding: Some("v"),
+            },
+            Command {
+                id: "diagram-tool-rectangle",
+                name: "Diagram: Rectangle Tool",
+                description: "Draw rectangles",
+                aliases: &[],
+                binding: Some("r"),
+            },
+            Command {
+                id: "diagram-tool-ellipse",
+                name: "Diagram: Ellipse Tool",
+                description: "Draw ellipses",
+                aliases: &[],
+                binding: Some("o"),
+            },
+            Command {
+                id: "diagram-tool-diamond",
+                name: "Diagram: Diamond Tool",
+                description: "Draw diamonds",
+                aliases: &[],
+                binding: None,
+            },
+            Command {
+                id: "diagram-tool-arrow",
+                name: "Diagram: Arrow Tool",
+                description: "Draw arrows",
+                aliases: &[],
+                binding: Some("a"),
+            },
+            Command {
+                id: "diagram-tool-line",
+                name: "Diagram: Line Tool",
+                description: "Draw lines",
+                aliases: &[],
+                binding: Some("l"),
+            },
+            Command {
+                id: "diagram-tool-draw",
+                name: "Diagram: Freedraw Tool",
+                description: "Freehand drawing",
+                aliases: &[],
+                binding: Some("p"),
+            },
+            Command {
+                id: "diagram-tool-text",
+                name: "Diagram: Text Tool",
+                description: "Add text",
+                aliases: &[],
+                binding: Some("t"),
+            },
         ]
     }
 
@@ -166,9 +368,37 @@ impl DiagramState {
                 self.pan_y = 0.0;
                 vec![]
             }
+            "diagram-save" => match self.save() {
+                Ok(()) => vec![ItemAction::SetMessage("Diagram saved".into())],
+                Err(e) => vec![ItemAction::SetMessage(format!("Save failed: {}", e))],
+            },
+            "diagram-delete" => {
+                let n = self.delete_selected();
+                if n > 0 {
+                    vec![ItemAction::SetMessage(format!("Deleted {} element(s)", n))]
+                } else {
+                    vec![]
+                }
+            }
+            "diagram-tool-select" => self.set_tool(Tool::Select),
+            "diagram-tool-rectangle" => self.set_tool(Tool::Rectangle),
+            "diagram-tool-ellipse" => self.set_tool(Tool::Ellipse),
+            "diagram-tool-diamond" => self.set_tool(Tool::Diamond),
+            "diagram-tool-arrow" => self.set_tool(Tool::Arrow),
+            "diagram-tool-line" => self.set_tool(Tool::Line),
+            "diagram-tool-draw" => self.set_tool(Tool::Draw),
+            "diagram-tool-text" => self.set_tool(Tool::Text),
             _ => return CommandOutcome::Unhandled,
         };
         CommandOutcome::handled(actions)
+    }
+
+    fn set_tool(&mut self, tool: Tool) -> Vec<ItemAction> {
+        self.tool = tool;
+        if tool != Tool::Select {
+            self.selected.clear();
+        }
+        vec![]
     }
 
     pub fn get_candidates(&self, _delegate_id: &str, _input: &str) -> Vec<Candidate> {
