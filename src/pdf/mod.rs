@@ -1560,7 +1560,8 @@ fn annotation_id(annotation: &mupdf::pdf::PdfAnnotation) -> Option<String> {
 }
 
 fn load_annotations(path: &Path) -> Result<Vec<PdfAnnotationInfo>, String> {
-    let doc = PdfDocument::open(path).map_err(err_string)?;
+    let path_str = path.to_str().ok_or("path is not valid UTF-8")?;
+    let doc = PdfDocument::open(path_str).map_err(err_string)?;
     let page_count = doc.page_count().map_err(err_string)?;
     let mut annotations = Vec::new();
     for page_index in 0..page_count {
@@ -1590,7 +1591,8 @@ fn mutate_pdf_atomically(
     path: &Path,
     mutate: impl FnOnce(&mut PdfDocument) -> Result<(), String>,
 ) -> Result<(), String> {
-    let mut doc = PdfDocument::open(path).map_err(err_string)?;
+    let path_str = path.to_str().ok_or("path is not valid UTF-8")?;
+    let mut doc = PdfDocument::open(path_str).map_err(err_string)?;
     mutate(&mut doc)?;
     let metadata = fs::metadata(path).map_err(|e| e.to_string())?;
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
