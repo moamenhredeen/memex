@@ -9,6 +9,7 @@ pub(crate) enum ResourceKey {
     Scratch(PathBuf),
     Markdown(PathBuf),
     Pdf(PathBuf),
+    Diagram(PathBuf),
     Graph(PathBuf),
     Backlinks(PathBuf),
 }
@@ -17,6 +18,7 @@ pub(crate) enum ResourceKey {
 pub(crate) enum BufferContent {
     Markdown(EditorBuffer),
     Pdf(PathBuf),
+    Diagram(PathBuf),
     Graph(PathBuf),
     Backlinks,
 }
@@ -53,6 +55,17 @@ pub(crate) fn is_pdf_path(path: &Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"))
+}
+
+pub(crate) fn is_diagram_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("excalidraw"))
+}
+
+/// True if a wikilink target points at a diagram file (e.g. `sketch.excalidraw`).
+pub(crate) fn is_diagram_link(target: &str) -> bool {
+    target.to_ascii_lowercase().ends_with(".excalidraw")
 }
 
 pub(crate) fn unique_attachment_path(dir: &Path, filename: &OsStr) -> PathBuf {

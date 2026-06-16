@@ -96,6 +96,13 @@ pub(crate) fn global_commands() -> Vec<Command> {
             binding: None,
         },
         Command {
+            id: "diagram-new",
+            name: "New Diagram",
+            description: "Create a new excalidraw diagram, link it, and open the editor",
+            aliases: &["new-diagram", "diagram"],
+            binding: None,
+        },
+        Command {
             id: "toggle-secondary-maximize",
             name: "Toggle Secondary Maximize",
             description: "Toggle the secondary slot between side-by-side and full width",

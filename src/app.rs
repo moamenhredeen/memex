@@ -20,7 +20,7 @@ use crate::theme::{self, Theme};
 use crate::workspace::{BufferId, Workspace, WorkspaceDisplay, WorkspaceFocus};
 
 use resource::{
-    BufferContent, ResourceKey, SecondaryContent, is_pdf_path, parse_pdf_link,
+    BufferContent, ResourceKey, SecondaryContent, is_diagram_link, is_pdf_path, parse_pdf_link,
     unique_attachment_path,
 };
 
@@ -738,6 +738,22 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             }
             return;
         }
+        if is_diagram_link(&title) {
+            let path = self
+                .state
+                .vault
+                .as_ref()
+                .map(|vault| vault.layout().diagram_path(&title));
+            match path {
+                Some(path) if path.exists() => self.open_diagram(path, window, cx),
+                _ => {
+                    self.minibuffer
+                        .set_message(format!("Diagram not found: {}", title));
+                    cx.notify();
+                }
+            }
+            return;
+        }
         // Search for a matching note in the vault
         if let Some(vault) = &self.state.vault {
             if let Some(crate::vault::ResolveHit::Unique(id)) = vault.index.resolve_link(&title)
@@ -850,6 +866,9 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             }
             "open-graph" => {
                 self.open_graph(window, cx);
+            }
+            "diagram-new" | "new-diagram" => {
+                self.new_diagram(window, cx);
             }
             "backlinks" => {
                 self.show_backlinks(window, cx);

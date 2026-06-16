@@ -1,10 +1,11 @@
 //! Vault folder layout conventions.
 //!
-//! A Memex vault is a directory with four well-known subfolders:
+//! A Memex vault is a directory with five well-known subfolders:
 //! ```text
 //! my-vault/
 //!   notes/          # flat, ID-based note filenames
 //!   attachments/    # PDFs, images, drawings
+//!   diagrams/       # excalidraw diagrams (.excalidraw)
 //!   journal/        # daily notes (YYYY-MM-DD.md)
 //!   .memex/         # per-vault application data
 //! ```
@@ -17,6 +18,7 @@ use std::path::{Path, PathBuf};
 
 pub const NOTES_DIR: &str = "notes";
 pub const ATTACHMENTS_DIR: &str = "attachments";
+pub const DIAGRAMS_DIR: &str = "diagrams";
 pub const JOURNAL_DIR: &str = "journal";
 pub const DOT_MEMEX_DIR: &str = ".memex";
 
@@ -25,6 +27,7 @@ pub struct VaultLayout {
     pub root: PathBuf,
     pub notes: PathBuf,
     pub attachments: PathBuf,
+    pub diagrams: PathBuf,
     pub journal: PathBuf,
     pub dot_memex: PathBuf,
 }
@@ -35,6 +38,7 @@ impl VaultLayout {
         Self {
             notes: root.join(NOTES_DIR),
             attachments: root.join(ATTACHMENTS_DIR),
+            diagrams: root.join(DIAGRAMS_DIR),
             journal: root.join(JOURNAL_DIR),
             dot_memex: root.join(DOT_MEMEX_DIR),
             root,
@@ -46,6 +50,7 @@ impl VaultLayout {
     pub fn ensure(&self) -> io::Result<()> {
         std::fs::create_dir_all(&self.notes)?;
         std::fs::create_dir_all(&self.attachments)?;
+        std::fs::create_dir_all(&self.diagrams)?;
         std::fs::create_dir_all(&self.journal)?;
         std::fs::create_dir_all(&self.dot_memex)?;
         Ok(())
@@ -54,6 +59,12 @@ impl VaultLayout {
     /// Where a new note with the given ID should live.
     pub fn note_path(&self, id: &str) -> PathBuf {
         self.notes.join(format!("{}.md", id))
+    }
+
+    /// Where a diagram with the given file name (including `.excalidraw`
+    /// extension) lives.
+    pub fn diagram_path(&self, file_name: &str) -> PathBuf {
+        self.diagrams.join(file_name)
     }
 
     /// Where a journal entry for the given ISO date (YYYY-MM-DD) lives.
@@ -80,6 +91,7 @@ mod tests {
 
         assert!(layout.notes.is_dir());
         assert!(layout.attachments.is_dir());
+        assert!(layout.diagrams.is_dir());
         assert!(layout.journal.is_dir());
         assert!(layout.dot_memex.is_dir());
 

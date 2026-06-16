@@ -4,6 +4,7 @@ mod app;
 mod backlinks;
 mod command;
 mod config;
+mod diagram;
 mod document;
 mod editor;
 mod fs;

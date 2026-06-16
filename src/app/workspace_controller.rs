@@ -2,9 +2,12 @@ use fuzzy_matcher::FuzzyMatcher;
 use fuzzy_matcher::skim::SkimMatcherV2;
 use gpui::*;
 
-use super::resource::{BufferContent, PdfLinkTarget, ResourceKey, SecondaryContent, is_pdf_path};
+use super::resource::{
+    BufferContent, PdfLinkTarget, ResourceKey, SecondaryContent, is_diagram_path, is_pdf_path,
+};
 use super::{MAX_RESULTS, Memex};
 use crate::backlinks::{BacklinksState, BacklinksView, BacklinksViewEvent};
+use crate::diagram::{DiagramState, DiagramView, DiagramViewEvent, ExcalidrawFile};
 use crate::document::Document;
 use crate::editor::{EditorBuffer, EditorEvent, EditorState, EditorView, EditorViewEvent};
 use crate::graph::{GraphEvent, GraphState, GraphView, GraphViewEvent};
@@ -29,6 +32,10 @@ impl Memex {
     ) {
         if is_pdf_path(&path) {
             self.open_pdf(path, window, cx);
+            return;
+        }
+        if is_diagram_path(&path) {
+            self.open_diagram(path, window, cx);
             return;
         }
 
@@ -385,6 +392,143 @@ impl Memex {
             state: graph_state,
             view: graph_view,
         }
+    }
+
+    // ─── Diagram ────────────────────────────────────────────────────────
+
+    fn create_diagram_item(
+        &mut self,
+        path: &std::path::Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<ActiveItem> {
+        let file = match ExcalidrawFile::load(path) {
+            Ok(file) => file,
+            Err(e) => {
+                self.minibuffer
+                    .set_message(format!("Failed to open diagram: {}", e));
+                cx.notify();
+                return None;
+            }
+        };
+        let diagram_state = cx.new(|cx| DiagramState::new(path, file, cx));
+        let theme = self.theme;
+        let diagram_view = cx.new(|cx| DiagramView::new(diagram_state.clone(), theme, cx));
+        let obs = cx.observe(&diagram_state, |_, _, cx| cx.notify());
+        self._subscriptions.push(obs);
+        let key_sub = cx.subscribe_in(
+            &diagram_view,
+            window,
+            |this, _view, ev: &DiagramViewEvent, window, cx| match ev {
+                DiagramViewEvent::Command(cmd) => {
+                    this.execute_command(cmd, "", 1, window, cx);
+                }
+            },
+        );
+        self._subscriptions.push(key_sub);
+
+        Some(ActiveItem::Diagram {
+            state: diagram_state,
+            view: diagram_view,
+        })
+    }
+
+    fn prepare_diagram(
+        &mut self,
+        path: std::path::PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<(BufferId, ActiveItem)> {
+        let key = ResourceKey::Diagram(path.clone());
+        let buffer = if let Some(buffer) = self.workspace.buffers.id_for_resource(&key) {
+            buffer
+        } else {
+            self.workspace
+                .buffers
+                .open_with(key, || BufferContent::Diagram(path.clone()))
+        };
+        let diagram_path = match self
+            .workspace
+            .buffers
+            .get(buffer)
+            .expect("opened diagram buffer must exist")
+        {
+            BufferContent::Diagram(path) => path.clone(),
+            _ => unreachable!("diagram resource must contain diagram buffer"),
+        };
+        let item = self.create_diagram_item(&diagram_path, window, cx)?;
+        Some((buffer, item))
+    }
+
+    pub(super) fn open_diagram(
+        &mut self,
+        path: std::path::PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Reuse an already-open diagram in the secondary slot.
+        if let Some(SecondaryContent::Item { item, .. }) = &self.secondary
+            && let Some(state) = item.diagram_state()
+            && state.read(cx).path == path
+        {
+            self.focus_secondary(window, cx);
+            return;
+        }
+        let Some((buffer, item)) = self.prepare_diagram(path, window, cx) else {
+            return;
+        };
+        self.show_secondary_item(buffer, item, window, cx);
+    }
+
+    /// Create a new empty diagram in the vault's `diagrams/` folder, insert a
+    /// `[[name.excalidraw]]` link at the editor cursor, and open it.
+    pub(super) fn new_diagram(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(vault) = self.state.vault.as_ref() else {
+            self.minibuffer.set_message("No vault open");
+            cx.notify();
+            return;
+        };
+        let layout = vault.layout();
+        if let Err(e) = std::fs::create_dir_all(&layout.diagrams) {
+            self.minibuffer
+                .set_message(format!("Failed to create diagrams folder: {}", e));
+            cx.notify();
+            return;
+        }
+
+        // Pick a unique `diagram-N.excalidraw` name.
+        let mut file_name = String::new();
+        for ix in 1.. {
+            let candidate = format!("diagram-{}.excalidraw", ix);
+            if !layout.diagram_path(&candidate).exists() {
+                file_name = candidate;
+                break;
+            }
+        }
+        let path = layout.diagram_path(&file_name);
+
+        if let Err(e) = ExcalidrawFile::empty().save(&path) {
+            self.minibuffer
+                .set_message(format!("Failed to create diagram: {}", e));
+            cx.notify();
+            return;
+        }
+
+        // Insert the link into the current note at the cursor.
+        let snippet = format!("[[{}]]", file_name);
+        self.active_editor_state().update(cx, |state, cx| {
+            state.edit_text(&snippet, cx);
+        });
+
+        // Refresh the vault so the new diagram is visible to scans/links.
+        if let Some(vault) = self.state.vault.as_mut() {
+            let _ = vault.refresh();
+        }
+
+        self.open_diagram(path, window, cx);
+        self.minibuffer
+            .set_message(format!("Created {}", file_name));
+        cx.notify();
     }
 
     pub(super) fn close_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {

@@ -15,6 +15,7 @@ use gpui::*;
 
 use crate::backlinks::{BacklinksState, BacklinksView};
 use crate::command::Command;
+use crate::diagram::{DiagramState, DiagramView};
 use crate::editor::{EditorState, EditorView};
 use crate::graph::{GraphState, GraphView};
 use crate::keymap::{TransientKind, VimMode};
@@ -91,6 +92,10 @@ pub enum ActiveItem {
         state: Entity<PdfState>,
         view: Entity<PdfView>,
     },
+    Diagram {
+        state: Entity<DiagramState>,
+        view: Entity<DiagramView>,
+    },
     Graph {
         state: Entity<GraphState>,
         view: Entity<GraphView>,
@@ -106,6 +111,7 @@ impl ActiveItem {
         match self {
             Self::Editor { view, .. } => view.update(cx, |view, cx| view.set_theme(theme, cx)),
             Self::Pdf { view, .. } => view.update(cx, |view, cx| view.set_theme(theme, cx)),
+            Self::Diagram { view, .. } => view.update(cx, |view, cx| view.set_theme(theme, cx)),
             Self::Graph { view, .. } => view.update(cx, |view, cx| view.set_theme(theme, cx)),
             Self::Backlinks { view, .. } => view.update(cx, |view, cx| view.set_theme(theme, cx)),
         }
@@ -132,12 +138,20 @@ impl ActiveItem {
         }
     }
 
+    pub fn diagram_state(&self) -> Option<Entity<DiagramState>> {
+        match self {
+            Self::Diagram { state, .. } => Some(state.clone()),
+            _ => None,
+        }
+    }
+
     /// Display name for the mode-line badge.
     #[allow(dead_code)]
     pub fn display_name(&self) -> &str {
         match self {
             Self::Editor { .. } => "Markdown",
             Self::Pdf { .. } => "PDF",
+            Self::Diagram { .. } => "Diagram",
             Self::Graph { .. } => "Graph",
             Self::Backlinks { .. } => "Backlinks",
         }
@@ -148,6 +162,7 @@ impl ActiveItem {
         match self {
             Self::Editor { .. } => EditorState::commands(),
             Self::Pdf { .. } => PdfState::commands(),
+            Self::Diagram { .. } => DiagramState::commands(),
             Self::Graph { .. } => GraphState::commands(),
             Self::Backlinks { .. } => BacklinksState::commands(),
         }
@@ -174,6 +189,12 @@ impl ActiveItem {
                     s.execute_command(cmd_id, viewport, vim.vim_enabled, cx)
                 })
             }
+            Self::Diagram { state, .. } => {
+                let state = state.clone();
+                state.update(cx, |s, cx| {
+                    s.execute_command(cmd_id, viewport, vim.vim_enabled, cx)
+                })
+            }
             Self::Graph { state, .. } => {
                 let state = state.clone();
                 state.update(cx, |s, cx| {
@@ -194,6 +215,7 @@ impl ActiveItem {
         match self {
             Self::Editor { state, .. } => state.read(cx).item_get_candidates(delegate_id, input),
             Self::Pdf { state, .. } => state.read(cx).get_candidates(delegate_id, input),
+            Self::Diagram { state, .. } => state.read(cx).get_candidates(delegate_id, input),
             Self::Graph { state, .. } => state.read(cx).get_candidates(delegate_id, input),
             Self::Backlinks { state, .. } => state.read(cx).get_candidates(delegate_id, input),
         }
@@ -215,6 +237,12 @@ impl ActiveItem {
                 })
             }
             Self::Pdf { state, .. } => {
+                let state = state.clone();
+                state.update(cx, |s, cx| {
+                    s.handle_confirm(delegate_id, input, candidate, cx)
+                })
+            }
+            Self::Diagram { state, .. } => {
                 let state = state.clone();
                 state.update(cx, |s, cx| {
                     s.handle_confirm(delegate_id, input, candidate, cx)
@@ -248,6 +276,10 @@ impl ActiveItem {
                 let state = state.clone();
                 state.update(cx, |s, cx| s.on_input_changed(delegate_id, input, cx));
             }
+            Self::Diagram { state, .. } => {
+                let state = state.clone();
+                state.update(cx, |s, cx| s.on_input_changed(delegate_id, input, cx));
+            }
             Self::Graph { state, .. } => {
                 let state = state.clone();
                 state.update(cx, |s, cx| s.on_input_changed(delegate_id, input, cx));
@@ -264,6 +296,7 @@ impl ActiveItem {
         match self {
             Self::Editor { .. } => false,
             Self::Pdf { .. } => delegate_id == "pdf-search",
+            Self::Diagram { .. } => false,
             Self::Graph { .. } => false,
             Self::Backlinks { .. } => false,
         }
@@ -279,6 +312,11 @@ impl ActiveItem {
         matches!(self, Self::Editor { .. })
     }
 
+    #[allow(dead_code)]
+    pub fn is_diagram(&self) -> bool {
+        matches!(self, Self::Diagram { .. })
+    }
+
     pub fn is_graph(&self) -> bool {
         matches!(self, Self::Graph { .. })
     }
@@ -292,6 +330,7 @@ impl ActiveItem {
         match self {
             Self::Editor { view, .. } => view.clone().into(),
             Self::Pdf { view, .. } => view.clone().into(),
+            Self::Diagram { view, .. } => view.clone().into(),
             Self::Graph { view, .. } => view.clone().into(),
             Self::Backlinks { view, .. } => view.clone().into(),
         }
@@ -302,6 +341,7 @@ impl ActiveItem {
         match self {
             Self::Editor { state, .. } => state.read(cx).focus(window),
             Self::Pdf { state, .. } => state.read(cx).focus(window),
+            Self::Diagram { state, .. } => state.read(cx).focus(window),
             Self::Graph { state, .. } => state.read(cx).focus(window),
             Self::Backlinks { state, .. } => state.read(cx).focus(window),
         }
@@ -330,6 +370,11 @@ impl ActiveItem {
                 let zoom_pct = (ps.zoom * 100.0) as u32;
                 format!("PDF {}/{} {}%", current, ps.page_count, zoom_pct)
             }
+            Self::Diagram { state, .. } => {
+                let ds = state.read(cx);
+                let zoom_pct = (ds.zoom * 100.0) as u32;
+                format!("Diagram {} elements {}%", ds.element_count(), zoom_pct)
+            }
             Self::Graph { state, .. } => {
                 let gs = state.read(cx);
                 let n = gs.nodes.len();
@@ -350,6 +395,7 @@ impl ActiveItem {
         match self {
             Self::Editor { .. } => ("EDI", 0x268BD2), // solarized blue (overridden by vim state)
             Self::Pdf { .. } => ("PDF", 0xCB4B16),    // solarized orange
+            Self::Diagram { .. } => ("DGM", 0x2AA198), // solarized cyan
             Self::Graph { .. } => ("GRP", 0x6C71C4),  // solarized violet
             Self::Backlinks { .. } => ("BL", 0x859900), // solarized green
         }
