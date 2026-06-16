@@ -71,6 +71,9 @@ pub struct DiagramState {
     pub selected: Vec<usize>,
     /// Unsaved changes pending.
     pub dirty: bool,
+    /// World position where a pending text element will be created (set when
+    /// the Text tool is clicked, consumed when the minibuffer confirms).
+    pending_text_pos: Option<(f64, f64)>,
     /// Screen origin of the canvas, stashed each paint for hit-testing.
     origin_x: f32,
     origin_y: f32,
@@ -88,6 +91,7 @@ impl DiagramState {
             tool: Tool::Select,
             selected: Vec::new(),
             dirty: false,
+            pending_text_pos: None,
             origin_x: 0.0,
             origin_y: 0.0,
             focus_handle: cx.focus_handle(),
@@ -211,6 +215,126 @@ impl DiagramState {
             el.x = x;
             el.y = y;
         }
+    }
+
+    // ─── Creation ───────────────────────────────────────────────────────
+
+    /// Create a zero-size element for a shape/line/arrow/freedraw tool at the
+    /// given world point, append it, and return its index. Returns `None` for
+    /// the Select and Text tools (text is created via the minibuffer).
+    pub fn create_element(&mut self, tool: Tool, wx: f64, wy: f64) -> Option<usize> {
+        let ty = tool.element_type()?;
+        if tool == Tool::Text {
+            return None;
+        }
+        let mut el = Element::base(gen_id(), ty, wx, wy, 0.0, 0.0);
+        match tool {
+            Tool::Arrow => {
+                el.points = Some(vec![[0.0, 0.0], [0.0, 0.0]]);
+                el.end_arrowhead = Some(serde_json::Value::String("arrow".to_string()));
+            }
+            Tool::Line => el.points = Some(vec![[0.0, 0.0], [0.0, 0.0]]),
+            Tool::Draw => el.points = Some(vec![[0.0, 0.0]]),
+            _ => {}
+        }
+        self.file.elements.push(el);
+        self.dirty = true;
+        Some(self.file.elements.len() - 1)
+    }
+
+    /// Update an in-progress shape/line element as the pointer drags.
+    pub fn update_creation(&mut self, index: usize, tool: Tool, start: (f64, f64), cur: (f64, f64)) {
+        let Some(el) = self.file.elements.get_mut(index) else {
+            return;
+        };
+        match tool {
+            Tool::Line | Tool::Arrow => {
+                el.x = start.0;
+                el.y = start.1;
+                el.points = Some(vec![[0.0, 0.0], [cur.0 - start.0, cur.1 - start.1]]);
+                el.width = (cur.0 - start.0).abs();
+                el.height = (cur.1 - start.1).abs();
+            }
+            _ => {
+                el.x = start.0.min(cur.0);
+                el.y = start.1.min(cur.1);
+                el.width = (cur.0 - start.0).abs();
+                el.height = (cur.1 - start.1).abs();
+            }
+        }
+    }
+
+    /// Append a point to an in-progress freedraw element.
+    pub fn append_freedraw_point(&mut self, index: usize, start: (f64, f64), cur: (f64, f64)) {
+        let Some(el) = self.file.elements.get_mut(index) else {
+            return;
+        };
+        let pts = el.points.get_or_insert_with(Vec::new);
+        pts.push([cur.0 - start.0, cur.1 - start.1]);
+        // Recompute bbox (relative to el origin = start).
+        let (mut min_x, mut min_y, mut max_x, mut max_y) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+        for p in pts.iter() {
+            min_x = min_x.min(p[0]);
+            min_y = min_y.min(p[1]);
+            max_x = max_x.max(p[0]);
+            max_y = max_y.max(p[1]);
+        }
+        el.x = start.0 + min_x;
+        el.y = start.1 + min_y;
+        el.width = max_x - min_x;
+        el.height = max_y - min_y;
+    }
+
+    /// Finish an in-progress creation: drop degenerate (click-without-drag)
+    /// shapes, otherwise select the new element. Returns to the Select tool.
+    pub fn finish_creation(&mut self, index: usize) {
+        let degenerate = self
+            .file
+            .elements
+            .get(index)
+            .map(|el| el.element_type != "freedraw" && el.width < 3.0 && el.height < 3.0)
+            .unwrap_or(false);
+        if degenerate && index + 1 == self.file.elements.len() {
+            self.file.elements.pop();
+            self.selected.clear();
+        } else {
+            self.select_only(index);
+        }
+        self.tool = Tool::Select;
+        self.dirty = true;
+    }
+
+    /// Stash where the next text element will be placed (Text-tool click).
+    pub fn set_pending_text(&mut self, wx: f64, wy: f64) {
+        self.pending_text_pos = Some((wx, wy));
+    }
+
+    /// Create a text element from confirmed minibuffer input at the pending
+    /// position. Returns to the Select tool.
+    pub fn commit_pending_text(&mut self, text: &str) {
+        let Some((wx, wy)) = self.pending_text_pos.take() else {
+            return;
+        };
+        self.tool = Tool::Select;
+        let text = text.trim();
+        if text.is_empty() {
+            return;
+        }
+        let font = 20.0;
+        let lines = text.split('\n').count().max(1) as f64;
+        let width = text
+            .split('\n')
+            .map(|l| l.chars().count())
+            .max()
+            .unwrap_or(0) as f64
+            * font
+            * 0.6;
+        let mut el = Element::base(gen_id(), "text", wx, wy, width, lines * font * 1.25);
+        el.text = Some(text.to_string());
+        el.font_size = Some(font);
+        self.file.elements.push(el);
+        self.select_only(self.file.elements.len() - 1);
+        self.dirty = true;
     }
 
     /// Mark the selected elements deleted (excalidraw `isDeleted`).
@@ -388,6 +512,11 @@ impl DiagramState {
             "diagram-tool-line" => self.set_tool(Tool::Line),
             "diagram-tool-draw" => self.set_tool(Tool::Draw),
             "diagram-tool-text" => self.set_tool(Tool::Text),
+            "diagram-text-input" => vec![ItemAction::ActivateDelegate {
+                id: "diagram-text".into(),
+                prompt: "Text:".into(),
+                highlight_input: false,
+            }],
             _ => return CommandOutcome::Unhandled,
         };
         CommandOutcome::handled(actions)
@@ -407,13 +536,25 @@ impl DiagramState {
 
     pub fn handle_confirm(
         &mut self,
-        _delegate_id: &str,
-        _input: &str,
+        delegate_id: &str,
+        input: &str,
         _candidate: Option<&Candidate>,
         _cx: &mut Context<Self>,
     ) -> Vec<ItemAction> {
+        if delegate_id == "diagram-text" {
+            self.commit_pending_text(input);
+            return vec![ItemAction::Dismiss];
+        }
         vec![]
     }
 
     pub fn on_input_changed(&mut self, _delegate_id: &str, _input: &str, _cx: &mut Context<Self>) {}
+}
+
+/// Generate an excalidraw-style random element id.
+fn gen_id() -> String {
+    const CHARS: &[u8] = b"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    (0..16)
+        .map(|_| CHARS[fastrand::usize(..CHARS.len())] as char)
+        .collect()
 }

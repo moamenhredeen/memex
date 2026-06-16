@@ -22,6 +22,12 @@ enum Drag {
         origins: Vec<(usize, f64, f64)>,
         moved: bool,
     },
+    /// Creating a new element by dragging.
+    Create {
+        index: usize,
+        tool: Tool,
+        start: (f64, f64),
+    },
 }
 
 pub struct DiagramView {
@@ -380,9 +386,23 @@ impl Render for DiagramView {
                             }
                             cx.notify();
                         }
-                        // Creation tools arrive in Phase 3b; pan for now.
-                        _ => {
-                            this.drag = Some(Drag::Pan(mx, my, pan_x, pan_y));
+                        Tool::Text => {
+                            this.state.update(cx, |s, _| s.set_pending_text(world.0, world.1));
+                            cx.emit(DiagramViewEvent::Command("diagram-text-input"));
+                            cx.stop_propagation();
+                        }
+                        creation => {
+                            let idx = this
+                                .state
+                                .update(cx, |s, _| s.create_element(creation, world.0, world.1));
+                            if let Some(idx) = idx {
+                                this.drag = Some(Drag::Create {
+                                    index: idx,
+                                    tool: creation,
+                                    start: world,
+                                });
+                                cx.notify();
+                            }
                         }
                     }
                 }),
@@ -397,11 +417,15 @@ impl Render for DiagramView {
                 enum Act {
                     Pan(f32, f32, f32, f32),
                     Move((f64, f64), Vec<(usize, f64, f64)>),
+                    Create(usize, Tool, (f64, f64)),
                 }
                 let act = match &this.drag {
                     Some(Drag::Pan(a, b, c, d)) => Some(Act::Pan(*a, *b, *c, *d)),
                     Some(Drag::Move { start, origins, .. }) => {
                         Some(Act::Move(*start, origins.clone()))
+                    }
+                    Some(Drag::Create { index, tool, start }) => {
+                        Some(Act::Create(*index, *tool, *start))
                     }
                     None => None,
                 };
@@ -426,15 +450,34 @@ impl Render for DiagramView {
                         }
                         cx.notify();
                     }
+                    Some(Act::Create(index, tool, start)) => {
+                        let cur = this.state.read(cx).screen_to_world(mx, my);
+                        this.state.update(cx, |s, _| {
+                            if tool == Tool::Draw {
+                                s.append_freedraw_point(index, start, cur);
+                            } else {
+                                s.update_creation(index, tool, start, cur);
+                            }
+                        });
+                        cx.notify();
+                    }
                     None => {}
                 }
             }))
             .on_mouse_up(
                 MouseButton::Left,
                 cx.listener(|this, _e: &MouseUpEvent, _window, cx| {
-                    if let Some(Drag::Move { moved: true, .. }) = &this.drag {
-                        this.state.update(cx, |s, _| s.dirty = true);
-                        cx.notify();
+                    match &this.drag {
+                        Some(Drag::Move { moved: true, .. }) => {
+                            this.state.update(cx, |s, _| s.dirty = true);
+                            cx.notify();
+                        }
+                        Some(Drag::Create { index, .. }) => {
+                            let idx = *index;
+                            this.state.update(cx, |s, _| s.finish_creation(idx));
+                            cx.notify();
+                        }
+                        _ => {}
                     }
                     this.drag = None;
                 }),
