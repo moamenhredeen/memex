@@ -412,6 +412,8 @@ impl Memex {
             }
         };
         let diagram_state = cx.new(|cx| DiagramState::new(path, file, cx));
+        // Frame the content on open (assumed pane size; user can pan/zoom).
+        diagram_state.update(cx, |s, _| s.fit_to_content(800.0, 600.0));
         let theme = self.theme;
         let diagram_view = cx.new(|cx| DiagramView::new(diagram_state.clone(), theme, cx));
         let obs = cx.observe(&diagram_state, |_, _, cx| cx.notify());

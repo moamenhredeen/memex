@@ -19,7 +19,7 @@ use crate::command::Command;
 use crate::minibuffer::Candidate;
 use crate::pane::{CommandOutcome, ItemAction};
 
-pub use model::ExcalidrawFile;
+pub use model::{Element, ExcalidrawFile};
 pub use view::{DiagramView, DiagramViewEvent};
 
 /// Live state for an open diagram.
@@ -55,6 +55,53 @@ impl DiagramState {
     /// Number of non-deleted elements.
     pub fn element_count(&self) -> usize {
         self.file.elements.iter().filter(|e| !e.is_deleted).count()
+    }
+
+    /// Bounding box of all non-deleted elements in world coordinates as
+    /// `(min_x, min_y, max_x, max_y)`. `None` when the diagram is empty.
+    pub fn content_bounds(&self) -> Option<(f64, f64, f64, f64)> {
+        let mut min_x = f64::MAX;
+        let mut min_y = f64::MAX;
+        let mut max_x = f64::MIN;
+        let mut max_y = f64::MIN;
+        let mut any = false;
+        for e in &self.file.elements {
+            if e.is_deleted {
+                continue;
+            }
+            any = true;
+            min_x = min_x.min(e.x);
+            min_y = min_y.min(e.y);
+            max_x = max_x.max(e.x + e.width);
+            max_y = max_y.max(e.y + e.height);
+        }
+        any.then_some((min_x, min_y, max_x, max_y))
+    }
+
+    /// Set the camera so the content bounding box is centered and fits within
+    /// the given viewport (with padding). No-op when the diagram is empty.
+    pub fn fit_to_content(&mut self, viewport_w: f32, viewport_h: f32) {
+        let Some((min_x, min_y, max_x, max_y)) = self.content_bounds() else {
+            return;
+        };
+        const PAD: f32 = 48.0;
+        let bw = (max_x - min_x) as f32;
+        let bh = (max_y - min_y) as f32;
+        let zx = if bw > 0.0 {
+            (viewport_w - PAD) / bw
+        } else {
+            1.0
+        };
+        let zy = if bh > 0.0 {
+            (viewport_h - PAD) / bh
+        } else {
+            1.0
+        };
+        self.zoom = zx.min(zy).clamp(0.05, 1.0);
+        let center_x = ((min_x + max_x) / 2.0) as f32;
+        let center_y = ((min_y + max_y) / 2.0) as f32;
+        self.pan_x = viewport_w / 2.0 - center_x * self.zoom;
+        self.pan_y = viewport_h / 2.0 - center_y * self.zoom;
     }
 
     // ─── PaneItem interface ─────────────────────────────────────────────
