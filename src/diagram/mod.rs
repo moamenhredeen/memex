@@ -8,6 +8,7 @@
 //! Phase 0: load + render skeleton + pan/zoom scaffolding. Drawing tools,
 //! selection, editing, and import live in later phases (see PLAN.md).
 
+mod import;
 mod model;
 mod view;
 
@@ -19,6 +20,7 @@ use crate::command::Command;
 use crate::minibuffer::Candidate;
 use crate::pane::{CommandOutcome, ItemAction};
 
+pub use import::import_file;
 pub use model::{Element, ExcalidrawFile};
 pub use view::{DiagramView, DiagramViewEvent};
 

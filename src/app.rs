@@ -870,6 +870,20 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             "diagram-new" | "new-diagram" => {
                 self.new_diagram(window, cx);
             }
+            "diagram-import" | "import-diagram" => {
+                let arg = raw_input
+                    .strip_prefix("diagram-import ")
+                    .or_else(|| raw_input.strip_prefix("import-diagram "))
+                    .unwrap_or("")
+                    .trim();
+                if arg.is_empty() {
+                    self.minibuffer
+                        .set_message("usage: :diagram-import <path to .drawio or .excalidraw>");
+                } else {
+                    let source = std::path::PathBuf::from(arg);
+                    self.import_diagram(&source, window, cx);
+                }
+            }
             "backlinks" => {
                 self.show_backlinks(window, cx);
             }

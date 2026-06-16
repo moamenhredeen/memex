@@ -533,6 +533,73 @@ impl Memex {
         cx.notify();
     }
 
+    /// Import an external diagram (drawio/excalidraw) at `source_path` into the
+    /// vault's `diagrams/` folder, link it in the current note, and open it.
+    pub(super) fn import_diagram(
+        &mut self,
+        source_path: &std::path::Path,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(vault) = self.state.vault.as_ref() else {
+            self.minibuffer.set_message("No vault open");
+            cx.notify();
+            return;
+        };
+        let layout = vault.layout();
+
+        let file = match crate::diagram::import_file(source_path) {
+            Ok(file) => file,
+            Err(e) => {
+                self.minibuffer.set_message(format!("Import failed: {}", e));
+                cx.notify();
+                return;
+            }
+        };
+
+        if let Err(e) = std::fs::create_dir_all(&layout.diagrams) {
+            self.minibuffer
+                .set_message(format!("Failed to create diagrams folder: {}", e));
+            cx.notify();
+            return;
+        }
+
+        // Destination name: <source stem>.excalidraw, made unique.
+        let stem = source_path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("diagram");
+        let mut file_name = format!("{}.excalidraw", stem);
+        for ix in 1.. {
+            if !layout.diagram_path(&file_name).exists() {
+                break;
+            }
+            file_name = format!("{}-{}.excalidraw", stem, ix);
+        }
+        let path = layout.diagram_path(&file_name);
+
+        if let Err(e) = file.save(&path) {
+            self.minibuffer
+                .set_message(format!("Failed to write diagram: {}", e));
+            cx.notify();
+            return;
+        }
+
+        let snippet = format!("[[{}]]", file_name);
+        self.active_editor_state().update(cx, |state, cx| {
+            state.edit_text(&snippet, cx);
+        });
+
+        if let Some(vault) = self.state.vault.as_mut() {
+            let _ = vault.refresh();
+        }
+
+        self.open_diagram(path, window, cx);
+        self.minibuffer
+            .set_message(format!("Imported {}", file_name));
+        cx.notify();
+    }
+
     pub(super) fn close_window(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.workspace.focus == WorkspaceFocus::Secondary && self.secondary.is_some() {
             self.close_secondary(window, cx);

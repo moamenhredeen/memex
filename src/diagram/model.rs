@@ -140,6 +140,47 @@ pub struct Element {
     pub extra: Map<String, Value>,
 }
 
+impl Element {
+    /// Build an element with excalidraw defaults; callers tweak the fields
+    /// they care about. Used by importers.
+    pub fn base(
+        id: impl Into<String>,
+        element_type: impl Into<String>,
+        x: f64,
+        y: f64,
+        width: f64,
+        height: f64,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            element_type: element_type.into(),
+            x,
+            y,
+            width,
+            height,
+            angle: 0.0,
+            stroke_color: default_stroke_color(),
+            background_color: default_background_color(),
+            fill_style: default_fill_style(),
+            stroke_width: default_stroke_width(),
+            stroke_style: default_stroke_style(),
+            roughness: 1.0,
+            opacity: default_opacity(),
+            is_deleted: false,
+            points: None,
+            start_arrowhead: None,
+            end_arrowhead: None,
+            text: None,
+            font_size: None,
+            font_family: None,
+            text_align: None,
+            vertical_align: None,
+            container_id: None,
+            extra: Map::new(),
+        }
+    }
+}
+
 fn default_stroke_color() -> String {
     "#1e1e1e".to_string()
 }

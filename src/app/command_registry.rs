@@ -103,6 +103,13 @@ pub(crate) fn global_commands() -> Vec<Command> {
             binding: None,
         },
         Command {
+            id: "diagram-import",
+            name: "Import Diagram",
+            description: "Import a .drawio or .excalidraw file into diagrams/ and link it",
+            aliases: &["import-diagram"],
+            binding: Some(":diagram-import <path>"),
+        },
+        Command {
             id: "toggle-secondary-maximize",
             name: "Toggle Secondary Maximize",
             description: "Toggle the secondary slot between side-by-side and full width",
