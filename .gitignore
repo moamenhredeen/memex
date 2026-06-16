@@ -7,3 +7,7 @@
 
 # vscode
 .vscode/
+
+# os dependent settings
+.cargo/config.toml
+.cargo-mupdf-shim.h
