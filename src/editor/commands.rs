@@ -1,4 +1,5 @@
 /// All editor operations that can be triggered by keybindings or commands.
+#[allow(dead_code)]
 #[derive(Clone, Debug, PartialEq)]
 pub enum EditorCommand {
     // Cursor movement

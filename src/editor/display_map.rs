@@ -43,6 +43,7 @@ impl DisplayMap {
         self.version += 1;
     }
 
+    #[allow(dead_code)]
     pub fn version(&self) -> u64 {
         self.version
     }

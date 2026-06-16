@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 use super::frontmatter::{self, Frontmatter};
-use super::layout::{ATTACHMENTS_DIR, JOURNAL_DIR, NOTES_DIR, VaultLayout};
+use super::layout::VaultLayout;
 
 /// A markdown note with parsed frontmatter and extracted outgoing
 /// wikilinks / inline tags. Notes live under `notes/`, `journal/`,
@@ -40,6 +40,7 @@ pub struct Note {
     /// an alias. Resolution happens in the index layer.
     pub outgoing_links: Vec<String>,
     /// File modification time when last scanned.
+    #[allow(dead_code)]
     pub mtime: Option<SystemTime>,
     /// True when this note lives under `journal/`.
     pub is_journal: bool,

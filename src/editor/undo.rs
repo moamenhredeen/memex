@@ -22,6 +22,7 @@ pub struct Transaction {
     pub ops: Vec<EditOp>,
     pub selection_before: Range<usize>,
     pub selection_after: Range<usize>,
+    #[allow(dead_code)]
     pub first_edit_at: Instant,
     pub last_edit_at: Instant,
     /// If true, this transaction won't merge with the next one.
@@ -222,16 +223,6 @@ mod tests {
             old_text: String::new(),
             new_text: text.to_string(),
             cursor_before: at,
-            cursor_after,
-        }
-    }
-
-    fn make_delete(range: Range<usize>, old_text: &str, cursor_after: usize) -> EditOp {
-        EditOp {
-            range,
-            old_text: old_text.to_string(),
-            new_text: String::new(),
-            cursor_before: old_text.len(),
             cursor_after,
         }
     }

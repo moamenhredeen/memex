@@ -231,7 +231,7 @@ impl EditorState {
     fn prev_table_cell(
         row: usize,
         col: usize,
-        rows: &[Vec<String>],
+        _rows: &[Vec<String>],
         is_separator: &[bool],
         max_cols: usize,
     ) -> (usize, usize, bool) {

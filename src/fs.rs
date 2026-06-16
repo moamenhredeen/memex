@@ -66,6 +66,7 @@ pub fn list_notes(dir: &Path) -> Result<Vec<PathBuf>, std::io::Error> {
 }
 
 /// List all vault files (.md and .pdf) in a directory.
+#[allow(dead_code)]
 pub fn list_vault_files(dir: &Path) -> Result<Vec<PathBuf>, std::io::Error> {
     list_files_by_ext(dir, &["md", "pdf"])
 }

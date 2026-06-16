@@ -94,6 +94,7 @@ impl EditorState {
         self.grammar.register_content = text;
     }
 
+    #[allow(dead_code)]
     pub fn new(content: String, _window: &mut Window, cx: &mut Context<Self>) -> Self {
         Self::from_document(Document::scratch(content), cx)
     }
@@ -264,6 +265,7 @@ impl EditorState {
         cx.notify();
     }
 
+    #[allow(dead_code)]
     pub fn set_document(
         &mut self,
         document: Document,
@@ -851,7 +853,7 @@ impl EditorState {
                             .map(|p| line_start + p)
                             .unwrap_or(content.len());
                         let line_text = &content[line_start..line_end];
-                        if let Some(hash_end) = line_text.find(' ') {
+                        if line_text.contains(' ') {
                             // Remove first '#'
                             self.selected_range = line_start..line_start + 1;
                             self.edit_text("", cx);

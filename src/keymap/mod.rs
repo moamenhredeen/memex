@@ -70,11 +70,13 @@ impl KeymapSystem {
     }
 
     /// Check if a multi-key sequence is in progress.
+    #[allow(dead_code)]
     pub fn has_pending_keys(&self) -> bool {
         self.pending_trie.is_some()
     }
 
     /// Cancel any pending multi-key sequence.
+    #[allow(dead_code)]
     pub fn cancel_pending(&mut self) {
         self.pending_trie = None;
     }

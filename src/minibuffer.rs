@@ -23,6 +23,7 @@ pub struct Candidate {
 }
 
 /// What the delegate wants the app to do after a confirm/complete.
+#[allow(dead_code)]
 #[derive(Debug)]
 pub enum MinibufferResult {
     /// Close the minibuffer.

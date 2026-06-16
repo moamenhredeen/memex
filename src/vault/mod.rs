@@ -5,11 +5,11 @@ pub mod layout;
 pub mod scanner;
 pub mod watcher;
 
-pub use frontmatter::{Frontmatter, ParsedNote};
-pub use index::{NoteIndex, NoteMeta, ResolveHit};
+pub use frontmatter::Frontmatter;
+pub use index::{NoteIndex, ResolveHit};
 pub use layout::VaultLayout;
-pub use scanner::{Note, VaultContents};
-pub use watcher::{VaultChange, VaultWatcher};
+pub use scanner::VaultContents;
+pub use watcher::VaultWatcher;
 
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};

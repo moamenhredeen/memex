@@ -29,7 +29,9 @@ const BUFFER_PAGES: usize = 2;
 /// Cached rendered page: PNG-encoded bytes ready for gpui.
 pub struct RenderedPage {
     pub image: Arc<gpui::Image>,
+    #[allow(dead_code)]
     pub width: u32,
+    #[allow(dead_code)]
     pub height: u32,
 }
 
@@ -1094,7 +1096,7 @@ impl PdfState {
         &mut self,
         cmd_id: &str,
         viewport: (f32, f32),
-        vim_enabled: bool,
+        _vim_enabled: bool,
         cx: &mut Context<Self>,
     ) -> CommandOutcome {
         let (vw, vh) = viewport;

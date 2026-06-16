@@ -3,6 +3,10 @@ use fuzzy_matcher::skim::SkimMatcherV2;
 use gpui::*;
 use gpui_component::{Icon, IconName, h_flex, v_flex};
 
+mod command_registry;
+mod resource;
+mod ui_helpers;
+
 use crate::command::Command;
 use crate::document::Document;
 use crate::editor::{EditorBuffer, EditorEvent, EditorState, EditorView, EditorViewEvent};
@@ -13,6 +17,11 @@ use crate::pdf::{PdfState, PdfView, PdfViewEvent};
 use crate::state::AppState;
 use crate::theme::{self, Theme};
 use crate::workspace::{BufferId, Workspace, WorkspaceDisplay, WorkspaceFocus};
+
+use resource::{
+    BufferContent, PdfLinkTarget, ResourceKey, SecondaryContent, is_pdf_path, parse_pdf_link,
+    unique_attachment_path,
+};
 
 const MAX_RESULTS: usize = 15;
 
@@ -50,85 +59,6 @@ pub struct Memex {
     vault_watcher: Option<crate::vault::VaultWatcher>,
     theme: Theme,
     _subscriptions: Vec<Subscription>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-enum ResourceKey {
-    Scratch(std::path::PathBuf),
-    Markdown(std::path::PathBuf),
-    Pdf(std::path::PathBuf),
-    Graph(std::path::PathBuf),
-}
-
-#[derive(Clone)]
-enum BufferContent {
-    Markdown(EditorBuffer),
-    Pdf(std::path::PathBuf),
-    Graph(std::path::PathBuf),
-}
-
-enum SecondaryContent {
-    Item { item: ActiveItem },
-    Backlinks,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum PdfLinkTarget {
-    Page(usize),
-    Annotation(String),
-}
-
-fn parse_pdf_link(target: &str) -> Option<(&str, PdfLinkTarget)> {
-    let (file, fragment) = target.split_once('#')?;
-    if !file.to_lowercase().ends_with(".pdf") {
-        return None;
-    }
-    if let Some(page) = fragment.strip_prefix("page=") {
-        return page
-            .parse::<usize>()
-            .ok()
-            .filter(|page| *page > 0)
-            .map(|page| (file, PdfLinkTarget::Page(page)));
-    }
-    fragment
-        .strip_prefix("annotation=")
-        .filter(|id| !id.is_empty())
-        .map(|id| (file, PdfLinkTarget::Annotation(id.to_string())))
-}
-
-fn is_pdf_path(path: &std::path::Path) -> bool {
-    path.extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"))
-}
-
-fn unique_attachment_path(dir: &std::path::Path, filename: &std::ffi::OsStr) -> std::path::PathBuf {
-    let candidate = dir.join(filename);
-    if !candidate.exists() {
-        return candidate;
-    }
-
-    let original = std::path::Path::new(filename);
-    let stem = original
-        .file_stem()
-        .and_then(|stem| stem.to_str())
-        .unwrap_or("attachment");
-    let extension = original
-        .extension()
-        .and_then(|extension| extension.to_str());
-
-    for ix in 1.. {
-        let filename = match extension {
-            Some(extension) if !extension.is_empty() => format!("{}-{}.{}", stem, ix, extension),
-            _ => format!("{}-{}", stem, ix),
-        };
-        let candidate = dir.join(filename);
-        if !candidate.exists() {
-            return candidate;
-        }
-    }
-
-    unreachable!("unbounded attachment filename search must return")
 }
 
 impl Memex {
@@ -274,7 +204,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             editor_buffer,
             minibuffer: Minibuffer::new(),
             minibuffer_focus: cx.focus_handle(),
-            global_commands: Self::global_commands(),
+            global_commands: command_registry::global_commands(),
             vault_watcher: None,
             theme,
             _subscriptions: vec![editor_sub, editor_key_sub],
@@ -1623,7 +1553,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             if count == 0 {
                 continue;
             }
-            let snippet = extract_snippet(&body, &needle, 60);
+            let snippet = ui_helpers::extract_snippet(&body, &needle, 60);
             hits.push((count, note.title.clone(), note.path.clone(), snippet));
         }
         hits.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
@@ -1863,201 +1793,6 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         candidates
     }
 
-    /// Global commands available in every item context.
-    fn global_commands() -> Vec<Command> {
-        vec![
-            Command {
-                id: "write",
-                name: "Save",
-                description: "Save current note to disk",
-                aliases: &["w", "save"],
-                binding: Some(":w"),
-            },
-            Command {
-                id: "quit",
-                name: "Close Secondary or Quit",
-                description: "Close the focused secondary slot, otherwise quit",
-                aliases: &["q", "exit"],
-                binding: Some(":q"),
-            },
-            Command {
-                id: "wq",
-                name: "Save and Quit",
-                description: "Save current note and quit",
-                aliases: &["x"],
-                binding: Some(":wq"),
-            },
-            Command {
-                id: "vault-switch",
-                name: "Switch Vault",
-                description: "Switch to a recent vault",
-                aliases: &["vault", "vaults", "switch-vault"],
-                binding: Some(":vault-switch"),
-            },
-            Command {
-                id: "vault-open",
-                name: "Open Vault",
-                description: "Browse filesystem to open a vault",
-                aliases: &["open-vault"],
-                binding: Some(":vault-open"),
-            },
-            Command {
-                id: "notes",
-                name: "Find Note",
-                description: "Search and open a note in current vault",
-                aliases: &["find-note", "find", "note"],
-                binding: Some("Ctrl+P"),
-            },
-            Command {
-                id: "edit",
-                name: "Edit File",
-                description: "Open a file by path",
-                aliases: &["e", "open"],
-                binding: Some(":e <path>"),
-            },
-            Command {
-                id: "set",
-                name: "Set Option",
-                description: "Set an editor option",
-                aliases: &[],
-                binding: Some(":set <option>"),
-            },
-            Command {
-                id: "set-vim",
-                name: "Enable Vim Mode",
-                description: "Enable vim keybindings",
-                aliases: &[],
-                binding: None,
-            },
-            Command {
-                id: "set-novim",
-                name: "Disable Vim Mode",
-                description: "Disable vim keybindings",
-                aliases: &[],
-                binding: None,
-            },
-            Command {
-                id: "nohlsearch",
-                name: "Clear Search Highlighting",
-                description: "Remove search result highlighting",
-                aliases: &["noh"],
-                binding: Some(":noh"),
-            },
-            Command {
-                id: "toggle-vim",
-                name: "Toggle Vim Mode",
-                description: "Toggle vim mode on/off",
-                aliases: &[],
-                binding: None,
-            },
-            Command {
-                id: "open-graph",
-                name: "Open Graph",
-                description: "Open the vault graph in the secondary slot",
-                aliases: &["graph"],
-                binding: None,
-            },
-            Command {
-                id: "toggle-secondary-maximize",
-                name: "Toggle Secondary Maximize",
-                description: "Toggle the secondary slot between side-by-side and full width",
-                aliases: &["secondary-maximize", "maximize-tool"],
-                binding: None,
-            },
-            Command {
-                id: "close-secondary",
-                name: "Close Secondary",
-                description: "Close the secondary slot and return focus to the editor",
-                aliases: &[],
-                binding: None,
-            },
-            Command {
-                id: "backlinks",
-                name: "Backlinks",
-                description: "Show notes that link to the current note",
-                aliases: &["bl", "references"],
-                binding: None,
-            },
-            Command {
-                id: "today",
-                name: "Today's Journal",
-                description: "Open or create today's journal note",
-                aliases: &["daily", "journal"],
-                binding: None,
-            },
-            Command {
-                id: "tags",
-                name: "Tags",
-                description: "List all tags in the vault",
-                aliases: &[],
-                binding: None,
-            },
-            Command {
-                id: "tag",
-                name: "Tag Search",
-                description: "Notes with a specific tag",
-                aliases: &[],
-                binding: None,
-            },
-            Command {
-                id: "orphans",
-                name: "Orphan Notes",
-                description: "Notes with no incoming or outgoing links",
-                aliases: &[],
-                binding: None,
-            },
-            Command {
-                id: "search-content",
-                name: "Search Content",
-                description: "Full-text search across notes",
-                aliases: &["search", "grep"],
-                binding: Some("Ctrl+Shift+F"),
-            },
-            Command {
-                id: "rename",
-                name: "Rename Note",
-                description: "Update the current note's title (no file rename — IDs stay stable)",
-                aliases: &["rn"],
-                binding: Some(":rename <title>"),
-            },
-            Command {
-                id: "insert-links-by-tag",
-                name: "Insert Links by Tag",
-                description: "Insert wikilinks to all notes with a tag (MOC helper)",
-                aliases: &["moc"],
-                binding: Some(":moc <tag>"),
-            },
-            Command {
-                id: "vault-forget",
-                name: "Forget Vault",
-                description: "Remove a vault from the recent-vaults list",
-                aliases: &["forget-vault"],
-                binding: Some(":vault-forget <path>"),
-            },
-            Command {
-                id: "toggle-backlinks",
-                name: "Toggle Backlinks",
-                description: "Show or hide backlinks in the secondary slot",
-                aliases: &["backlinks-panel"],
-                binding: Some("Ctrl+Shift+B"),
-            },
-            Command {
-                id: "attach",
-                name: "Attach from Clipboard",
-                description: "Save clipboard image to attachments/ and insert a link",
-                aliases: &["paste-image"],
-                binding: None,
-            },
-            Command {
-                id: "theme",
-                name: "Theme",
-                description: "Select an application theme",
-                aliases: &["themes", "color-scheme"],
-                binding: Some(":theme"),
-            },
-        ]
-    }
-
     fn get_theme_candidates(&self) -> Vec<Candidate> {
         let query = self.minibuffer.input.to_lowercase();
         theme::THEMES
@@ -2091,7 +1826,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             return all_cmds
                 .iter()
                 .take(MAX_RESULTS)
-                .map(|c| command_to_candidate(c))
+                .map(|c| command_registry::command_to_candidate(c))
                 .collect();
         }
 
@@ -2118,7 +1853,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         scored
             .into_iter()
             .take(MAX_RESULTS)
-            .map(|(_, c)| command_to_candidate(c))
+            .map(|(_, c)| command_registry::command_to_candidate(c))
             .collect()
     }
 
@@ -2929,7 +2664,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 && !self.minibuffer.input.is_empty()
             {
                 // Highlight the search term within the candidate label
-                render_highlighted_label(
+                ui_helpers::render_highlighted_label(
                     &candidate.label,
                     &self.minibuffer.input,
                     text_color,
@@ -3107,139 +2842,5 @@ impl Render for Memex {
         }
 
         root
-    }
-}
-
-/// Render a label with the search term highlighted in a distinct color.
-fn render_highlighted_label(
-    label: &str,
-    query: &str,
-    base_color: impl Into<Hsla> + Copy,
-    highlight: u32,
-) -> Div {
-    let highlight_color = rgb(highlight);
-    let base_hsla: Hsla = base_color.into();
-    let label_lower = label.to_lowercase();
-    let query_lower = query.to_lowercase();
-
-    let mut container = div().text_size(px(13.)).flex().flex_row();
-    let mut pos = 0;
-
-    while pos < label.len() {
-        if let Some(match_start) = label_lower[pos..].find(&query_lower) {
-            let abs_start = pos + match_start;
-            let abs_end = abs_start + query_lower.len();
-            // Snap to char boundaries
-            let abs_start = snap_to_char(label, abs_start, false);
-            let abs_end = snap_to_char(label, abs_end, true);
-
-            // Text before match
-            if abs_start > pos {
-                container = container.child(
-                    div()
-                        .text_color(base_hsla)
-                        .child(label[pos..abs_start].to_string()),
-                );
-            }
-            // Highlighted match
-            container = container.child(
-                div()
-                    .text_color(highlight_color)
-                    .font_weight(FontWeight::BOLD)
-                    .child(label[abs_start..abs_end].to_string()),
-            );
-            pos = abs_end;
-        } else {
-            // Remaining text after last match
-            container =
-                container.child(div().text_color(base_hsla).child(label[pos..].to_string()));
-            break;
-        }
-    }
-
-    container
-}
-
-/// Snap byte index to a valid char boundary.
-fn snap_to_char(s: &str, idx: usize, ceil: bool) -> usize {
-    if idx >= s.len() {
-        return s.len();
-    }
-    if s.is_char_boundary(idx) {
-        return idx;
-    }
-    if ceil {
-        let mut i = idx;
-        while i < s.len() && !s.is_char_boundary(i) {
-            i += 1;
-        }
-        i
-    } else {
-        let mut i = idx;
-        while i > 0 && !s.is_char_boundary(i) {
-            i -= 1;
-        }
-        i
-    }
-}
-
-/// Extract a single-line snippet around the first match of `needle` in
-/// `body`, truncated to roughly `radius` chars on each side. Case-
-/// insensitive match. Returns `"…"` if nothing matches.
-fn extract_snippet(body: &str, needle: &str, radius: usize) -> String {
-    let lower = body.to_lowercase();
-    let Some(pos) = lower.find(needle) else {
-        return "…".to_string();
-    };
-    // Align to char boundaries in the original body.
-    let start = body[..pos]
-        .char_indices()
-        .rev()
-        .take(radius)
-        .last()
-        .map(|(i, _)| i)
-        .unwrap_or(0);
-    let end_target = pos + needle.len() + radius;
-    let mut end = end_target.min(body.len());
-    while end < body.len() && !body.is_char_boundary(end) {
-        end += 1;
-    }
-    let slice = &body[start..end];
-    let slice = slice.lines().next().unwrap_or(slice);
-    let prefix = if start > 0 { "…" } else { "" };
-    let suffix = if end < body.len() { "…" } else { "" };
-    format!("{}{}{}", prefix, slice.trim(), suffix)
-}
-
-fn command_to_candidate(cmd: &Command) -> Candidate {
-    let detail = if let Some(binding) = cmd.binding {
-        format!("{}  [{}]", cmd.description, binding)
-    } else {
-        cmd.description.to_string()
-    };
-    Candidate {
-        label: cmd.name.to_string(),
-        detail: Some(detail),
-        is_action: false,
-        data: cmd.id.to_string(),
-    }
-}
-
-#[cfg(test)]
-mod pdf_link_tests {
-    use super::{PdfLinkTarget, parse_pdf_link};
-
-    #[test]
-    fn parses_pdf_page_and_annotation_links() {
-        assert_eq!(
-            parse_pdf_link("paper.pdf#page=12"),
-            Some(("paper.pdf", PdfLinkTarget::Page(12)))
-        );
-        assert_eq!(
-            parse_pdf_link("paper.pdf#annotation=memex:abc"),
-            Some(("paper.pdf", PdfLinkTarget::Annotation("memex:abc".into())))
-        );
-        assert_eq!(parse_pdf_link("paper.pdf#page=0"), None);
-        assert_eq!(parse_pdf_link("note#page=1"), None);
     }
 }

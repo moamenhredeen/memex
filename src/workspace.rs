@@ -59,6 +59,7 @@ impl<K: Eq + Hash, B> BufferStore<K, B> {
         self.buffers.get(&id)
     }
 
+    #[allow(dead_code)]
     pub fn get_mut(&mut self, id: BufferId) -> Option<&mut B> {
         self.touch(id);
         self.buffers.get_mut(&id)
@@ -70,6 +71,7 @@ impl<K: Eq + Hash, B> BufferStore<K, B> {
         self.buffers.remove(&id)
     }
 
+    #[allow(dead_code)]
     pub fn rekey(&mut self, id: BufferId, resource: K) -> bool {
         if !self.buffers.contains_key(&id) {
             return false;
@@ -79,6 +81,7 @@ impl<K: Eq + Hash, B> BufferStore<K, B> {
         true
     }
 
+    #[allow(dead_code)]
     pub fn mru(&self) -> &[BufferId] {
         &self.mru
     }
