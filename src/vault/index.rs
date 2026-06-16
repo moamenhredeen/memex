@@ -134,7 +134,10 @@ impl NoteIndex {
     /// `id:...` → alias → title.
     pub fn resolve_link(&self, target: &str) -> Option<ResolveHit<'_>> {
         if let Some(rest) = target.strip_prefix("id:") {
-            return self.by_id.get(rest).map(|m| ResolveHit::Unique(m.id.as_str()));
+            return self
+                .by_id
+                .get(rest)
+                .map(|m| ResolveHit::Unique(m.id.as_str()));
         }
         let key = target.to_lowercase();
         if let Some(ids) = self.by_alias.get(&key) {
@@ -159,8 +162,7 @@ impl NoteIndex {
         self.by_id
             .values()
             .filter(|m| {
-                m.outgoing_links.is_empty()
-                    && self.backlinks.get(&m.id).map_or(true, Vec::is_empty)
+                m.outgoing_links.is_empty() && self.backlinks.get(&m.id).map_or(true, Vec::is_empty)
             })
             .map(|m| m.id.as_str())
             .collect()
@@ -226,7 +228,9 @@ impl NoteIndex {
             for target in &meta.outgoing_links {
                 if let Some(ResolveHit::Unique(id)) = self.resolve_link(target) {
                     if id != meta.id {
-                        seen.entry(id.to_string()).or_default().insert(meta.id.clone());
+                        seen.entry(id.to_string())
+                            .or_default()
+                            .insert(meta.id.clone());
                     }
                 }
             }
@@ -304,15 +308,27 @@ mod tests {
     #[test]
     fn resolve_by_title_case_insensitive() {
         let idx = NoteIndex::build(&contents_with(vec![note("a", "Foo", &[], &[])]));
-        assert!(matches!(idx.resolve_link("Foo"), Some(ResolveHit::Unique("a"))));
-        assert!(matches!(idx.resolve_link("foo"), Some(ResolveHit::Unique("a"))));
-        assert!(matches!(idx.resolve_link("FOO"), Some(ResolveHit::Unique("a"))));
+        assert!(matches!(
+            idx.resolve_link("Foo"),
+            Some(ResolveHit::Unique("a"))
+        ));
+        assert!(matches!(
+            idx.resolve_link("foo"),
+            Some(ResolveHit::Unique("a"))
+        ));
+        assert!(matches!(
+            idx.resolve_link("FOO"),
+            Some(ResolveHit::Unique("a"))
+        ));
     }
 
     #[test]
     fn resolve_by_id_prefix() {
         let idx = NoteIndex::build(&contents_with(vec![note("xyz", "Foo", &[], &[])]));
-        assert!(matches!(idx.resolve_link("id:xyz"), Some(ResolveHit::Unique("xyz"))));
+        assert!(matches!(
+            idx.resolve_link("id:xyz"),
+            Some(ResolveHit::Unique("xyz"))
+        ));
     }
 
     #[test]
@@ -320,7 +336,10 @@ mod tests {
         let mut n = note("a", "Canonical", &[], &[]);
         n.aliases = vec!["Old Name".to_string()];
         let idx = NoteIndex::build(&contents_with(vec![n]));
-        assert!(matches!(idx.resolve_link("old name"), Some(ResolveHit::Unique("a"))));
+        assert!(matches!(
+            idx.resolve_link("old name"),
+            Some(ResolveHit::Unique("a"))
+        ));
     }
 
     #[test]
@@ -331,7 +350,10 @@ mod tests {
         let titles = idx.wikilink_titles();
 
         assert_eq!(titles.get("id:a").map(String::as_str), Some("Canonical"));
-        assert_eq!(titles.get("old name").map(String::as_str), Some("Canonical"));
+        assert_eq!(
+            titles.get("old name").map(String::as_str),
+            Some("Canonical")
+        );
     }
 
     #[test]
@@ -386,7 +408,11 @@ mod tests {
             note("a", "A", &[], &["Rust", "testing"]),
             note("b", "B", &[], &["RUST"]),
         ]));
-        let mut ids: Vec<&str> = idx.notes_with_tag("rust").iter().map(String::as_str).collect();
+        let mut ids: Vec<&str> = idx
+            .notes_with_tag("rust")
+            .iter()
+            .map(String::as_str)
+            .collect();
         ids.sort();
         assert_eq!(ids, vec!["a", "b"]);
 
@@ -414,7 +440,10 @@ mod tests {
         idx.upsert(updated);
 
         assert!(idx.resolve_link("Old").is_none());
-        assert!(matches!(idx.resolve_link("New"), Some(ResolveHit::Unique("a"))));
+        assert!(matches!(
+            idx.resolve_link("New"),
+            Some(ResolveHit::Unique("a"))
+        ));
         assert!(idx.notes_with_tag("x").is_empty());
         assert_eq!(idx.notes_with_tag("y"), &["a".to_string()]);
     }

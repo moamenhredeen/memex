@@ -16,6 +16,7 @@ use gpui::*;
 use crate::command::Command;
 use crate::editor::{EditorState, EditorView};
 use crate::graph::{GraphState, GraphView};
+use crate::keymap::{TransientKind, VimMode};
 use crate::minibuffer::Candidate;
 use crate::pdf::{PdfState, PdfView};
 use crate::theme::Theme;
@@ -54,8 +55,10 @@ pub enum ItemAction {
     WriteClipboard(String),
     /// Copy text and populate the editors' unnamed Vim register.
     Yank(String),
-    /// Request the app to activate a keymap layer (e.g., "vim:insert", "vim:normal").
-    ActivateLayer(&'static str),
+    /// Request the app to change Vim mode.
+    SetVimMode(VimMode),
+    /// Request the keymap to wait for a transient character.
+    PushTransient(TransientKind),
     /// Request the app to toggle vim enabled/disabled.
     SetVimEnabled(bool),
     /// Tell the app to sync vim flags back to the editor after processing actions.
@@ -153,15 +156,21 @@ impl ActiveItem {
         match self {
             Self::Editor { state, .. } => {
                 let state = state.clone();
-                state.update(cx, |s, cx| s.item_execute_command(cmd_id, viewport, vim, cx))
+                state.update(cx, |s, cx| {
+                    s.item_execute_command(cmd_id, viewport, vim, cx)
+                })
             }
             Self::Pdf { state, .. } => {
                 let state = state.clone();
-                state.update(cx, |s, cx| s.execute_command(cmd_id, viewport, vim.vim_enabled, cx))
+                state.update(cx, |s, cx| {
+                    s.execute_command(cmd_id, viewport, vim.vim_enabled, cx)
+                })
             }
             Self::Graph { state, .. } => {
                 let state = state.clone();
-                state.update(cx, |s, cx| s.execute_command(cmd_id, viewport, vim.vim_enabled, cx))
+                state.update(cx, |s, cx| {
+                    s.execute_command(cmd_id, viewport, vim.vim_enabled, cx)
+                })
             }
         }
     }
@@ -169,15 +178,9 @@ impl ActiveItem {
     /// Get candidates for a mode-owned minibuffer delegate.
     pub fn get_candidates(&self, delegate_id: &str, input: &str, cx: &App) -> Vec<Candidate> {
         match self {
-            Self::Editor { state, .. } => {
-                state.read(cx).item_get_candidates(delegate_id, input)
-            }
-            Self::Pdf { state, .. } => {
-                state.read(cx).get_candidates(delegate_id, input)
-            }
-            Self::Graph { state, .. } => {
-                state.read(cx).get_candidates(delegate_id, input)
-            }
+            Self::Editor { state, .. } => state.read(cx).item_get_candidates(delegate_id, input),
+            Self::Pdf { state, .. } => state.read(cx).get_candidates(delegate_id, input),
+            Self::Graph { state, .. } => state.read(cx).get_candidates(delegate_id, input),
         }
     }
 
@@ -192,15 +195,21 @@ impl ActiveItem {
         match self {
             Self::Editor { state, .. } => {
                 let state = state.clone();
-                state.update(cx, |s, _cx| s.item_handle_confirm(delegate_id, input, candidate))
+                state.update(cx, |s, _cx| {
+                    s.item_handle_confirm(delegate_id, input, candidate)
+                })
             }
             Self::Pdf { state, .. } => {
                 let state = state.clone();
-                state.update(cx, |s, cx| s.handle_confirm(delegate_id, input, candidate, cx))
+                state.update(cx, |s, cx| {
+                    s.handle_confirm(delegate_id, input, candidate, cx)
+                })
             }
             Self::Graph { state, .. } => {
                 let state = state.clone();
-                state.update(cx, |s, cx| s.handle_confirm(delegate_id, input, candidate, cx))
+                state.update(cx, |s, cx| {
+                    s.handle_confirm(delegate_id, input, candidate, cx)
+                })
             }
         }
     }
@@ -303,9 +312,9 @@ impl ActiveItem {
     /// Mode-line badge info: (label, background_color).
     pub fn mode_badge(&self) -> (&'static str, u32) {
         match self {
-            Self::Editor { .. } => ("EDI", 0x268BD2),  // solarized blue (overridden by vim state)
-            Self::Pdf { .. } => ("PDF", 0xCB4B16),      // solarized orange
-            Self::Graph { .. } => ("GRP", 0x6C71C4),    // solarized violet
+            Self::Editor { .. } => ("EDI", 0x268BD2), // solarized blue (overridden by vim state)
+            Self::Pdf { .. } => ("PDF", 0xCB4B16),    // solarized orange
+            Self::Graph { .. } => ("GRP", 0x6C71C4),  // solarized violet
         }
     }
 }

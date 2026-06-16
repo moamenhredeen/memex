@@ -1,7 +1,7 @@
 use gpui::*;
 
 use super::{GraphEvent, GraphState};
-use crate::keymap::{Action, KeyCombo, KeyTrie, Layer, build_graph_layer};
+use crate::keymap::{Action, KeyContext, KeymapSystem, ResolvedKey};
 use crate::theme::Theme;
 
 /// Emitted by [`GraphView`] when a keybinding resolves to a command.
@@ -14,19 +14,25 @@ impl EventEmitter<GraphViewEvent> for GraphView {}
 
 pub struct GraphView {
     state: Entity<GraphState>,
+    keymap: KeymapSystem,
     /// Track drag state for panning.
     drag_start: Option<(f32, f32, f32, f32)>, // (mouse_x, mouse_y, pan_x, pan_y)
-    /// Graph-local keymap layer. Only resolves when this view has focus.
-    keymap: Layer,
     theme: Theme,
 }
 
 impl GraphView {
-    /// Resolve a keystroke against the graph layer. Pure function — useful for tests.
-    pub fn resolve_command(&self, key: &str, ctrl: bool, shift: bool, alt: bool) -> Option<&'static str> {
-        let combo = KeyCombo::from_keystroke(key, ctrl, shift, alt);
-        match self.keymap.lookup(&combo)? {
-            KeyTrie::Leaf(Action::Command(id)) => Some(*id),
+    /// Resolve a keystroke against the graph key context.
+    pub fn resolve_command(
+        &mut self,
+        key: &str,
+        ctrl: bool,
+        shift: bool,
+        alt: bool,
+    ) -> Option<&'static str> {
+        let mut context = KeyContext::new();
+        context.add("Graph");
+        match self.keymap.resolve_key(key, ctrl, shift, alt, &context) {
+            ResolvedKey::Action(Action::Command(id), _) => Some(id),
             _ => None,
         }
     }
@@ -59,8 +65,8 @@ impl GraphView {
 
         Self {
             state,
+            keymap: KeymapSystem::new(false),
             drag_start: None,
-            keymap: build_graph_layer(),
             theme,
         }
     }
@@ -111,7 +117,6 @@ impl Render for GraphView {
                     let bounds = (800.0f32, 600.0f32);
                     if let Some(idx) = gs.node_at(mx, my, bounds.0, bounds.1) {
                         let path = gs.nodes[idx].path.clone();
-                        drop(gs);
                         this.state.update(cx, |s, _| {
                             s.selected = Some(idx);
                         });
@@ -121,7 +126,6 @@ impl Render for GraphView {
                     } else {
                         let gs_pan_x = gs.pan_x;
                         let gs_pan_y = gs.pan_y;
-                        drop(gs);
                         this.drag_start = Some((mx, my, gs_pan_x, gs_pan_y));
                         this.state.update(cx, |s, _| s.selected = None);
                     }
@@ -147,7 +151,6 @@ impl Render for GraphView {
                     let gs = this.state.read(cx);
                     let hit = gs.node_at(mx, my, 800.0, 600.0);
                     if hit != gs.hovered {
-                        drop(gs);
                         this.state.update(cx, |s, _| s.hovered = hit);
                         cx.notify();
                     }
@@ -177,144 +180,139 @@ impl Render for GraphView {
                 cx.notify();
             }))
             .child(
-                canvas(
-                    move |_bounds, _window, _cx| {},
-                    {
-                        let nodes = nodes.clone();
-                        let edges = edges.clone();
-                        let local_visible = local_visible.clone();
-                        move |bounds, _prepaint: (), window, cx| {
-                            let center_x: f32 = bounds.center().x.into();
-                            let center_y: f32 = bounds.center().y.into();
+                canvas(move |_bounds, _window, _cx| {}, {
+                    let nodes = nodes.clone();
+                    let edges = edges.clone();
+                    let local_visible = local_visible.clone();
+                    move |bounds, _prepaint: (), window, cx| {
+                        let center_x: f32 = bounds.center().x.into();
+                        let center_y: f32 = bounds.center().y.into();
 
-                            // Draw edges
-                            for edge in &edges {
-                                if let Some(ref vis) = local_visible {
-                                    if !vis.contains(&edge.source) || !vis.contains(&edge.target) {
-                                        continue;
-                                    }
+                        // Draw edges
+                        for edge in &edges {
+                            if let Some(ref vis) = local_visible {
+                                if !vis.contains(&edge.source) || !vis.contains(&edge.target) {
+                                    continue;
                                 }
-
-                                let src = &nodes[edge.source];
-                                let tgt = &nodes[edge.target];
-
-                                let x1 = src.x * zoom + pan_x + center_x;
-                                let y1 = src.y * zoom + pan_y + center_y;
-                                let x2 = tgt.x * zoom + pan_x + center_x;
-                                let y2 = tgt.y * zoom + pan_y + center_y;
-
-                                let is_selected = selected == Some(edge.source)
-                                    || selected == Some(edge.target);
-
-                                let color = if is_selected {
-                                    rgba((theme.accent << 8) | 0xCC)
-                                } else {
-                                    rgba((theme.text_muted << 8) | 0x40)
-                                };
-
-                                let path = {
-                                    let mut p = gpui::Path::new(point(px(x1), px(y1)));
-                                    p.line_to(point(px(x2), px(y2)));
-                                    p
-                                };
-                                window.paint_path(path, color);
                             }
 
-                            // Draw nodes
-                            let node_radius = 6.0 * zoom;
-                            for (i, node) in nodes.iter().enumerate() {
-                                if let Some(ref vis) = local_visible {
-                                    if !vis.contains(&i) {
-                                        continue;
-                                    }
+                            let src = &nodes[edge.source];
+                            let tgt = &nodes[edge.target];
+
+                            let x1 = src.x * zoom + pan_x + center_x;
+                            let y1 = src.y * zoom + pan_y + center_y;
+                            let x2 = tgt.x * zoom + pan_x + center_x;
+                            let y2 = tgt.y * zoom + pan_y + center_y;
+
+                            let is_selected =
+                                selected == Some(edge.source) || selected == Some(edge.target);
+
+                            let color = if is_selected {
+                                rgba((theme.accent << 8) | 0xCC)
+                            } else {
+                                rgba((theme.text_muted << 8) | 0x40)
+                            };
+
+                            let path = {
+                                let mut p = gpui::Path::new(point(px(x1), px(y1)));
+                                p.line_to(point(px(x2), px(y2)));
+                                p
+                            };
+                            window.paint_path(path, color);
+                        }
+
+                        // Draw nodes
+                        let node_radius = 6.0 * zoom;
+                        for (i, node) in nodes.iter().enumerate() {
+                            if let Some(ref vis) = local_visible {
+                                if !vis.contains(&i) {
+                                    continue;
                                 }
+                            }
 
-                                let nx = node.x * zoom + pan_x + center_x;
-                                let ny = node.y * zoom + pan_y + center_y;
+                            let nx = node.x * zoom + pan_x + center_x;
+                            let ny = node.y * zoom + pan_y + center_y;
 
-                                let is_sel = selected == Some(i);
-                                let is_hov = hovered == Some(i);
-                                let color = if is_sel {
+                            let is_sel = selected == Some(i);
+                            let is_hov = hovered == Some(i);
+                            let color = if is_sel {
+                                rgb(theme.danger)
+                            } else if is_hov {
+                                rgb(theme.accent)
+                            } else {
+                                rgb(theme.text)
+                            };
+
+                            let r = if is_sel || is_hov {
+                                node_radius * 1.3
+                            } else {
+                                node_radius
+                            };
+
+                            // Draw filled circle (rounded rect with full corner radius)
+                            let node_bounds = Bounds::new(
+                                point(px(nx - r), px(ny - r)),
+                                size(px(r * 2.0), px(r * 2.0)),
+                            );
+                            window.paint_quad(PaintQuad {
+                                bounds: node_bounds,
+                                corner_radii: Corners::all(px(r)),
+                                background: color.into(),
+                                border_widths: Edges::all(px(0.0)),
+                                border_color: transparent_black(),
+                                border_style: BorderStyle::default(),
+                            });
+
+                            // Draw label
+                            if zoom > 0.3 {
+                                let font_size = (11.0 * zoom).max(8.0).min(14.0);
+                                let label_color = if is_sel {
                                     rgb(theme.danger)
-                                } else if is_hov {
-                                    rgb(theme.accent)
                                 } else {
-                                    rgb(theme.text)
+                                    rgb(theme.text_strong)
                                 };
 
-                                let r = if is_sel || is_hov {
-                                    node_radius * 1.3
-                                } else {
-                                    node_radius
-                                };
-
-                                // Draw filled circle (rounded rect with full corner radius)
-                                let node_bounds = Bounds::new(
-                                    point(px(nx - r), px(ny - r)),
-                                    size(px(r * 2.0), px(r * 2.0)),
-                                );
-                                window.paint_quad(PaintQuad {
-                                    bounds: node_bounds,
-                                    corner_radii: Corners::all(px(r)),
-                                    background: color.into(),
-                                    border_widths: Edges::all(px(0.0)),
-                                    border_color: transparent_black(),
-                                    border_style: BorderStyle::default(),
-                                });
-
-                                // Draw label
-                                if zoom > 0.3 {
-                                    let font_size = (11.0 * zoom).max(8.0).min(14.0);
-                                    let label_color = if is_sel {
-                                        rgb(theme.danger)
-                                    } else {
-                                        rgb(theme.text_strong)
-                                    };
-
-                                    let run = TextRun {
-                                        len: node.title.len(),
-                                        font: Font {
-                                            family: "FiraCode Nerd Font".into(),
-                                            features: FontFeatures::default(),
-                                            fallbacks: None,
-                                            weight: if is_sel {
-                                                FontWeight::BOLD
-                                            } else {
-                                                FontWeight::NORMAL
-                                            },
-                                            style: FontStyle::Normal,
+                                let run = TextRun {
+                                    len: node.title.len(),
+                                    font: Font {
+                                        family: "FiraCode Nerd Font".into(),
+                                        features: FontFeatures::default(),
+                                        fallbacks: None,
+                                        weight: if is_sel {
+                                            FontWeight::BOLD
+                                        } else {
+                                            FontWeight::NORMAL
                                         },
-                                        color: label_color.into(),
-                                        background_color: None,
-                                        underline: None,
-                                        strikethrough: None,
-                                    };
+                                        style: FontStyle::Normal,
+                                    },
+                                    color: label_color.into(),
+                                    background_color: None,
+                                    underline: None,
+                                    strikethrough: None,
+                                };
 
-                                    let shaped = window
-                                        .text_system()
-                                        .shape_line(
-                                            node.title.clone().into(),
-                                            px(font_size),
-                                            &[run],
-                                            None,
-                                        );
+                                let shaped = window.text_system().shape_line(
+                                    node.title.clone().into(),
+                                    px(font_size),
+                                    &[run],
+                                    None,
+                                );
 
-                                    {
-                                        let text_width: f32 = shaped.width.into();
-                                        let text_x = nx - text_width / 2.0;
-                                        let text_y = ny + r + 4.0;
-                                        let _ = shaped.paint(
-                                            point(px(text_x), px(text_y)),
-                                            px(font_size),
-                                            window,
-                                            cx,
-                                        );
-                                    }
+                                {
+                                    let text_width: f32 = shaped.width.into();
+                                    let text_x = nx - text_width / 2.0;
+                                    let text_y = ny + r + 4.0;
+                                    let _ = shaped.paint(
+                                        point(px(text_x), px(text_y)),
+                                        px(font_size),
+                                        window,
+                                        cx,
+                                    );
                                 }
                             }
                         }
-                    },
-                )
+                    }
+                })
                 .size_full(),
             )
     }

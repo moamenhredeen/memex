@@ -3,11 +3,8 @@ use std::ops::Range;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use crate::document::Document;
-use crate::plugin::PluginEngine;
-
-use super::commands::EditorCommand;
 use super::undo::{EditOp, Transaction, UndoHistory};
+use crate::document::Document;
 
 /// A cloneable handle to state shared by every window displaying a buffer.
 #[derive(Clone)]
@@ -18,7 +15,6 @@ pub struct EditorBuffer {
 struct EditorBufferInner {
     document: Document,
     history: UndoHistory,
-    plugins: PluginEngine,
     revision: u64,
 }
 
@@ -28,7 +24,6 @@ impl EditorBuffer {
             inner: Rc::new(RefCell::new(EditorBufferInner {
                 document,
                 history: UndoHistory::new(),
-                plugins: PluginEngine::new(),
                 revision: 0,
             })),
         }
@@ -134,19 +129,6 @@ impl EditorBuffer {
 
     pub fn last_transaction(&self) -> Option<Transaction> {
         self.inner.borrow().history.last_transaction()
-    }
-
-    pub fn run_plugin_command(
-        &self,
-        name: &str,
-        content: &str,
-        cursor: usize,
-        selection: (usize, usize),
-    ) -> Option<Vec<EditorCommand>> {
-        self.inner
-            .borrow_mut()
-            .plugins
-            .run_command(name, content, cursor, selection)
     }
 }
 

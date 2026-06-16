@@ -369,15 +369,14 @@ mod tests {
         std::fs::write(
             layout.notes.join("20260423T142301-k3n8.md"),
             "---\ntitle: First\ntags: [a]\n---\nbody with [[Other]] link #inline",
-        ).unwrap();
-        std::fs::write(
-            layout.notes.join("legacy-note.md"),
-            "no frontmatter here",
-        ).unwrap();
+        )
+        .unwrap();
+        std::fs::write(layout.notes.join("legacy-note.md"), "no frontmatter here").unwrap();
         std::fs::write(
             layout.journal.join("2026-04-23.md"),
             "---\ntitle: Daily\n---\ndaily log",
-        ).unwrap();
+        )
+        .unwrap();
         std::fs::write(layout.attachments.join("diagram.pdf"), "%PDF-fake").unwrap();
 
         let contents = scan(&layout).unwrap();
@@ -387,7 +386,11 @@ mod tests {
         assert_eq!(first.tags, vec!["a", "inline"]);
         assert_eq!(first.outgoing_links, vec!["Other"]);
 
-        let legacy = contents.notes.iter().find(|n| n.title == "legacy-note").unwrap();
+        let legacy = contents
+            .notes
+            .iter()
+            .find(|n| n.title == "legacy-note")
+            .unwrap();
         assert!(legacy.tags.is_empty());
 
         assert_eq!(contents.journal.len(), 1);

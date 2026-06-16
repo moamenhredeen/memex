@@ -16,7 +16,6 @@ gpui-component-assets = "0.5"
 mupdf = { git = "https://github.com/messense/mupdf-rs", rev = "7f0cb930884145f7b3f62451d178ab1fa432e565", default-features = false }
 notify = "7"
 notify-debouncer-full = "0.4"
-rhai = "1.24.0"
 pulldown-cmark = { version = "0.12", default-features = false, features = ["simd"] }
 ropey = "1"
 serde = { version = "1.0.228", features = ["derive"] }

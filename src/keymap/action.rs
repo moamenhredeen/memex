@@ -4,10 +4,46 @@ pub type CommandId = &'static str;
 pub type MotionId = &'static str;
 /// Identifies a registered operator.
 pub type OperatorId = &'static str;
-/// Identifies a layer.
-pub type LayerId = &'static str;
-/// Identifies a layer group (mutually exclusive layers).
-pub type LayerGroupId = &'static str;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VimMode {
+    Normal,
+    Insert,
+    Visual,
+    VisualLine,
+    Operator,
+}
+
+impl VimMode {
+    pub fn as_context_value(self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::Insert => "insert",
+            Self::Visual => "visual",
+            Self::VisualLine => "visual_line",
+            Self::Operator => "operator",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Normal => "NORMAL",
+            Self::Insert => "INSERT",
+            Self::Visual => "VISUAL",
+            Self::VisualLine => "V-LINE",
+            Self::Operator => "NORMAL",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TransientKind {
+    FindChar,
+    TilChar,
+    FindCharBack,
+    TilCharBack,
+    ReplaceChar,
+}
 
 /// What a key binding produces when matched.
 #[derive(Clone, Debug, PartialEq)]
@@ -20,13 +56,10 @@ pub enum Action {
     Operator(OperatorId),
     /// Insert the key's character at cursor.
     SelfInsert,
-    /// Switch to a different layer (deactivating others in the same group).
-    ActivateLayer(LayerId),
-    /// Push a transient layer that auto-pops after one key resolution.
-    /// The string is the transient layer id to push.
-    PushTransient(LayerId),
-    /// Call a Rhai script function by name.
-    Script(String),
+    /// Switch to a Vim mode.
+    SetVimMode(VimMode),
+    /// Wait for one arbitrary character for f/t/r style commands.
+    PushTransient(TransientKind),
     /// Execute multiple actions in sequence.
     Sequence(Vec<Action>),
     /// Consume the key but do nothing.
@@ -55,7 +88,12 @@ impl KeyCombo {
                 shift = true;
             }
         }
-        Self { key, ctrl, shift, alt }
+        Self {
+            key,
+            ctrl,
+            shift,
+            alt,
+        }
     }
 
     /// Parse from a string like "ctrl-z", "shift-left", "a", "enter".
@@ -77,7 +115,12 @@ impl KeyCombo {
                     _ => {
                         // Not a modifier — rest is the key name (e.g. "shift-left")
                         key = parts[i..].join("-");
-                        return Self { key, ctrl, shift, alt };
+                        return Self {
+                            key,
+                            ctrl,
+                            shift,
+                            alt,
+                        };
                     }
                 }
             } else {
@@ -94,7 +137,12 @@ impl KeyCombo {
             }
         }
 
-        Self { key, ctrl, shift, alt }
+        Self {
+            key,
+            ctrl,
+            shift,
+            alt,
+        }
     }
 }
 
@@ -119,14 +167,12 @@ pub struct OperatorOutput {
 #[derive(Clone)]
 pub enum MotionImpl {
     Native(NativeMotionFn),
-    Script(String),
 }
 
 impl std::fmt::Debug for MotionImpl {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             MotionImpl::Native(_) => write!(f, "MotionImpl::Native(fn)"),
-            MotionImpl::Script(s) => write!(f, "MotionImpl::Script({:?})", s),
         }
     }
 }
@@ -135,14 +181,12 @@ impl std::fmt::Debug for MotionImpl {
 #[derive(Clone)]
 pub enum OperatorImpl {
     Native(NativeOperatorFn),
-    Script(String),
 }
 
 impl std::fmt::Debug for OperatorImpl {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             OperatorImpl::Native(_) => write!(f, "OperatorImpl::Native(fn)"),
-            OperatorImpl::Script(s) => write!(f, "OperatorImpl::Script({:?})", s),
         }
     }
 }

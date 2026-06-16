@@ -200,8 +200,12 @@ impl PdfState {
     }
 
     pub fn update_text_selection(&mut self, page: usize, point: Point) -> Result<(), String> {
-        let Some(mut drag) = self.selection_drag else { return Ok(()); };
-        if drag.page != page { return Ok(()); }
+        let Some(mut drag) = self.selection_drag else {
+            return Ok(());
+        };
+        if drag.page != page {
+            return Ok(());
+        }
         drag.current = point;
         let now = Instant::now();
         let should_preview = now.duration_since(drag.last_preview_at) >= Duration::from_millis(24);
@@ -218,7 +222,9 @@ impl PdfState {
     }
 
     pub fn finish_text_selection(&mut self) -> Result<bool, String> {
-        let Some(drag) = self.selection_drag.take() else { return Ok(false); };
+        let Some(drag) = self.selection_drag.take() else {
+            return Ok(false);
+        };
         if (drag.start.x - drag.current.x).abs() < 2.0
             && (drag.start.y - drag.current.y).abs() < 2.0
         {
@@ -246,7 +252,11 @@ impl PdfState {
         if let Some(bounds) = self.rendered_page_bounds.get(&page) {
             let x = f32::from(position.x - bounds.origin.x);
             let y = f32::from(position.y - bounds.origin.y);
-            if x < 0.0 || y < 0.0 || x > f32::from(bounds.size.width) || y > f32::from(bounds.size.height) {
+            if x < 0.0
+                || y < 0.0
+                || x > f32::from(bounds.size.width)
+                || y > f32::from(bounds.size.height)
+            {
                 return None;
             }
             let scale = self.page_scale(page);
@@ -256,12 +266,17 @@ impl PdfState {
         let page_x = (viewport_width - page_width) / 2.0;
         let x = f32::from(position.x) - page_x;
         let y = f32::from(position.y) + f32::from(self.scroll_offset) - page_y;
-        if x < 0.0 || y < 0.0 || x > page_width || y > page_height { return None; }
+        if x < 0.0 || y < 0.0 || x > page_width || y > page_height {
+            return None;
+        }
         let scale = self.page_scale(page);
         Some(Point::new(x / scale, y / scale))
     }
 
-    pub fn set_rendered_page_bounds(&mut self, bounds: impl IntoIterator<Item = (usize, Bounds<Pixels>)>) {
+    pub fn set_rendered_page_bounds(
+        &mut self,
+        bounds: impl IntoIterator<Item = (usize, Bounds<Pixels>)>,
+    ) {
         self.rendered_page_bounds.clear();
         self.rendered_page_bounds.extend(bounds);
     }
@@ -272,31 +287,50 @@ impl PdfState {
         position: gpui::Point<Pixels>,
     ) -> Option<(usize, Point)> {
         self.page_layouts.iter().enumerate().find_map(|(page, _)| {
-            self.screen_to_page_point(page, viewport_width, position).map(|point| (page, point))
+            self.screen_to_page_point(page, viewport_width, position)
+                .map(|point| (page, point))
         })
     }
 
     pub fn hit_test_link_point(&self, page: usize, point: Point) -> Option<usize> {
-        self.page_links.get(&page)?.iter()
+        self.page_links
+            .get(&page)?
+            .iter()
             .find(|link| link.bounds.contains(point.x, point.y))
             .map(|link| link.target_page)
     }
 
     pub fn selection_quads_for_page(&self, page: usize) -> Vec<Quad> {
-        self.text_selection.as_ref().filter(|s| s.page == page)
-            .map(|s| s.quads.clone()).unwrap_or_default()
+        self.text_selection
+            .as_ref()
+            .filter(|s| s.page == page)
+            .map(|s| s.quads.clone())
+            .unwrap_or_default()
     }
 
     pub fn selected_annotation_quads_for_page(&self, page: usize) -> Vec<Quad> {
-        let Some(selected) = self.selected_annotation else { return Vec::new(); };
-        self.annotations.iter().find(|a| (a.page, a.xref) == selected && a.page == page)
-            .map(|a| a.quads.clone()).unwrap_or_default()
+        let Some(selected) = self.selected_annotation else {
+            return Vec::new();
+        };
+        self.annotations
+            .iter()
+            .find(|a| (a.page, a.xref) == selected && a.page == page)
+            .map(|a| a.quads.clone())
+            .unwrap_or_default()
     }
 
     fn hit_test_annotation(&self, page: usize, point: Point) -> Option<(usize, i32)> {
-        self.annotations.iter().rev().find(|annotation| {
-            annotation.page == page && annotation.quads.iter().any(|q| Rect::from(q.clone()).contains(point.x, point.y))
-        }).map(|annotation| (annotation.page, annotation.xref))
+        self.annotations
+            .iter()
+            .rev()
+            .find(|annotation| {
+                annotation.page == page
+                    && annotation
+                        .quads
+                        .iter()
+                        .any(|q| Rect::from(q.clone()).contains(point.x, point.y))
+            })
+            .map(|annotation| (annotation.page, annotation.xref))
     }
 
     fn reload_annotations(&mut self) -> Result<(), String> {
@@ -310,20 +344,41 @@ impl PdfState {
         let selection = self.text_selection.clone().ok_or("Select PDF text first")?;
         let id = format!("memex:{}", crate::vault::id::generate());
         mutate_pdf_atomically(&self.path, |doc| {
-            let mut page = doc.load_pdf_page(selection.page as i32).map_err(err_string)?;
-            let mut annotation = page.add_highlight_annotation(selection.quads.clone()).map_err(err_string)?;
+            let mut page = doc
+                .load_pdf_page(selection.page as i32)
+                .map_err(err_string)?;
+            let mut annotation = page
+                .add_highlight_annotation(selection.quads.clone())
+                .map_err(err_string)?;
             annotation.set_author("Memex").map_err(err_string)?;
-            annotation.set_contents(&selection.text).map_err(err_string)?;
-            annotation.set_color(AnnotationColor::Rgb { red: 1.0, green: 1.0, blue: 0.0 }).map_err(err_string)?;
+            annotation
+                .set_contents(&selection.text)
+                .map_err(err_string)?;
+            annotation
+                .set_color(AnnotationColor::Rgb {
+                    red: 1.0,
+                    green: 1.0,
+                    blue: 0.0,
+                })
+                .map_err(err_string)?;
             annotation.set_opacity(0.35).map_err(err_string)?;
-            annotation.set_flags(AnnotationFlags::IS_PRINT).map_err(err_string)?;
-            annotation.object().dict_put("NM", PdfObject::new_string(&id).map_err(err_string)?).map_err(err_string)?;
+            annotation
+                .set_flags(AnnotationFlags::IS_PRINT)
+                .map_err(err_string)?;
+            annotation
+                .object()
+                .dict_put("NM", PdfObject::new_string(&id).map_err(err_string)?)
+                .map_err(err_string)?;
             annotation.update().map_err(err_string)?;
             page.update().map_err(err_string)?;
             Ok(())
         })?;
         self.reload_annotations()?;
-        if let Some(annotation) = self.annotations.iter().find(|a| a.id.as_deref() == Some(&id)) {
+        if let Some(annotation) = self
+            .annotations
+            .iter()
+            .find(|a| a.id.as_deref() == Some(&id))
+        {
             self.selected_annotation = Some((annotation.page, annotation.xref));
         }
         self.text_selection = None;
@@ -331,10 +386,14 @@ impl PdfState {
     }
 
     fn delete_selected_annotation(&mut self) -> Result<(), String> {
-        let (page_index, xref) = self.selected_annotation.ok_or("Select a PDF annotation first")?;
+        let (page_index, xref) = self
+            .selected_annotation
+            .ok_or("Select a PDF annotation first")?;
         mutate_pdf_atomically(&self.path, |doc| {
             let mut page = doc.load_pdf_page(page_index as i32).map_err(err_string)?;
-            let annotation = page.annotations().find(|a| a.xref().ok() == Some(xref))
+            let annotation = page
+                .annotations()
+                .find(|a| a.xref().ok() == Some(xref))
                 .ok_or("Annotation no longer exists")?;
             page.delete_annotation(annotation).map_err(err_string)?;
             page.update().map_err(err_string)?;
@@ -346,36 +405,67 @@ impl PdfState {
     }
 
     fn selected_annotation_link(&mut self) -> Result<Option<String>, String> {
-        let Some((page_index, xref)) = self.selected_annotation else { return Ok(None); };
-        let mut info = self.annotations.iter().find(|a| (a.page, a.xref) == (page_index, xref))
-            .cloned().ok_or("Annotation no longer exists")?;
+        let Some((page_index, xref)) = self.selected_annotation else {
+            return Ok(None);
+        };
+        let mut info = self
+            .annotations
+            .iter()
+            .find(|a| (a.page, a.xref) == (page_index, xref))
+            .cloned()
+            .ok_or("Annotation no longer exists")?;
         if info.id.is_none() {
             let id = format!("memex:{}", crate::vault::id::generate());
             mutate_pdf_atomically(&self.path, |doc| {
                 let page = doc.load_pdf_page(page_index as i32).map_err(err_string)?;
-                let annotation = page.annotations().find(|a| a.xref().ok() == Some(xref))
+                let annotation = page
+                    .annotations()
+                    .find(|a| a.xref().ok() == Some(xref))
                     .ok_or("Annotation no longer exists")?;
-                annotation.object().dict_put("NM", PdfObject::new_string(&id).map_err(err_string)?).map_err(err_string)?;
+                annotation
+                    .object()
+                    .dict_put("NM", PdfObject::new_string(&id).map_err(err_string)?)
+                    .map_err(err_string)?;
                 Ok(())
             })?;
             self.reload_annotations()?;
-            self.selected_annotation = self.annotations.iter()
+            self.selected_annotation = self
+                .annotations
+                .iter()
                 .find(|annotation| annotation.id.as_deref() == Some(&id))
                 .map(|annotation| (annotation.page, annotation.xref));
             info.id = Some(id);
         }
-        let filename = self.path.file_name().and_then(|n| n.to_str()).unwrap_or("file.pdf");
+        let filename = self
+            .path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("file.pdf");
         let alias = annotation_alias(&info.contents);
-        Ok(Some(format!("[[{}#annotation={}|{}]]", filename, info.id.unwrap(), alias)))
+        Ok(Some(format!(
+            "[[{}#annotation={}|{}]]",
+            filename,
+            info.id.unwrap(),
+            alias
+        )))
     }
 
     pub fn goto_annotation(&mut self, id: &str) -> bool {
-        let Some(annotation) = self.annotations.iter().find(|a| a.id.as_deref() == Some(id)) else { return false; };
+        let Some(annotation) = self
+            .annotations
+            .iter()
+            .find(|a| a.id.as_deref() == Some(id))
+        else {
+            return false;
+        };
         self.selected_annotation = Some((annotation.page, annotation.xref));
-        let annotation_y = annotation.quads.first()
+        let annotation_y = annotation
+            .quads
+            .first()
             .map(|quad| Rect::from(quad.clone()).y0 * self.page_scale(annotation.page))
             .unwrap_or(0.0);
-        self.scroll_offset = px((self.page_layouts[annotation.page].y_offset + annotation_y - PADDING_Y).max(0.0));
+        self.scroll_offset =
+            px((self.page_layouts[annotation.page].y_offset + annotation_y - PADDING_Y).max(0.0));
         true
     }
 
@@ -388,9 +478,7 @@ impl PdfState {
         cx.spawn(async move |this, cx| {
             let texts = cx
                 .background_executor()
-                .spawn(async move {
-                    extract_all_text(&raw_bytes, page_count)
-                })
+                .spawn(async move { extract_all_text(&raw_bytes, page_count) })
                 .await;
 
             this.update(cx, |state, cx| {
@@ -437,11 +525,7 @@ impl PdfState {
     }
 
     /// Recursively flatten the outline tree into a flat list with depth levels.
-    fn flatten_outlines(
-        outlines: &[mupdf::Outline],
-        level: usize,
-        entries: &mut Vec<TocEntry>,
-    ) {
+    fn flatten_outlines(outlines: &[mupdf::Outline], level: usize, entries: &mut Vec<TocEntry>) {
         for outline in outlines {
             let page = outline
                 .dest
@@ -566,14 +650,14 @@ impl PdfState {
             cx.spawn(async move |this, cx| {
                 let result = cx
                     .background_executor()
-                    .spawn(async move {
-                        render_page_background(&raw_bytes, page_index, zoom)
-                    })
+                    .spawn(async move { render_page_background(&raw_bytes, page_index, zoom) })
                     .await;
 
                 this.update(cx, |state, cx| {
                     state.pending_renders.remove(&page_index);
-                    if state.render_generation == generation && let Some(rendered) = result {
+                    if state.render_generation == generation
+                        && let Some(rendered) = result
+                    {
                         state.page_cache.insert(page_index, rendered);
                         cx.notify();
                     }
@@ -588,23 +672,30 @@ impl PdfState {
     /// images until their replacements are ready.
     fn refresh_render_pages(&mut self, pages: &[usize], cx: &mut Context<Self>) {
         for &page_index in pages {
-            if page_index >= self.page_count { continue; }
+            if page_index >= self.page_count {
+                continue;
+            }
             self.pending_renders.insert(page_index);
             let raw_bytes = self.raw_bytes.clone();
             let zoom = self.zoom;
             let generation = self.render_generation;
             cx.spawn(async move |this, cx| {
-                let result = cx.background_executor()
+                let result = cx
+                    .background_executor()
                     .spawn(async move { render_page_background(&raw_bytes, page_index, zoom) })
                     .await;
                 this.update(cx, |state, cx| {
                     state.pending_renders.remove(&page_index);
-                    if state.render_generation == generation && let Some(rendered) = result {
+                    if state.render_generation == generation
+                        && let Some(rendered) = result
+                    {
                         state.page_cache.insert(page_index, rendered);
                         cx.notify();
                     }
-                }).ok();
-            }).detach();
+                })
+                .ok();
+            })
+            .detach();
         }
     }
 
@@ -612,7 +703,8 @@ impl PdfState {
     pub fn evict_distant_pages(&mut self, visible_first: usize, visible_last: usize) {
         let keep_start = visible_first.saturating_sub(BUFFER_PAGES * 2);
         let keep_end = (visible_last + BUFFER_PAGES * 2).min(self.page_count);
-        self.page_cache.retain(|&idx, _| idx >= keep_start && idx < keep_end);
+        self.page_cache
+            .retain(|&idx, _| idx >= keep_start && idx < keep_end);
     }
 
     /// Invalidate cached pages and recompute layouts (e.g., after zoom change).
@@ -621,9 +713,7 @@ impl PdfState {
         self.page_cache.clear();
         self.pending_renders.clear();
         if let Ok(doc) = Document::from_bytes(&self.raw_bytes, "") {
-            if let Ok((layouts, total)) =
-                Self::compute_layouts(&doc, self.page_count, self.zoom)
-            {
+            if let Ok((layouts, total)) = Self::compute_layouts(&doc, self.page_count, self.zoom) {
                 self.page_layouts = layouts;
                 self.total_height = total;
             }
@@ -651,7 +741,9 @@ impl PdfState {
 
     /// Compute zoom factor to fit page width to the given viewport width.
     pub fn fit_width(&mut self, viewport_width: f32) {
-        if self.page_count == 0 { return; }
+        if self.page_count == 0 {
+            return;
+        }
         // The rendering uses BASE_WIDTH * zoom as the target width
         // So zoom = viewport_width / BASE_WIDTH (with some padding)
         let target = viewport_width - 40.0; // leave some margin
@@ -661,7 +753,9 @@ impl PdfState {
 
     /// Compute zoom factor to fit entire page in the given viewport.
     pub fn fit_page(&mut self, viewport_width: f32, viewport_height: f32) {
-        if self.page_count == 0 { return; }
+        if self.page_count == 0 {
+            return;
+        }
         if let Ok(doc) = Document::from_bytes(&self.raw_bytes, "") {
             if let Ok(page) = doc.load_page(0) {
                 if let Ok(bounds) = page.bounds() {
@@ -709,9 +803,7 @@ impl PdfState {
             cx.spawn(async move |this, cx| {
                 let hits = cx
                     .background_executor()
-                    .spawn(async move {
-                        search_quads_for_pages(&raw_bytes, &match_pages, &needle)
-                    })
+                    .spawn(async move { search_quads_for_pages(&raw_bytes, &match_pages, &needle) })
                     .await;
 
                 this.update(cx, |state, cx| {
@@ -741,13 +833,13 @@ impl PdfState {
                 let still_current = this
                     .update(cx, |state, _| state.search_generation == search_gen)
                     .unwrap_or(false);
-                if !still_current { return; }
+                if !still_current {
+                    return;
+                }
 
                 let (hits, previews) = cx
                     .background_executor()
-                    .spawn(async move {
-                        search_background(&raw_bytes, page_count, &needle)
-                    })
+                    .spawn(async move { search_background(&raw_bytes, page_count, &needle) })
                     .await;
 
                 this.update(cx, |state, cx| {
@@ -768,14 +860,18 @@ impl PdfState {
 
     /// Jump to the next search match, wrapping around.
     pub fn search_next(&mut self) {
-        if self.search_hits.is_empty() { return; }
+        if self.search_hits.is_empty() {
+            return;
+        }
         self.search_current = (self.search_current + 1) % self.search_hits.len();
         self.scroll_to_current_match();
     }
 
     /// Jump to the previous search match, wrapping around.
     pub fn search_prev(&mut self) {
-        if self.search_hits.is_empty() { return; }
+        if self.search_hits.is_empty() {
+            return;
+        }
         if self.search_current == 0 {
             self.search_current = self.search_hits.len() - 1;
         } else {
@@ -803,7 +899,8 @@ impl PdfState {
 
     /// Get search hits for a specific page (for rendering highlights).
     pub fn search_hits_for_page(&self, page_index: usize) -> Vec<(usize, &SearchHit)> {
-        self.search_hits.iter()
+        self.search_hits
+            .iter()
             .enumerate()
             .filter(|(_, h)| h.page == page_index)
             .collect()
@@ -1056,18 +1153,16 @@ impl PdfState {
                 let mode = if self.spread_mode { "on" } else { "off" };
                 vec![ItemAction::SetMessage(format!("Two-page spread {}", mode))]
             }
-            "pdf-highlight-selection" => {
-                match self.create_highlight() {
-                    Ok(_) => {
-                        if let Some((page, _)) = self.selected_annotation {
-                            self.refresh_render_pages(&[page], cx);
-                        }
-                        cx.notify();
-                        vec![ItemAction::SetMessage("PDF highlight saved".into())]
+            "pdf-highlight-selection" => match self.create_highlight() {
+                Ok(_) => {
+                    if let Some((page, _)) = self.selected_annotation {
+                        self.refresh_render_pages(&[page], cx);
                     }
-                    Err(error) => vec![ItemAction::SetMessage(error)],
+                    cx.notify();
+                    vec![ItemAction::SetMessage("PDF highlight saved".into())]
                 }
-            }
+                Err(error) => vec![ItemAction::SetMessage(error)],
+            },
             "pdf-delete-annotation" => {
                 let page = self.selected_annotation.map(|(page, _)| page);
                 match self.delete_selected_annotation() {
@@ -1086,21 +1181,26 @@ impl PdfState {
                 cx.notify();
                 vec![]
             }
-            "pdf-copy-link" => {
-                match self.selected_annotation_link() {
-                    Ok(Some(link)) => vec![
+            "pdf-copy-link" => match self.selected_annotation_link() {
+                Ok(Some(link)) => vec![
+                    ItemAction::Yank(link.clone()),
+                    ItemAction::SetMessage(format!("Copied: {}", link)),
+                ],
+                Ok(None) => {
+                    let (first, _) = self.visible_range(vh);
+                    let filename = self
+                        .path
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("file.pdf");
+                    let link = format!("[[{}#page={}]]", filename, first + 1);
+                    vec![
                         ItemAction::Yank(link.clone()),
                         ItemAction::SetMessage(format!("Copied: {}", link)),
-                    ],
-                    Ok(None) => {
-                        let (first, _) = self.visible_range(vh);
-                        let filename = self.path.file_name().and_then(|n| n.to_str()).unwrap_or("file.pdf");
-                        let link = format!("[[{}#page={}]]", filename, first + 1);
-                        vec![ItemAction::Yank(link.clone()), ItemAction::SetMessage(format!("Copied: {}", link))]
-                    }
-                    Err(error) => vec![ItemAction::SetMessage(error)],
+                    ]
                 }
-            }
+                Err(error) => vec![ItemAction::SetMessage(error)],
+            },
             "pdf-extract-text" => {
                 let (first, _) = self.visible_range(vh);
                 match self.extract_page_text(first) {
@@ -1175,7 +1275,11 @@ impl PdfState {
                 let hits = self.search_hits.len();
                 let cur = self.search_current;
                 if hits > 0 {
-                    vec![ItemAction::SetMessage(format!("Match {}/{}", cur + 1, hits))]
+                    vec![ItemAction::SetMessage(format!(
+                        "Match {}/{}",
+                        cur + 1,
+                        hits
+                    ))]
                 } else {
                     vec![]
                 }
@@ -1186,7 +1290,11 @@ impl PdfState {
                 let hits = self.search_hits.len();
                 let cur = self.search_current;
                 if hits > 0 {
-                    vec![ItemAction::SetMessage(format!("Match {}/{}", cur + 1, hits))]
+                    vec![ItemAction::SetMessage(format!(
+                        "Match {}/{}",
+                        cur + 1,
+                        hits
+                    ))]
                 } else {
                     vec![]
                 }
@@ -1225,9 +1333,7 @@ impl PdfState {
                 vec![ItemAction::Dismiss]
             }
             "pdf-goto-page" => {
-                let page_str = candidate
-                    .map(|c| c.data.as_str())
-                    .unwrap_or(input);
+                let page_str = candidate.map(|c| c.data.as_str()).unwrap_or(input);
                 if let Ok(page_num) = page_str.trim().parse::<usize>() {
                     self.goto_page_number(page_num);
                     cx.notify();
@@ -1288,7 +1394,9 @@ impl PdfState {
         }
 
         let matcher = SkimMatcherV2::default();
-        let mut scored: Vec<(i64, &TocEntry)> = self.toc.iter()
+        let mut scored: Vec<(i64, &TocEntry)> = self
+            .toc
+            .iter()
             .filter_map(|entry| {
                 if query.is_empty() {
                     Some((0, entry))
@@ -1302,7 +1410,8 @@ impl PdfState {
             scored.sort_by(|a, b| b.0.cmp(&a.0));
         }
 
-        scored.into_iter()
+        scored
+            .into_iter()
             .take(Self::MAX_CANDIDATES)
             .map(|(_, entry)| {
                 let indent = "  ".repeat(entry.level);
@@ -1335,31 +1444,48 @@ impl PdfState {
     }
 
     fn search_candidates(&self) -> Vec<Candidate> {
-        self.search_preview.iter().map(|(page, snippet)| {
-            Candidate {
+        self.search_preview
+            .iter()
+            .map(|(page, snippet)| Candidate {
                 label: format!("p{}: {}", page + 1, snippet),
                 detail: None,
                 is_action: false,
                 data: page.to_string(),
-            }
-        }).collect()
+            })
+            .collect()
     }
 }
 
 impl Scrollable for PdfState {
-    fn total_height(&self) -> f32 { self.total_height }
-    fn scroll_offset(&self) -> Pixels { self.scroll_offset }
-    fn set_scroll_offset(&mut self, offset: Pixels) { self.scroll_offset = offset; }
-    fn drag_state(&self) -> Option<DragState> { self.drag_state }
-    fn set_drag_state(&mut self, drag: Option<DragState>) { self.drag_state = drag; }
+    fn total_height(&self) -> f32 {
+        self.total_height
+    }
+    fn scroll_offset(&self) -> Pixels {
+        self.scroll_offset
+    }
+    fn set_scroll_offset(&mut self, offset: Pixels) {
+        self.scroll_offset = offset;
+    }
+    fn drag_state(&self) -> Option<DragState> {
+        self.drag_state
+    }
+    fn set_drag_state(&mut self, drag: Option<DragState>) {
+        self.drag_state = drag;
+    }
 }
 
-fn err_string(error: mupdf::Error) -> String { error.to_string() }
+fn err_string(error: mupdf::Error) -> String {
+    error.to_string()
+}
 
 fn annotation_alias(contents: &str) -> String {
     let compact = contents.split_whitespace().collect::<Vec<_>>().join(" ");
     let escaped = compact.replace('|', "-").replace("]]", "] ]");
-    if escaped.is_empty() { "PDF highlight".into() } else { escaped.chars().take(120).collect() }
+    if escaped.is_empty() {
+        "PDF highlight".into()
+    } else {
+        escaped.chars().take(120).collect()
+    }
 }
 
 fn rects_intersect(a: Rect, b: Rect) -> bool {
@@ -1374,36 +1500,60 @@ fn extract_selection(
 ) -> Result<Option<PdfTextSelection>, String> {
     let doc = Document::from_bytes(raw_bytes, "").map_err(err_string)?;
     let page = doc.load_page(page_index as i32).map_err(err_string)?;
-    let mut text_page = page.to_text_page(mupdf::TextPageFlags::empty()).map_err(err_string)?;
+    let mut text_page = page
+        .to_text_page(mupdf::TextPageFlags::empty())
+        .map_err(err_string)?;
     let mut capacity = 64usize;
     let quads = loop {
         let buffer = vec![Quad::from(Rect::default()); capacity];
-        let count = text_page.highlight_selection(start, end, &buffer).map_err(err_string)?;
-        if count <= 0 { return Ok(None); }
+        let count = text_page
+            .highlight_selection(start, end, &buffer)
+            .map_err(err_string)?;
+        if count <= 0 {
+            return Ok(None);
+        }
         if count as usize <= capacity {
             break buffer.into_iter().take(count as usize).collect::<Vec<_>>();
         }
         capacity = (count as usize).next_power_of_two().min(4096);
-        if capacity >= 4096 { return Err("PDF text selection is too large".into()); }
+        if capacity >= 4096 {
+            return Err("PDF text selection is too large".into());
+        }
     };
 
     let mut lines = Vec::new();
     for block in text_page.blocks() {
         for line in block.lines() {
-            let text: String = line.chars().filter_map(|ch| {
-                let rect = Rect::from(ch.quad());
-                quads.iter().any(|q| rects_intersect(rect, Rect::from(q.clone())))
-                    .then(|| ch.char()).flatten()
-            }).collect();
-            if !text.is_empty() { lines.push(text); }
+            let text: String = line
+                .chars()
+                .filter_map(|ch| {
+                    let rect = Rect::from(ch.quad());
+                    quads
+                        .iter()
+                        .any(|q| rects_intersect(rect, Rect::from(q.clone())))
+                        .then(|| ch.char())
+                        .flatten()
+                })
+                .collect();
+            if !text.is_empty() {
+                lines.push(text);
+            }
         }
     }
     let text = lines.join("\n").trim().to_string();
-    Ok(Some(PdfTextSelection { page: page_index, quads, text }))
+    Ok(Some(PdfTextSelection {
+        page: page_index,
+        quads,
+        text,
+    }))
 }
 
 fn annotation_id(annotation: &mupdf::pdf::PdfAnnotation) -> Option<String> {
-    annotation.object().get_dict("NM").ok().flatten()
+    annotation
+        .object()
+        .get_dict("NM")
+        .ok()
+        .flatten()
         .and_then(|object| object.as_string().ok().map(str::to_owned))
 }
 
@@ -1414,13 +1564,20 @@ fn load_annotations(path: &Path) -> Result<Vec<PdfAnnotationInfo>, String> {
     for page_index in 0..page_count {
         let page = doc.load_pdf_page(page_index).map_err(err_string)?;
         for annotation in page.annotations() {
-            if annotation.r#type().ok() != Some(PdfAnnotationType::Highlight) { continue; }
+            if annotation.r#type().ok() != Some(PdfAnnotationType::Highlight) {
+                continue;
+            }
             annotations.push(PdfAnnotationInfo {
                 page: page_index as usize,
                 xref: annotation.xref().map_err(err_string)?,
                 id: annotation_id(&annotation),
                 quads: annotation.quad_points().unwrap_or_default(),
-                contents: annotation.contents().ok().flatten().unwrap_or_default().to_string(),
+                contents: annotation
+                    .contents()
+                    .ok()
+                    .flatten()
+                    .unwrap_or_default()
+                    .to_string(),
             });
         }
     }
@@ -1435,10 +1592,20 @@ fn mutate_pdf_atomically(
     mutate(&mut doc)?;
     let metadata = fs::metadata(path).map_err(|e| e.to_string())?;
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("document.pdf");
-    let temp = parent.join(format!(".{}.memex-{}.tmp", name, crate::vault::id::generate()));
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("document.pdf");
+    let temp = parent.join(format!(
+        ".{}.memex-{}.tmp",
+        name,
+        crate::vault::id::generate()
+    ));
     let result = (|| {
-        let mut file = OpenOptions::new().write(true).create_new(true).open(&temp)
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)
             .map_err(|e| e.to_string())?;
         doc.write_to(&mut file).map_err(err_string)?;
         file.flush().map_err(|e| e.to_string())?;
@@ -1447,7 +1614,9 @@ fn mutate_pdf_atomically(
         fs::rename(&temp, path).map_err(|e| e.to_string())?;
         Ok(())
     })();
-    if result.is_err() { let _ = fs::remove_file(&temp); }
+    if result.is_err() {
+        let _ = fs::remove_file(&temp);
+    }
     result
 }
 
@@ -1499,8 +1668,12 @@ fn search_text_cache(
                 let mut snippet: String = text_lower[ctx_start..ctx_end]
                     .replace('\n', " ")
                     .replace('\r', "");
-                if ctx_start > 0 { snippet.insert_str(0, "…"); }
-                if ctx_end < text_lower.len() { snippet.push('…'); }
+                if ctx_start > 0 {
+                    snippet.insert_str(0, "…");
+                }
+                if ctx_end < text_lower.len() {
+                    snippet.push('…');
+                }
                 previews.push((page_idx, snippet));
             }
             search_from = search_from + pos + query_lower.len();
@@ -1516,11 +1689,7 @@ fn search_text_cache(
 }
 
 /// Get highlight quads only for pages known to have matches.
-fn search_quads_for_pages(
-    raw_bytes: &[u8],
-    pages: &[usize],
-    query: &str,
-) -> Vec<SearchHit> {
+fn search_quads_for_pages(raw_bytes: &[u8], pages: &[usize], query: &str) -> Vec<SearchHit> {
     let mut hits = Vec::new();
     let doc = match Document::from_bytes(raw_bytes, "") {
         Ok(d) => d,
@@ -1530,7 +1699,10 @@ fn search_quads_for_pages(
         if let Ok(page) = doc.load_page(page_idx as i32) {
             if let Ok(quads) = page.search(query, 100) {
                 for quad in quads {
-                    hits.push(SearchHit { page: page_idx, quad });
+                    hits.push(SearchHit {
+                        page: page_idx,
+                        quad,
+                    });
                 }
             }
         }
@@ -1540,17 +1712,25 @@ fn search_quads_for_pages(
 
 /// Snap a byte index to a valid char boundary (rounding down).
 fn snap_floor(s: &str, idx: usize) -> usize {
-    if idx >= s.len() { return s.len(); }
+    if idx >= s.len() {
+        return s.len();
+    }
     let mut i = idx;
-    while i > 0 && !s.is_char_boundary(i) { i -= 1; }
+    while i > 0 && !s.is_char_boundary(i) {
+        i -= 1;
+    }
     i
 }
 
 /// Snap a byte index to a valid char boundary (rounding up).
 fn snap_ceil(s: &str, idx: usize) -> usize {
-    if idx >= s.len() { return s.len(); }
+    if idx >= s.len() {
+        return s.len();
+    }
     let mut i = idx;
-    while i < s.len() && !s.is_char_boundary(i) { i += 1; }
+    while i < s.len() && !s.is_char_boundary(i) {
+        i += 1;
+    }
     i
 }
 
@@ -1581,7 +1761,10 @@ fn search_background(
         // Collect highlight quads
         if let Ok(quads) = page.search(query, 100) {
             for quad in quads {
-                hits.push(SearchHit { page: page_idx, quad });
+                hits.push(SearchHit {
+                    page: page_idx,
+                    quad,
+                });
             }
         }
 
@@ -1592,7 +1775,9 @@ fn search_background(
                     let text_lower = text.to_lowercase();
                     let mut search_from = 0;
                     while let Some(pos) = text_lower[search_from..].find(&query_lower) {
-                        if previews.len() >= max_previews { break; }
+                        if previews.len() >= max_previews {
+                            break;
+                        }
                         let abs_pos = search_from + pos;
                         let ctx_start = snap_floor(&text_lower, abs_pos.saturating_sub(40));
                         let ctx_end = snap_ceil(
@@ -1602,8 +1787,12 @@ fn search_background(
                         let mut snippet: String = text_lower[ctx_start..ctx_end]
                             .replace('\n', " ")
                             .replace('\r', "");
-                        if ctx_start > 0 { snippet.insert_str(0, "…"); }
-                        if ctx_end < text_lower.len() { snippet.push('…'); }
+                        if ctx_start > 0 {
+                            snippet.insert_str(0, "…");
+                        }
+                        if ctx_end < text_lower.len() {
+                            snippet.push('…');
+                        }
                         previews.push((page_idx, snippet));
                         search_from = abs_pos + query_lower.len();
                     }
@@ -1617,11 +1806,7 @@ fn search_background(
 
 /// Render a single page on a background thread. Standalone function (not on PdfState)
 /// because mupdf::Document is not Send — we create it fresh from shared bytes.
-fn render_page_background(
-    raw_bytes: &[u8],
-    page_index: usize,
-    zoom: f32,
-) -> Option<RenderedPage> {
+fn render_page_background(raw_bytes: &[u8], page_index: usize, zoom: f32) -> Option<RenderedPage> {
     let doc = Document::from_bytes(raw_bytes, "").ok()?;
     let page = doc.load_page(page_index as i32).ok()?;
     let bounds = page.bounds().ok()?;
@@ -1629,12 +1814,16 @@ fn render_page_background(
     let scale = (BASE_WIDTH * zoom) / bounds.width();
     let ctm = MuMatrix::new_scale(scale, scale);
 
-    let pixmap = page.to_pixmap(&ctm, &Colorspace::device_rgb(), false, true).ok()?;
+    let pixmap = page
+        .to_pixmap(&ctm, &Colorspace::device_rgb(), false, true)
+        .ok()?;
     let width = pixmap.width();
     let height = pixmap.height();
 
     let mut png_buf = Cursor::new(Vec::new());
-    pixmap.write_to(&mut png_buf, mupdf::ImageFormat::PNG).ok()?;
+    pixmap
+        .write_to(&mut png_buf, mupdf::ImageFormat::PNG)
+        .ok()?;
 
     Some(RenderedPage {
         image: Arc::new(gpui::Image::from_bytes(
@@ -1654,12 +1843,16 @@ mod annotation_tests {
 
     #[test]
     fn annotation_alias_is_safe_for_wikilinks() {
-        assert_eq!(annotation_alias("  selected   text | more ]]  "), "selected text - more ] ]");
+        assert_eq!(
+            annotation_alias("  selected   text | more ]]  "),
+            "selected text - more ] ]"
+        );
     }
 
     #[test]
     fn native_highlight_roundtrips_through_atomic_save() {
-        let path = std::env::temp_dir().join(format!("memex-pdf-{}.pdf", crate::vault::id::generate()));
+        let path =
+            std::env::temp_dir().join(format!("memex-pdf-{}.pdf", crate::vault::id::generate()));
         let mut doc = PdfDocument::new();
         doc.new_page(mupdf::Size::new(300.0, 300.0)).unwrap();
         let mut file = std::fs::File::create(&path).unwrap();
@@ -1668,12 +1861,23 @@ mod annotation_tests {
 
         mutate_pdf_atomically(&path, |doc| {
             let mut page = doc.load_pdf_page(0).map_err(err_string)?;
-            let mut annotation = page.add_highlight_annotation(Quad::from(Rect::new(10.0, 20.0, 80.0, 35.0))).map_err(err_string)?;
-            annotation.set_contents("selected text").map_err(err_string)?;
-            annotation.object().dict_put("NM", PdfObject::new_string("memex:test").map_err(err_string)?).map_err(err_string)?;
+            let mut annotation = page
+                .add_highlight_annotation(Quad::from(Rect::new(10.0, 20.0, 80.0, 35.0)))
+                .map_err(err_string)?;
+            annotation
+                .set_contents("selected text")
+                .map_err(err_string)?;
+            annotation
+                .object()
+                .dict_put(
+                    "NM",
+                    PdfObject::new_string("memex:test").map_err(err_string)?,
+                )
+                .map_err(err_string)?;
             annotation.update().map_err(err_string)?;
             Ok(())
-        }).unwrap();
+        })
+        .unwrap();
 
         let annotations = load_annotations(&path).unwrap();
         assert_eq!(annotations.len(), 1);

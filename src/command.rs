@@ -12,4 +12,3 @@ pub struct Command {
     /// Optional keybinding hint shown in the palette.
     pub binding: Option<&'static str>,
 }
-

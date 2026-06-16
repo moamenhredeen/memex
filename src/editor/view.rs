@@ -1,9 +1,10 @@
 use gpui::*;
 
-use super::commands::EditorCommand;
+use super::code_edit;
 use super::element::EditorElement;
+use super::outline;
 use super::{EditorEvent, EditorState, ShiftTabAction, TabAction};
-use crate::keymap::{Action, KeymapSystem, ResolvedKey};
+use crate::keymap::{Action, KeyContext, KeymapSystem, ResolvedKey};
 use crate::pane::{ItemAction, VimSnapshot};
 use crate::theme::Theme;
 
@@ -47,7 +48,7 @@ impl EditorView {
         let focus_handle = state.read(cx).focus_handle.clone();
         let _observe_state = cx.observe(&state, |_, _, cx| cx.notify());
         let keymap = KeymapSystem::new(true);
-        let mut this = Self {
+        let this = Self {
             state,
             keymap,
             focus_handle,
@@ -84,6 +85,29 @@ impl EditorView {
             .update(cx, |s, _cx| s.sync_vim_flags(vim, insert));
     }
 
+    fn key_context(&self, cx: &mut Context<Self>) -> KeyContext {
+        let mut context = KeyContext::new();
+        context.add("Editor");
+        context.set("vim_mode", self.keymap.active_vim_mode());
+
+        let state = self.state.read(cx);
+        let content = state.content();
+        let cursor = state.cursor_offset();
+        if code_edit::is_inside_code_block(&content, cursor) {
+            context.add("code_block");
+        }
+        if state.cursor_is_in_table() {
+            context.add("table");
+        }
+        let line = state.display_map.line_for_offset(cursor);
+        let headings = outline::extract_headings(&state.display_map.line_kinds());
+        if outline::heading_for_line(line, &headings).is_some() {
+            context.add("heading");
+        }
+
+        context
+    }
+
     /// Toggle vim mode on or off.
     pub fn set_vim_enabled(&mut self, enabled: bool, cx: &mut Context<Self>) {
         self.keymap.set_vim_enabled(enabled);
@@ -104,17 +128,18 @@ impl EditorView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let resolved = self.keymap.resolve_key(key, ctrl, shift, alt);
+        let context = self.key_context(cx);
+        let resolved = self.keymap.resolve_key(key, ctrl, shift, alt, &context);
         match resolved {
             ResolvedKey::Action(action, count) => match &action {
                 Action::Command(cmd_id) => {
                     cx.emit(EditorViewEvent::Command(*cmd_id, count));
                     true
                 }
-                Action::ActivateLayer(layer_id) => {
-                    self.keymap.stack.activate_layer(layer_id);
+                Action::SetVimMode(mode) => {
+                    self.keymap.set_vim_mode(*mode);
                     self.state
-                        .update(cx, |s, cx| s.on_layer_activated(layer_id, cx));
+                        .update(cx, |s, cx| s.on_vim_mode_changed(*mode, cx));
                     self.sync_state_vim_flags(cx);
                     cx.emit(EditorViewEvent::VimStateChanged);
                     cx.notify();
@@ -123,10 +148,19 @@ impl EditorView {
                 _ => {
                     // Motion / Operator / SelfInsert — handed to the grammar.
                     let vim = self.vim_snapshot();
-                    let stack = &mut self.keymap.stack;
+                    let registry = &self.keymap.registry;
                     let actions = self.state.update(cx, |state, ecx| {
-                        state.process_vim_action(action, key, count, vim, stack, window, ecx)
+                        state.process_vim_action(action, key, count, vim, registry, window, ecx)
                     });
+                    for action in &actions {
+                        match action {
+                            ItemAction::SetVimMode(mode) => self.keymap.set_vim_mode(*mode),
+                            ItemAction::PushTransient(transient) => {
+                                self.keymap.push_transient(*transient)
+                            }
+                            _ => {}
+                        }
+                    }
                     if !actions.is_empty() {
                         cx.emit(EditorViewEvent::ItemActions(actions));
                     }
@@ -134,12 +168,12 @@ impl EditorView {
                 }
             },
             ResolvedKey::TransientCapture {
-                transient_id,
+                transient,
                 ch,
                 count,
             } => {
                 self.state.update(cx, |s, ecx| {
-                    s.handle_transient_capture(&transient_id, ch, count, window, ecx);
+                    s.handle_transient_capture(transient, ch, count, window, ecx);
                 });
                 true
             }
@@ -182,14 +216,14 @@ impl Render for EditorView {
                 // handler can insert the character (insert-mode typing).
             }))
             .on_action(cx.listener(|this, _: &TabAction, window, cx| {
-                this.state.update(cx, |state, cx| {
-                    state.dispatch(EditorCommand::OutlineCycleFold, window, cx);
-                });
+                if this.dispatch_key("tab", false, false, false, window, cx) {
+                    cx.stop_propagation();
+                }
             }))
             .on_action(cx.listener(|this, _: &ShiftTabAction, window, cx| {
-                this.state.update(cx, |state, cx| {
-                    state.dispatch(EditorCommand::OutlineGlobalCycle, window, cx);
-                });
+                if this.dispatch_key("tab", false, true, false, window, cx) {
+                    cx.stop_propagation();
+                }
             }))
             .on_mouse_down(
                 MouseButton::Left,

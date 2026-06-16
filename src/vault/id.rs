@@ -43,7 +43,10 @@ pub fn iso_now() -> String {
 /// so tests can pin the timestamp without mocking the clock.
 pub fn format_id(unix_secs: u64, suffix: &str) -> String {
     let (y, mo, d, h, mi, s) = utc_components(unix_secs);
-    format!("{:04}{:02}{:02}T{:02}{:02}{:02}-{}", y, mo, d, h, mi, s, suffix)
+    format!(
+        "{:04}{:02}{:02}T{:02}{:02}{:02}-{}",
+        y, mo, d, h, mi, s, suffix
+    )
 }
 
 /// 4-char base36 suffix. Uses a process-local atomic counter seeded
@@ -138,7 +141,11 @@ mod tests {
         assert_eq!(id.chars().nth(15), Some('-'));
         // All timestamp digits
         for i in [0, 1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 12, 13, 14] {
-            assert!(id.chars().nth(i).unwrap().is_ascii_digit(), "pos {} not digit", i);
+            assert!(
+                id.chars().nth(i).unwrap().is_ascii_digit(),
+                "pos {} not digit",
+                i
+            );
         }
         // Suffix is base36 lowercase
         for i in 16..20 {

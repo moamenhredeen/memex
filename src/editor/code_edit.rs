@@ -50,6 +50,10 @@ pub fn smart_backspace(content: &str, cursor: usize) -> Option<CodeEdit> {
     None
 }
 
+pub fn is_inside_code_block(content: &str, cursor: usize) -> bool {
+    code_context(content, cursor).is_some()
+}
+
 fn smart_open_pair(
     content: &str,
     range: Range<usize>,
@@ -245,8 +249,7 @@ fn code_context<'a>(content: &'a str, cursor: usize) -> Option<CodeContext<'a>> 
     for raw_line in content.split_inclusive('\n') {
         let line = raw_line.strip_suffix('\n').unwrap_or(raw_line);
         let line_end = offset + line.len();
-        let is_cursor_line =
-            cursor <= line_end || (raw_line.ends_with('\n') && cursor == line_end + 1);
+        let is_cursor_line = cursor <= line_end;
         let fence = fence_line(line);
 
         if is_cursor_line {
@@ -403,5 +406,13 @@ mod tests {
                 cursor_after: cursor + 5,
             })
         );
+    }
+
+    #[test]
+    fn detects_code_block_under_heading() {
+        let doc = "# Heading\n\n```rust\nlet x = 1;\n```";
+        let cursor = doc.find("let").unwrap();
+        assert!(is_inside_code_block(doc, cursor));
+        assert!(!is_inside_code_block(doc, 2));
     }
 }

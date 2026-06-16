@@ -103,15 +103,21 @@ mod tests {
     fn note_path_uses_notes_dir() {
         let layout = VaultLayout::at("/root");
         let p = layout.note_path("20260423T142301-k3n8");
-        assert!(p.to_string_lossy().ends_with("notes/20260423T142301-k3n8.md")
-            || p.to_string_lossy().ends_with("notes\\20260423T142301-k3n8.md"));
+        assert!(
+            p.to_string_lossy()
+                .ends_with("notes/20260423T142301-k3n8.md")
+                || p.to_string_lossy()
+                    .ends_with("notes\\20260423T142301-k3n8.md")
+        );
     }
 
     #[test]
     fn journal_path_uses_journal_dir() {
         let layout = VaultLayout::at("/root");
         let p = layout.journal_path("2026-04-23");
-        assert!(p.to_string_lossy().ends_with("journal/2026-04-23.md")
-            || p.to_string_lossy().ends_with("journal\\2026-04-23.md"));
+        assert!(
+            p.to_string_lossy().ends_with("journal/2026-04-23.md")
+                || p.to_string_lossy().ends_with("journal\\2026-04-23.md")
+        );
     }
 }

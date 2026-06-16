@@ -90,6 +90,9 @@ mod tests {
     #[test]
     fn scratch_document_cannot_be_saved() {
         let mut document = Document::scratch("text".into());
-        assert_eq!(document.save().unwrap_err().kind(), std::io::ErrorKind::NotFound);
+        assert_eq!(
+            document.save().unwrap_err().kind(),
+            std::io::ErrorKind::NotFound
+        );
     }
 }

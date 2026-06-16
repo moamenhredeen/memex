@@ -46,7 +46,13 @@ impl Vault {
         let contents = scanner::scan(&layout)?;
         let index = NoteIndex::build(&contents);
         let notes = derive_paths(&contents);
-        Ok(Self { path, name, notes, contents, index })
+        Ok(Self {
+            path,
+            name,
+            notes,
+            contents,
+            index,
+        })
     }
 
     /// Resolved paths for this vault's well-known folders.

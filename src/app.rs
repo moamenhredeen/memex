@@ -1039,14 +1039,18 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     self.editor_state
                         .update(cx, |state, _| state.set_yank_register(text.clone()));
                 }
-                ItemAction::ActivateLayer(layer_id) => {
-                    // Editor-owned layers now — route into the editor view.
+                ItemAction::SetVimMode(mode) => {
                     self.active_editor_view().update(cx, |view, cx| {
-                        view.keymap.stack.activate_layer(layer_id);
+                        view.keymap.set_vim_mode(mode);
                         view.state
-                            .update(cx, |s, cx| s.on_layer_activated(layer_id, cx));
+                            .update(cx, |s, cx| s.on_vim_mode_changed(mode, cx));
                         view.sync_state_vim_flags(cx);
                         cx.emit(EditorViewEvent::VimStateChanged);
+                    });
+                }
+                ItemAction::PushTransient(transient) => {
+                    self.active_editor_view().update(cx, |view, _cx| {
+                        view.keymap.push_transient(transient);
                     });
                 }
                 ItemAction::SetVimEnabled(enabled) => {

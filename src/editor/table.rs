@@ -8,6 +8,19 @@ use crate::markdown::{
 use super::{EditorEvent, EditorState};
 
 impl EditorState {
+    pub fn cursor_is_in_table(&self) -> bool {
+        let content = self.content();
+        let pos = self.cursor.min(content.len());
+        let line_start = content[..pos].rfind('\n').map(|i| i + 1).unwrap_or(0);
+        let line_end = content[pos..]
+            .find('\n')
+            .map(|p| pos + p)
+            .unwrap_or(content.len());
+        let current_line = &content[line_start..line_end];
+        let trimmed = current_line.trim();
+        trimmed.starts_with('|') && trimmed.ends_with('|') && trimmed.len() > 1
+    }
+
     /// Handle tab/shift-tab inside a table. Returns true if handled.
     pub fn handle_table_tab(&mut self, forward: bool, cx: &mut Context<Self>) -> bool {
         let content = self.content();

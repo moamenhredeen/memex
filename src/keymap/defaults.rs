@@ -1,54 +1,90 @@
-use super::action::{Action, MotionImpl, OperatorImpl, OperatorOutput};
-use super::layer::{Layer, LayerStack};
+use super::action::{Action, MotionImpl, OperatorImpl, OperatorOutput, TransientKind, VimMode};
+use super::binding::BindingRegistry;
+use super::context::when;
 
-/// Register all default layers, motions, and operators.
-pub fn register_defaults(stack: &mut LayerStack) {
-    register_motions(stack);
-    register_operators(stack);
-    register_editor_base_layer(stack);
-    register_vim_layers(stack);
-    register_leader_layer(stack);
-    register_markdown_layer(stack);
-    register_minibuffer_layer(stack);
-    register_pdf_layer(stack);
-    register_graph_layer(stack);
+/// Register all default bindings, motions, and operators.
+pub fn register_defaults(registry: &mut BindingRegistry) {
+    register_motions(registry);
+    register_operators(registry);
+    register_editor_bindings(registry);
+    register_vim_bindings(registry);
+    register_markdown_bindings(registry);
+    register_minibuffer_bindings(registry);
+    register_pdf_bindings(registry);
+    register_graph_bindings(registry);
 }
 
 // ─── Motions ────────────────────────────────────────────────────────────────
 
-fn register_motions(stack: &mut LayerStack) {
-    stack.register_motion("left", MotionImpl::Native(motion_left));
-    stack.register_motion("right", MotionImpl::Native(motion_right));
-    stack.register_motion("up", MotionImpl::Native(motion_up));
-    stack.register_motion("down", MotionImpl::Native(motion_down));
-    stack.register_motion("line-start", MotionImpl::Native(motion_line_start));
-    stack.register_motion("line-end", MotionImpl::Native(motion_line_end));
-    stack.register_motion("first-non-whitespace", MotionImpl::Native(motion_first_non_whitespace));
-    stack.register_motion("line-first-non-whitespace", MotionImpl::Native(motion_line_first_non_whitespace));
-    stack.register_motion("last-non-whitespace", MotionImpl::Native(motion_last_non_whitespace));
-    stack.register_motion("word-forward", MotionImpl::Native(motion_word_forward));
-    stack.register_motion("word-backward", MotionImpl::Native(motion_word_backward));
-    stack.register_motion("word-end", MotionImpl::Native(motion_word_end));
-    stack.register_motion("word-end-backward", MotionImpl::Native(motion_word_end_backward));
-    stack.register_motion("big-word-forward", MotionImpl::Native(motion_big_word_forward));
-    stack.register_motion("big-word-backward", MotionImpl::Native(motion_big_word_backward));
-    stack.register_motion("big-word-end", MotionImpl::Native(motion_big_word_end));
-    stack.register_motion("big-word-end-backward", MotionImpl::Native(motion_big_word_end_backward));
-    stack.register_motion("next-line-first-non-whitespace", MotionImpl::Native(motion_next_line_first_non_whitespace));
-    stack.register_motion("prev-line-first-non-whitespace", MotionImpl::Native(motion_prev_line_first_non_whitespace));
-    stack.register_motion("doc-start", MotionImpl::Native(motion_doc_start));
-    stack.register_motion("doc-end", MotionImpl::Native(motion_doc_end));
-    stack.register_motion("paragraph-forward", MotionImpl::Native(motion_paragraph_forward));
-    stack.register_motion("paragraph-backward", MotionImpl::Native(motion_paragraph_backward));
-    stack.register_motion("matching-bracket", MotionImpl::Native(motion_matching_bracket));
+fn register_motions(registry: &mut BindingRegistry) {
+    registry.register_motion("left", MotionImpl::Native(motion_left));
+    registry.register_motion("right", MotionImpl::Native(motion_right));
+    registry.register_motion("up", MotionImpl::Native(motion_up));
+    registry.register_motion("down", MotionImpl::Native(motion_down));
+    registry.register_motion("line-start", MotionImpl::Native(motion_line_start));
+    registry.register_motion("line-end", MotionImpl::Native(motion_line_end));
+    registry.register_motion(
+        "first-non-whitespace",
+        MotionImpl::Native(motion_first_non_whitespace),
+    );
+    registry.register_motion(
+        "line-first-non-whitespace",
+        MotionImpl::Native(motion_line_first_non_whitespace),
+    );
+    registry.register_motion(
+        "last-non-whitespace",
+        MotionImpl::Native(motion_last_non_whitespace),
+    );
+    registry.register_motion("word-forward", MotionImpl::Native(motion_word_forward));
+    registry.register_motion("word-backward", MotionImpl::Native(motion_word_backward));
+    registry.register_motion("word-end", MotionImpl::Native(motion_word_end));
+    registry.register_motion(
+        "word-end-backward",
+        MotionImpl::Native(motion_word_end_backward),
+    );
+    registry.register_motion(
+        "big-word-forward",
+        MotionImpl::Native(motion_big_word_forward),
+    );
+    registry.register_motion(
+        "big-word-backward",
+        MotionImpl::Native(motion_big_word_backward),
+    );
+    registry.register_motion("big-word-end", MotionImpl::Native(motion_big_word_end));
+    registry.register_motion(
+        "big-word-end-backward",
+        MotionImpl::Native(motion_big_word_end_backward),
+    );
+    registry.register_motion(
+        "next-line-first-non-whitespace",
+        MotionImpl::Native(motion_next_line_first_non_whitespace),
+    );
+    registry.register_motion(
+        "prev-line-first-non-whitespace",
+        MotionImpl::Native(motion_prev_line_first_non_whitespace),
+    );
+    registry.register_motion("doc-start", MotionImpl::Native(motion_doc_start));
+    registry.register_motion("doc-end", MotionImpl::Native(motion_doc_end));
+    registry.register_motion(
+        "paragraph-forward",
+        MotionImpl::Native(motion_paragraph_forward),
+    );
+    registry.register_motion(
+        "paragraph-backward",
+        MotionImpl::Native(motion_paragraph_backward),
+    );
+    registry.register_motion(
+        "matching-bracket",
+        MotionImpl::Native(motion_matching_bracket),
+    );
 }
 
-fn register_operators(stack: &mut LayerStack) {
-    stack.register_operator("delete", OperatorImpl::Native(op_delete));
-    stack.register_operator("change", OperatorImpl::Native(op_change));
-    stack.register_operator("yank", OperatorImpl::Native(op_yank));
-    stack.register_operator("indent", OperatorImpl::Native(op_indent));
-    stack.register_operator("dedent", OperatorImpl::Native(op_dedent));
+fn register_operators(registry: &mut BindingRegistry) {
+    registry.register_operator("delete", OperatorImpl::Native(op_delete));
+    registry.register_operator("change", OperatorImpl::Native(op_change));
+    registry.register_operator("yank", OperatorImpl::Native(op_yank));
+    registry.register_operator("indent", OperatorImpl::Native(op_indent));
+    registry.register_operator("dedent", OperatorImpl::Native(op_dedent));
 }
 
 // ─── Motion implementations ────────────────────────────────────────────────
@@ -62,7 +98,9 @@ fn next_char_boundary(s: &str, pos: usize) -> usize {
 }
 
 fn prev_char_boundary(s: &str, pos: usize) -> usize {
-    if pos == 0 { return 0; }
+    if pos == 0 {
+        return 0;
+    }
     let mut p = pos - 1;
     while p > 0 && !s.is_char_boundary(p) {
         p -= 1;
@@ -112,7 +150,8 @@ pub fn motion_down(content: &str, cursor: usize, count: usize) -> usize {
         let col = pos - line_start;
         if let Some(nl) = content[pos..].find('\n') {
             let next_start = pos + nl + 1;
-            let next_end = content[next_start..].find('\n')
+            let next_end = content[next_start..]
+                .find('\n')
                 .map(|p| next_start + p)
                 .unwrap_or(content.len());
             let next_len = next_end - next_start;
@@ -127,13 +166,17 @@ pub fn motion_line_start(content: &str, cursor: usize, _count: usize) -> usize {
 }
 
 pub fn motion_line_end(content: &str, cursor: usize, _count: usize) -> usize {
-    content[cursor..].find('\n').map(|p| cursor + p).unwrap_or(content.len())
+    content[cursor..]
+        .find('\n')
+        .map(|p| cursor + p)
+        .unwrap_or(content.len())
 }
 
 pub fn motion_first_non_whitespace(content: &str, cursor: usize, _count: usize) -> usize {
     let line_start = content[..cursor].rfind('\n').map(|i| i + 1).unwrap_or(0);
     let line = &content[line_start..];
-    let byte_offset: usize = line.chars()
+    let byte_offset: usize = line
+        .chars()
         .take_while(|c| c.is_whitespace() && *c != '\n')
         .map(|c| c.len_utf8())
         .sum();
@@ -209,7 +252,9 @@ pub fn motion_word_forward(content: &str, cursor: usize, count: usize) -> usize 
 pub fn motion_word_backward(content: &str, cursor: usize, count: usize) -> usize {
     let mut pos = cursor;
     for _ in 0..count {
-        if pos == 0 { break; }
+        if pos == 0 {
+            break;
+        }
         pos = prev_char_boundary(content, pos);
         // Skip whitespace backward
         while pos > 0 {
@@ -302,7 +347,13 @@ pub fn motion_word_end(content: &str, cursor: usize, count: usize) -> usize {
 }
 
 fn char_class(ch: char) -> u8 {
-    if ch.is_whitespace() { 0 } else if ch.is_alphanumeric() || ch == '_' { 1 } else { 2 }
+    if ch.is_whitespace() {
+        0
+    } else if ch.is_alphanumeric() || ch == '_' {
+        1
+    } else {
+        2
+    }
 }
 
 fn motion_end_backward_by_class(
@@ -313,13 +364,17 @@ fn motion_end_backward_by_class(
 ) -> usize {
     let mut pos = cursor.min(content.len());
     for _ in 0..count {
-        if pos == 0 { break; }
+        if pos == 0 {
+            break;
+        }
         if pos < content.len() {
             let current_class = class(content[pos..].chars().next().unwrap());
             if current_class != 0 {
                 while pos > 0 {
                     let prev = content[..pos].chars().last().unwrap();
-                    if class(prev) != current_class { break; }
+                    if class(prev) != current_class {
+                        break;
+                    }
                     pos = prev_char_boundary(content, pos);
                 }
             }
@@ -341,11 +396,19 @@ pub fn motion_big_word_forward(content: &str, cursor: usize, count: usize) -> us
     for _ in 0..count {
         while pos < content.len() {
             let c = content[pos..].chars().next().unwrap_or(' ');
-            if !c.is_whitespace() { pos += c.len_utf8(); } else { break; }
+            if !c.is_whitespace() {
+                pos += c.len_utf8();
+            } else {
+                break;
+            }
         }
         while pos < content.len() {
             let c = content[pos..].chars().next().unwrap_or('x');
-            if c.is_whitespace() { pos += c.len_utf8(); } else { break; }
+            if c.is_whitespace() {
+                pos += c.len_utf8();
+            } else {
+                break;
+            }
         }
     }
     pos
@@ -354,15 +417,25 @@ pub fn motion_big_word_forward(content: &str, cursor: usize, count: usize) -> us
 pub fn motion_big_word_backward(content: &str, cursor: usize, count: usize) -> usize {
     let mut pos = cursor;
     for _ in 0..count {
-        if pos == 0 { break; }
+        if pos == 0 {
+            break;
+        }
         pos = prev_char_boundary(content, pos);
         while pos > 0 {
             let c = content[..pos].chars().last().unwrap_or('x');
-            if c.is_whitespace() { pos = prev_char_boundary(content, pos); } else { break; }
+            if c.is_whitespace() {
+                pos = prev_char_boundary(content, pos);
+            } else {
+                break;
+            }
         }
         while pos > 0 {
             let c = content[..pos].chars().last().unwrap_or(' ');
-            if !c.is_whitespace() { pos = prev_char_boundary(content, pos); } else { break; }
+            if !c.is_whitespace() {
+                pos = prev_char_boundary(content, pos);
+            } else {
+                break;
+            }
         }
     }
     pos
@@ -371,16 +444,26 @@ pub fn motion_big_word_backward(content: &str, cursor: usize, count: usize) -> u
 pub fn motion_big_word_end(content: &str, cursor: usize, count: usize) -> usize {
     let mut pos = cursor;
     for _ in 0..count {
-        if pos < content.len() { pos = next_char_boundary(content, pos); }
+        if pos < content.len() {
+            pos = next_char_boundary(content, pos);
+        }
         while pos < content.len() {
             let c = content[pos..].chars().next().unwrap_or('x');
-            if c.is_whitespace() { pos += c.len_utf8(); } else { break; }
+            if c.is_whitespace() {
+                pos += c.len_utf8();
+            } else {
+                break;
+            }
         }
         while pos < content.len() {
             let next = next_char_boundary(content, pos);
             if next < content.len() {
                 let nc = content[next..].chars().next().unwrap_or(' ');
-                if !nc.is_whitespace() { pos = next; } else { break; }
+                if !nc.is_whitespace() {
+                    pos = next;
+                } else {
+                    break;
+                }
             } else {
                 pos = next.min(content.len());
                 break;
@@ -424,7 +507,9 @@ pub fn motion_paragraph_forward(content: &str, cursor: usize, count: usize) -> u
 pub fn motion_paragraph_backward(content: &str, cursor: usize, count: usize) -> usize {
     let mut pos = cursor;
     for _ in 0..count {
-        if pos == 0 { break; }
+        if pos == 0 {
+            break;
+        }
         pos = pos.saturating_sub(1);
         // Find previous empty line
         while pos > 0 {
@@ -452,15 +537,27 @@ pub fn motion_matching_bracket(content: &str, cursor: usize, _count: usize) -> u
     let mut depth = 0i32;
     if forward {
         for (i, c) in content[cursor..].char_indices() {
-            if c == ch { depth += 1; }
-            if c == target { depth -= 1; }
-            if depth == 0 { return cursor + i; }
+            if c == ch {
+                depth += 1;
+            }
+            if c == target {
+                depth -= 1;
+            }
+            if depth == 0 {
+                return cursor + i;
+            }
         }
     } else {
         for (i, c) in content[..=cursor].char_indices().rev() {
-            if c == ch { depth += 1; }
-            if c == target { depth -= 1; }
-            if depth == 0 { return i; }
+            if c == ch {
+                depth += 1;
+            }
+            if c == target {
+                depth -= 1;
+            }
+            if depth == 0 {
+                return i;
+            }
         }
     }
     cursor
@@ -508,619 +605,417 @@ fn op_dedent(_content: &str, _start: usize, _end: usize) -> OperatorOutput {
     }
 }
 
-// ─── Layer definitions ──────────────────────────────────────────────────────
+// ─── Binding definitions ───────────────────────────────────────────────────
 
-// Editor-universal bindings: active whenever the editor is focused,
-// in both normal and insert mode. Not truly global — PDF and graph
-// views do not use these.
-fn register_editor_base_layer(stack: &mut LayerStack) {
-    let mut layer = Layer::new("editor:base");
-
-    // Movement
-    layer = layer
-        .bind("left", Action::Motion("left"))
-        .bind("right", Action::Motion("right"))
-        .bind("up", Action::Motion("up"))
-        .bind("down", Action::Motion("down"))
-        .bind("home", Action::Motion("line-start"))
-        .bind("end", Action::Motion("line-end"));
-
-    // Editing
-    layer = layer
-        .bind("backspace", Action::Command("delete-backward"))
-        .bind("delete", Action::Command("delete-forward"))
-        .bind("enter", Action::Command("insert-newline"))
-        .bind("tab", Action::Command("insert-tab"));
-
-    // History
-    layer = layer
-        .bind("ctrl-z", Action::Command("undo"))
-        .bind("ctrl-shift-z", Action::Command("redo"));
-
-    // Selection
-    layer = layer
-        .bind("shift-left", Action::Command("select-left"))
-        .bind("shift-right", Action::Command("select-right"))
-        .bind("shift-up", Action::Command("select-up"))
-        .bind("shift-down", Action::Command("select-down"));
-
-    stack.register_layer(layer);
+fn bind(
+    registry: &mut BindingRegistry,
+    context: super::context::KeyPredicate,
+    key: &str,
+    action: Action,
+) {
+    registry.bind(key, context, action);
 }
 
-fn register_vim_layers(stack: &mut LayerStack) {
-    // ── vim:normal ──
-    let mut normal = Layer::new("vim:normal").with_group("vim-state");
-
-    // Motions
-    normal = normal
-        .bind("h", Action::Motion("left"))
-        .bind("l", Action::Motion("right"))
-        .bind("j", Action::Motion("down"))
-        .bind("k", Action::Motion("up"))
-        .bind("w", Action::Motion("word-forward"))
-        .bind("b", Action::Motion("word-backward"))
-        .bind("e", Action::Motion("word-end"))
-        .bind("shift-w", Action::Motion("big-word-forward"))
-        .bind("shift-b", Action::Motion("big-word-backward"))
-        .bind("shift-e", Action::Motion("big-word-end"))
-        .bind("0", Action::Motion("line-start"))
-        .bind("$", Action::Motion("line-end"))
-        .bind("^", Action::Motion("first-non-whitespace"))
-        .bind("_", Action::Motion("line-first-non-whitespace"))
-        .bind("+", Action::Motion("next-line-first-non-whitespace"))
-        .bind("enter", Action::Motion("next-line-first-non-whitespace"))
-        .bind("-", Action::Motion("prev-line-first-non-whitespace"))
-        .bind("shift-g", Action::Motion("doc-end"))
-        .bind("}", Action::Motion("paragraph-forward"))
-        .bind("{", Action::Motion("paragraph-backward"))
-        .bind("%", Action::Motion("matching-bracket"));
-
-    // Operators
-    normal = normal
-        .bind("d", Action::Operator("delete"))
-        .bind("c", Action::Operator("change"))
-        .bind("y", Action::Operator("yank"))
-        .bind(">", Action::Operator("indent"))
-        .bind("<", Action::Operator("dedent"));
-
-    // Mode switches
-    normal = normal
-        .bind("i", Action::ActivateLayer("vim:insert"))
-        .bind("v", Action::ActivateLayer("vim:visual"))
-        .bind("shift-v", Action::ActivateLayer("vim:visual-line"));
-
-    // Commands
-    normal = normal
-        .bind("u", Action::Command("undo"))
-        .bind("ctrl-r", Action::Command("redo"))
-        .bind("x", Action::Command("delete-char-forward"))
-        .bind("shift-x", Action::Command("delete-char-backward"))
-        .bind("shift-i", Action::Command("insert-at-line-start"))
-        .bind("shift-a", Action::Command("insert-at-line-end"))
-        .bind("a", Action::Command("append-after"))
-        .bind("o", Action::Command("open-line-below"))
-        .bind("shift-o", Action::Command("open-line-above"))
-        .bind("p", Action::Command("paste-after"))
-        .bind("shift-p", Action::Command("paste-before"))
-        .bind("shift-j", Action::Command("join-lines"))
-        .bind("shift-d", Action::Command("delete-to-end"))
-        .bind("shift-c", Action::Command("change-to-end"))
-        .bind("shift-s", Action::Command("change-line"))
-        .bind("s", Action::Command("substitute-char"))
-        .bind("shift-y", Action::Command("yank-line"))
-        .bind("~", Action::Command("toggle-case"))
-        .bind(":", Action::Command("command-palette"))
-        .bind(".", Action::Command("dot-repeat"));
-
-    // Multi-key sequences (trie-based)
-    normal = normal
-        .bind_seq("g g", Action::Command("goto-doc-start"))
-        .bind_seq("g e", Action::Motion("word-end-backward"))
-        .bind_seq("g shift-e", Action::Motion("big-word-end-backward"))
-        .bind_seq("g 0", Action::Motion("line-start"))
-        .bind_seq("g ^", Action::Motion("first-non-whitespace"))
-        .bind_seq("g $", Action::Motion("line-end"))
-        .bind_seq("g _", Action::Motion("last-non-whitespace"));
-
-    // Transient waits (for char capture — f/t/r need arbitrary char input)
-    normal = normal
-        .bind("f", Action::PushTransient("transient:find-char"))
-        .bind("t", Action::PushTransient("transient:til-char"))
-        .bind("shift-f", Action::PushTransient("transient:find-char-back"))
-        .bind("shift-t", Action::PushTransient("transient:til-char-back"))
-        .bind("r", Action::PushTransient("transient:replace-char"));
-
-    // Scrolling
-    normal = normal
-        .bind("ctrl-d", Action::Command("scroll-half-down"))
-        .bind("ctrl-u", Action::Command("scroll-half-up"))
-        .bind("ctrl-f", Action::Command("scroll-page-down"))
-        .bind("ctrl-b", Action::Command("scroll-page-up"))
-        .bind("ctrl-e", Action::Command("scroll-line-down"))
-        .bind("ctrl-y", Action::Command("scroll-line-up"));
-
-    // Char search repeat
-    normal = normal
-        .bind(";", Action::Command("repeat-char-search"))
-        .bind(",", Action::Command("repeat-char-search-reverse"));
-
-    stack.register_layer(normal);
-
-    // ── vim:insert ──
-    let insert = Layer::new("vim:insert")
-        .with_group("vim-state")
-        .bind("escape", Action::ActivateLayer("vim:normal"));
-
-    stack.register_layer(insert);
-
-    // ── vim:visual ──
-    let mut visual = Layer::new("vim:visual").with_group("vim-state");
-
-    // Motions (extend selection)
-    visual = visual
-        .bind("h", Action::Motion("left"))
-        .bind("l", Action::Motion("right"))
-        .bind("j", Action::Motion("down"))
-        .bind("k", Action::Motion("up"))
-        .bind("w", Action::Motion("word-forward"))
-        .bind("b", Action::Motion("word-backward"))
-        .bind("e", Action::Motion("word-end"))
-        .bind("shift-w", Action::Motion("big-word-forward"))
-        .bind("shift-b", Action::Motion("big-word-backward"))
-        .bind("shift-e", Action::Motion("big-word-end"))
-        .bind("0", Action::Motion("line-start"))
-        .bind("$", Action::Motion("line-end"))
-        .bind("^", Action::Motion("first-non-whitespace"))
-        .bind("_", Action::Motion("line-first-non-whitespace"))
-        .bind("+", Action::Motion("next-line-first-non-whitespace"))
-        .bind("enter", Action::Motion("next-line-first-non-whitespace"))
-        .bind("-", Action::Motion("prev-line-first-non-whitespace"))
-        .bind("shift-g", Action::Motion("doc-end"))
-        .bind("}", Action::Motion("paragraph-forward"))
-        .bind("{", Action::Motion("paragraph-backward"))
-        .bind("%", Action::Motion("matching-bracket"));
-
-    visual = visual
-        .bind_seq("g g", Action::Motion("doc-start"))
-        .bind_seq("g e", Action::Motion("word-end-backward"))
-        .bind_seq("g shift-e", Action::Motion("big-word-end-backward"))
-        .bind_seq("g 0", Action::Motion("line-start"))
-        .bind_seq("g ^", Action::Motion("first-non-whitespace"))
-        .bind_seq("g $", Action::Motion("line-end"))
-        .bind_seq("g _", Action::Motion("last-non-whitespace"))
-        .bind("f", Action::PushTransient("transient:find-char"))
-        .bind("t", Action::PushTransient("transient:til-char"))
-        .bind("shift-f", Action::PushTransient("transient:find-char-back"))
-        .bind("shift-t", Action::PushTransient("transient:til-char-back"))
-        .bind(";", Action::Command("repeat-char-search"))
-        .bind(",", Action::Command("repeat-char-search-reverse"));
-
-    // Operators (act on selection)
-    visual = visual
-        .bind("d", Action::Command("delete-selection"))
-        .bind("x", Action::Command("delete-selection"))
-        .bind("y", Action::Command("yank-selection"))
-        .bind("c", Action::Command("change-selection"))
-        .bind(">", Action::Command("indent-selection"))
-        .bind("<", Action::Command("dedent-selection"))
-        .bind("~", Action::Command("toggle-case-selection"))
-        .bind("shift-u", Action::Command("uppercase-selection"))
-        .bind("u", Action::Command("lowercase-selection"))
-        .bind("shift-j", Action::Command("join-selection"));
-
-    visual = visual
-        .bind("escape", Action::ActivateLayer("vim:normal"))
-        .bind(":", Action::Command("command-palette"))
-        .bind("v", Action::ActivateLayer("vim:normal"));
-
-    stack.register_layer(visual);
-
-    // ── vim:visual-line ──
-    let mut vline = Layer::new("vim:visual-line").with_group("vim-state");
-    vline = vline
-        .bind("j", Action::Command("visual-line-down"))
-        .bind("k", Action::Command("visual-line-up"))
-        .bind("d", Action::Command("delete-selection"))
-        .bind("y", Action::Command("yank-selection"))
-        .bind("c", Action::Command("change-selection"))
-        .bind(">", Action::Command("indent-selection"))
-        .bind("<", Action::Command("dedent-selection"))
-        .bind("escape", Action::ActivateLayer("vim:normal"))
-        .bind("shift-v", Action::ActivateLayer("vim:normal"));
-
-    stack.register_layer(vline);
-
-    // ── vim:op-pending ──
-    // Motions only (for operator+motion composition)
-    // This layer is pushed automatically by grammar when an operator is pending
-    // For now, motions are resolved from vim:normal which stays in the stack
-
-    // ── Transient layers ──
-    register_transient_layers(stack);
+fn editor() -> super::context::KeyPredicate {
+    when().require("Editor")
 }
 
-fn register_transient_layers(stack: &mut LayerStack) {
-    // These are stub layers — the grammar engine handles transient key capture
-    // by reading the next key and resolving the motion with the captured char.
-    // The transient layer just signals to the grammar what kind of wait this is.
-
-    stack.register_layer(Layer::new("transient:find-char").transient());
-    stack.register_layer(Layer::new("transient:til-char").transient());
-    stack.register_layer(Layer::new("transient:find-char-back").transient());
-    stack.register_layer(Layer::new("transient:til-char-back").transient());
-    stack.register_layer(Layer::new("transient:replace-char").transient());
+fn vim(mode: VimMode) -> super::context::KeyPredicate {
+    editor().require_value("vim_mode", mode.as_context_value())
 }
 
-// ─── Leader key (SPC prefix, spacemacs/doom style) ──────────────────────────
+fn register_editor_bindings(registry: &mut BindingRegistry) {
+    for (key, motion) in [
+        ("left", "left"),
+        ("right", "right"),
+        ("up", "up"),
+        ("down", "down"),
+        ("home", "line-start"),
+        ("end", "line-end"),
+    ] {
+        bind(registry, editor(), key, Action::Motion(motion));
+    }
 
-fn register_leader_layer(stack: &mut LayerStack) {
-    let layer = Layer::new("leader")
-        // Files
-        .bind_seq("space f", Action::Command("find-note"))
-        .bind_seq("space s", Action::Command("save"))
-        // Buffers / Notes
-        .bind_seq("space b", Action::Command("find-note"))
-        .bind_seq("space n", Action::Command("find-note"))
-        // Vault
-        .bind_seq("space v s", Action::Command("vault-switch"))
-        .bind_seq("space v o", Action::Command("vault-open"))
-        // Command palette
-        .bind_seq("space space", Action::Command("command-palette"))
-        // Quit
-        .bind_seq("space q q", Action::Command("quit"));
-
-    stack.register_layer(layer);
+    for (key, command) in [
+        ("backspace", "delete-backward"),
+        ("delete", "delete-forward"),
+        ("enter", "insert-newline"),
+        ("tab", "insert-tab"),
+        ("ctrl-z", "undo"),
+        ("ctrl-shift-z", "redo"),
+        ("shift-left", "select-left"),
+        ("shift-right", "select-right"),
+        ("shift-up", "select-up"),
+        ("shift-down", "select-down"),
+    ] {
+        bind(registry, editor(), key, Action::Command(command));
+    }
 }
 
-fn register_markdown_layer(stack: &mut LayerStack) {
-    let layer = Layer::new("markdown")
-        // Outline mode (org-mode style)
-        .bind("tab", Action::Command("outline-cycle-fold"))
-        .bind("shift-tab", Action::Command("outline-global-cycle"))
-        .bind("alt-left", Action::Command("outline-promote"))
-        .bind("alt-right", Action::Command("outline-demote"))
-        .bind("alt-up", Action::Command("outline-move-up"))
-        .bind("alt-down", Action::Command("outline-move-down"))
-        .bind("alt-n", Action::Command("outline-next-heading"))
-        .bind("alt-p", Action::Command("outline-prev-heading"));
-    stack.register_layer(layer);
+fn register_vim_bindings(registry: &mut BindingRegistry) {
+    let normal = vim(VimMode::Normal);
+    for (key, motion) in [
+        ("h", "left"),
+        ("l", "right"),
+        ("j", "down"),
+        ("k", "up"),
+        ("w", "word-forward"),
+        ("b", "word-backward"),
+        ("e", "word-end"),
+        ("shift-w", "big-word-forward"),
+        ("shift-b", "big-word-backward"),
+        ("shift-e", "big-word-end"),
+        ("0", "line-start"),
+        ("$", "line-end"),
+        ("^", "first-non-whitespace"),
+        ("_", "line-first-non-whitespace"),
+        ("+", "next-line-first-non-whitespace"),
+        ("enter", "next-line-first-non-whitespace"),
+        ("-", "prev-line-first-non-whitespace"),
+        ("shift-g", "doc-end"),
+        ("}", "paragraph-forward"),
+        ("{", "paragraph-backward"),
+        ("%", "matching-bracket"),
+    ] {
+        bind(registry, normal.clone(), key, Action::Motion(motion));
+    }
+
+    for (key, op) in [
+        ("d", "delete"),
+        ("c", "change"),
+        ("y", "yank"),
+        (">", "indent"),
+        ("<", "dedent"),
+    ] {
+        bind(registry, normal.clone(), key, Action::Operator(op));
+    }
+
+    bind(
+        registry,
+        normal.clone(),
+        "i",
+        Action::SetVimMode(VimMode::Insert),
+    );
+    bind(
+        registry,
+        normal.clone(),
+        "v",
+        Action::SetVimMode(VimMode::Visual),
+    );
+    bind(
+        registry,
+        normal.clone(),
+        "shift-v",
+        Action::SetVimMode(VimMode::VisualLine),
+    );
+
+    for (key, command) in [
+        ("u", "undo"),
+        ("ctrl-r", "redo"),
+        ("x", "delete-char-forward"),
+        ("shift-x", "delete-char-backward"),
+        ("shift-i", "insert-at-line-start"),
+        ("shift-a", "insert-at-line-end"),
+        ("a", "append-after"),
+        ("o", "open-line-below"),
+        ("shift-o", "open-line-above"),
+        ("p", "paste-after"),
+        ("shift-p", "paste-before"),
+        ("shift-j", "join-lines"),
+        ("shift-d", "delete-to-end"),
+        ("shift-c", "change-to-end"),
+        ("shift-s", "change-line"),
+        ("s", "substitute-char"),
+        ("shift-y", "yank-line"),
+        ("~", "toggle-case"),
+        (":", "command-palette"),
+        (".", "dot-repeat"),
+    ] {
+        bind(registry, normal.clone(), key, Action::Command(command));
+    }
+
+    for (key, action) in [
+        ("g g", Action::Command("goto-doc-start")),
+        ("g e", Action::Motion("word-end-backward")),
+        ("g shift-e", Action::Motion("big-word-end-backward")),
+        ("g 0", Action::Motion("line-start")),
+        ("g ^", Action::Motion("first-non-whitespace")),
+        ("g $", Action::Motion("line-end")),
+        ("g _", Action::Motion("last-non-whitespace")),
+    ] {
+        bind(registry, normal.clone(), key, action);
+    }
+
+    for (key, transient) in [
+        ("f", TransientKind::FindChar),
+        ("t", TransientKind::TilChar),
+        ("shift-f", TransientKind::FindCharBack),
+        ("shift-t", TransientKind::TilCharBack),
+        ("r", TransientKind::ReplaceChar),
+    ] {
+        bind(
+            registry,
+            normal.clone(),
+            key,
+            Action::PushTransient(transient),
+        );
+    }
+
+    for (key, command) in [
+        ("ctrl-d", "scroll-half-down"),
+        ("ctrl-u", "scroll-half-up"),
+        ("ctrl-f", "scroll-page-down"),
+        ("ctrl-b", "scroll-page-up"),
+        ("ctrl-e", "scroll-line-down"),
+        ("ctrl-y", "scroll-line-up"),
+        (";", "repeat-char-search"),
+        (",", "repeat-char-search-reverse"),
+    ] {
+        bind(registry, normal.clone(), key, Action::Command(command));
+    }
+
+    bind(
+        registry,
+        vim(VimMode::Insert),
+        "escape",
+        Action::SetVimMode(VimMode::Normal),
+    );
+
+    let visual = when().require("Editor").require_value("vim_mode", "visual");
+    register_visual_bindings(registry, visual, false);
+    let visual_line = vim(VimMode::VisualLine);
+    bind(
+        registry,
+        visual_line.clone(),
+        "j",
+        Action::Command("visual-line-down"),
+    );
+    bind(
+        registry,
+        visual_line.clone(),
+        "k",
+        Action::Command("visual-line-up"),
+    );
+    for (key, command) in [
+        ("d", "delete-selection"),
+        ("y", "yank-selection"),
+        ("c", "change-selection"),
+        (">", "indent-selection"),
+        ("<", "dedent-selection"),
+    ] {
+        bind(registry, visual_line.clone(), key, Action::Command(command));
+    }
+    bind(
+        registry,
+        visual_line.clone(),
+        "escape",
+        Action::SetVimMode(VimMode::Normal),
+    );
+    bind(
+        registry,
+        visual_line,
+        "shift-v",
+        Action::SetVimMode(VimMode::Normal),
+    );
+
+    for (key, command) in [
+        ("space f", "find-note"),
+        ("space s", "save"),
+        ("space b", "find-note"),
+        ("space n", "find-note"),
+        ("space v s", "vault-switch"),
+        ("space v o", "vault-open"),
+        ("space space", "command-palette"),
+        ("space q q", "quit"),
+    ] {
+        bind(registry, normal.clone(), key, Action::Command(command));
+    }
 }
 
-fn register_minibuffer_layer(stack: &mut LayerStack) {
-    let layer = Layer::new("minibuffer")
-        .bind("enter", Action::Command("minibuffer-confirm"))
-        .bind("escape", Action::Command("minibuffer-dismiss"))
-        .bind("tab", Action::Command("minibuffer-complete"))
-        .bind("ctrl-n", Action::Command("minibuffer-next"))
-        .bind("ctrl-p", Action::Command("minibuffer-prev"))
-        .bind("ctrl-a", Action::Command("minibuffer-start"))
-        .bind("ctrl-e", Action::Command("minibuffer-end"))
-        .bind("ctrl-u", Action::Command("minibuffer-kill-to-start"))
-        .bind("ctrl-k", Action::Command("minibuffer-kill-to-end"))
-        .bind("ctrl-w", Action::Command("minibuffer-kill-word-back"))
-        .bind("backspace", Action::Command("minibuffer-delete-backward"))
-        .bind("left", Action::Command("minibuffer-cursor-left"))
-        .bind("right", Action::Command("minibuffer-cursor-right"));
+fn register_visual_bindings(
+    registry: &mut BindingRegistry,
+    visual: super::context::KeyPredicate,
+    _linewise: bool,
+) {
+    for (key, motion) in [
+        ("h", "left"),
+        ("l", "right"),
+        ("j", "down"),
+        ("k", "up"),
+        ("w", "word-forward"),
+        ("b", "word-backward"),
+        ("e", "word-end"),
+        ("shift-w", "big-word-forward"),
+        ("shift-b", "big-word-backward"),
+        ("shift-e", "big-word-end"),
+        ("0", "line-start"),
+        ("$", "line-end"),
+        ("^", "first-non-whitespace"),
+        ("_", "line-first-non-whitespace"),
+        ("+", "next-line-first-non-whitespace"),
+        ("enter", "next-line-first-non-whitespace"),
+        ("-", "prev-line-first-non-whitespace"),
+        ("shift-g", "doc-end"),
+        ("}", "paragraph-forward"),
+        ("{", "paragraph-backward"),
+        ("%", "matching-bracket"),
+        ("g g", "doc-start"),
+        ("g e", "word-end-backward"),
+        ("g shift-e", "big-word-end-backward"),
+        ("g 0", "line-start"),
+        ("g ^", "first-non-whitespace"),
+        ("g $", "line-end"),
+        ("g _", "last-non-whitespace"),
+    ] {
+        bind(registry, visual.clone(), key, Action::Motion(motion));
+    }
 
-    stack.register_layer(layer);
+    for (key, transient) in [
+        ("f", TransientKind::FindChar),
+        ("t", TransientKind::TilChar),
+        ("shift-f", TransientKind::FindCharBack),
+        ("shift-t", TransientKind::TilCharBack),
+    ] {
+        bind(
+            registry,
+            visual.clone(),
+            key,
+            Action::PushTransient(transient),
+        );
+    }
+
+    for (key, command) in [
+        (";", "repeat-char-search"),
+        (",", "repeat-char-search-reverse"),
+        ("d", "delete-selection"),
+        ("x", "delete-selection"),
+        ("y", "yank-selection"),
+        ("c", "change-selection"),
+        (">", "indent-selection"),
+        ("<", "dedent-selection"),
+        ("~", "toggle-case-selection"),
+        ("shift-u", "uppercase-selection"),
+        ("u", "lowercase-selection"),
+        ("shift-j", "join-selection"),
+        (":", "command-palette"),
+    ] {
+        bind(registry, visual.clone(), key, Action::Command(command));
+    }
+    bind(
+        registry,
+        visual.clone(),
+        "escape",
+        Action::SetVimMode(VimMode::Normal),
+    );
+    bind(registry, visual, "v", Action::SetVimMode(VimMode::Normal));
 }
 
-/// Build the PDF view's keymap layer. Owned by `PdfView`, not by the app
-/// shell — PDF keybindings only apply when the PDF view has focus.
-pub fn build_pdf_layer() -> Layer {
-    Layer::new("pdf")
-        // Navigation
-        .bind("j", Action::Command("pdf-scroll-down"))
-        .bind("k", Action::Command("pdf-scroll-up"))
-        .bind("down", Action::Command("pdf-scroll-down"))
-        .bind("up", Action::Command("pdf-scroll-up"))
-        .bind("ctrl-d", Action::Command("pdf-half-page-down"))
-        .bind("ctrl-u", Action::Command("pdf-half-page-up"))
-        .bind("g", Action::Command("pdf-goto-first"))
-        .bind("G", Action::Command("pdf-goto-last"))
-        // Zoom
-        .bind("+", Action::Command("pdf-zoom-in"))
-        .bind("=", Action::Command("pdf-zoom-in"))
-        .bind("-", Action::Command("pdf-zoom-out"))
-        // Commands
-        .bind("o", Action::Command("pdf-toc"))
-        .bind("P", Action::Command("pdf-goto-page"))
-        .bind("w", Action::Command("pdf-fit-width"))
-        .bind("W", Action::Command("pdf-fit-page"))
-        .bind("r", Action::Command("pdf-rotate-cw"))
-        .bind("R", Action::Command("pdf-rotate-ccw"))
-        .bind("h", Action::Command("pdf-highlight-selection"))
-        .bind("x", Action::Command("pdf-delete-annotation"))
-        .bind("escape", Action::Command("pdf-clear-selection"))
-        .bind("y", Action::Command("pdf-copy-link"))
-        .bind("Y", Action::Command("pdf-extract-text"))
-        // Search
-        .bind("/", Action::Command("pdf-search"))
-        .bind("n", Action::Command("pdf-search-next"))
-        .bind("N", Action::Command("pdf-search-prev"))
-        .bind("q", Action::Command("quit"))
+fn register_markdown_bindings(registry: &mut BindingRegistry) {
+    bind(
+        registry,
+        editor().require("table"),
+        "tab",
+        Action::Command("table-next-cell"),
+    );
+    bind(
+        registry,
+        editor()
+            .require("heading")
+            .forbid("code_block")
+            .forbid("table"),
+        "tab",
+        Action::Command("outline-cycle-fold"),
+    );
+    bind(
+        registry,
+        editor().require("table"),
+        "shift-tab",
+        Action::Command("table-prev-cell"),
+    );
+    bind(
+        registry,
+        editor().forbid("code_block"),
+        "shift-tab",
+        Action::Command("outline-global-cycle"),
+    );
+    for (key, command) in [
+        ("alt-left", "outline-promote"),
+        ("alt-right", "outline-demote"),
+        ("alt-up", "outline-move-up"),
+        ("alt-down", "outline-move-down"),
+        ("alt-n", "outline-next-heading"),
+        ("alt-p", "outline-prev-heading"),
+    ] {
+        bind(registry, editor(), key, Action::Command(command));
+    }
 }
 
-fn register_pdf_layer(stack: &mut LayerStack) {
-    stack.register_layer(build_pdf_layer());
+fn register_minibuffer_bindings(registry: &mut BindingRegistry) {
+    let minibuffer = when().require("Minibuffer");
+    for (key, command) in [
+        ("enter", "minibuffer-confirm"),
+        ("escape", "minibuffer-dismiss"),
+        ("tab", "minibuffer-complete"),
+        ("ctrl-n", "minibuffer-next"),
+        ("ctrl-p", "minibuffer-prev"),
+        ("ctrl-a", "minibuffer-start"),
+        ("ctrl-e", "minibuffer-end"),
+        ("ctrl-u", "minibuffer-kill-to-start"),
+        ("ctrl-k", "minibuffer-kill-to-end"),
+        ("ctrl-w", "minibuffer-kill-word-back"),
+        ("backspace", "minibuffer-delete-backward"),
+        ("left", "minibuffer-cursor-left"),
+        ("right", "minibuffer-cursor-right"),
+    ] {
+        bind(registry, minibuffer.clone(), key, Action::Command(command));
+    }
 }
 
-/// Build the graph view's keymap layer. Owned by `GraphView`.
-pub fn build_graph_layer() -> Layer {
-    Layer::new("graph")
-        .bind("+", Action::Command("zoom-in"))
-        .bind("=", Action::Command("zoom-in"))
-        .bind("-", Action::Command("zoom-out"))
-        .bind("0", Action::Command("reset-zoom"))
-        .bind("c", Action::Command("center-graph"))
-        .bind("l", Action::Command("toggle-local-graph"))
-        .bind("q", Action::Command("quit"))
+fn register_pdf_bindings(registry: &mut BindingRegistry) {
+    let pdf = when().require("Pdf");
+    for (key, command) in [
+        ("j", "pdf-scroll-down"),
+        ("k", "pdf-scroll-up"),
+        ("down", "pdf-scroll-down"),
+        ("up", "pdf-scroll-up"),
+        ("ctrl-d", "pdf-half-page-down"),
+        ("ctrl-u", "pdf-half-page-up"),
+        ("g", "pdf-goto-first"),
+        ("shift-g", "pdf-goto-last"),
+        ("+", "pdf-zoom-in"),
+        ("=", "pdf-zoom-in"),
+        ("-", "pdf-zoom-out"),
+        ("o", "pdf-toc"),
+        ("shift-p", "pdf-goto-page"),
+        ("w", "pdf-fit-width"),
+        ("shift-w", "pdf-fit-page"),
+        ("r", "pdf-rotate-cw"),
+        ("shift-r", "pdf-rotate-ccw"),
+        ("h", "pdf-highlight-selection"),
+        ("x", "pdf-delete-annotation"),
+        ("escape", "pdf-clear-selection"),
+        ("y", "pdf-copy-link"),
+        ("shift-y", "pdf-extract-text"),
+        ("/", "pdf-search"),
+        ("n", "pdf-search-next"),
+        ("shift-n", "pdf-search-prev"),
+        ("q", "quit"),
+    ] {
+        bind(registry, pdf.clone(), key, Action::Command(command));
+    }
 }
 
-fn register_graph_layer(stack: &mut LayerStack) {
-    stack.register_layer(build_graph_layer());
-}
-mod tests {
-    use super::*;
-    use super::super::layer::{KeyTrie, LayerStack};
-
-    #[test]
-    fn test_register_defaults_builds_all_layers() {
-        let mut stack = LayerStack::new();
-        register_defaults(&mut stack);
-
-        // Check key layers exist and can activate
-        stack.activate_layer("editor:base");
-        stack.activate_layer("vim:normal");
-        assert!(stack.is_active("editor:base"));
-        assert!(stack.is_active("vim:normal"));
-    }
-
-    #[test]
-    fn test_vim_normal_h_resolves_to_motion() {
-        let mut stack = LayerStack::new();
-        register_defaults(&mut stack);
-        stack.activate_layer("editor:base");
-        stack.activate_layer("vim:normal");
-
-        let combo = super::super::action::KeyCombo::parse("h");
-        let action = stack.resolve(&combo);
-        assert!(matches!(action, Some(KeyTrie::Leaf(Action::Motion("left")))));
-    }
-
-    #[test]
-    fn test_vim_insert_escape_resolves() {
-        let mut stack = LayerStack::new();
-        register_defaults(&mut stack);
-        stack.activate_layer("editor:base");
-        stack.activate_layer("vim:insert");
-
-        let combo = super::super::action::KeyCombo::parse("escape");
-        let action = stack.resolve(&combo);
-        assert!(matches!(action, Some(KeyTrie::Leaf(Action::ActivateLayer("vim:normal")))));
-    }
-
-    #[test]
-    fn test_editor_base_ctrl_z_resolves() {
-        let mut stack = LayerStack::new();
-        register_defaults(&mut stack);
-        stack.activate_layer("editor:base");
-
-        let combo = super::super::action::KeyCombo::parse("ctrl-z");
-        let action = stack.resolve(&combo);
-        assert!(matches!(action, Some(KeyTrie::Leaf(Action::Command("undo")))));
-    }
-
-    #[test]
-    fn test_motion_left() {
-        assert_eq!(motion_left("hello", 3, 1), 2);
-        assert_eq!(motion_left("hello", 0, 1), 0);
-    }
-
-    #[test]
-    fn test_motion_right() {
-        assert_eq!(motion_right("hello", 0, 1), 1);
-        assert_eq!(motion_right("hello", 4, 1), 5);
-        assert_eq!(motion_right("hello", 5, 1), 5); // at end
-    }
-
-    #[test]
-    fn test_motion_up_down() {
-        let content = "first\nsecond\nthird";
-        // From "second" line (pos 8 = 'o'), up should go to "first" line
-        let up = motion_up(content, 8, 1);
-        assert!(up < 6); // should be in first line
-        // From first line, down
-        let down = motion_down(content, 2, 1);
-        assert!(down >= 6 && down <= 12); // should be in second line
-    }
-
-    #[test]
-    fn test_motion_word_forward() {
-        assert_eq!(motion_word_forward("hello world", 0, 1), 6);
-        assert_eq!(motion_word_forward("hello  world", 0, 1), 7);
-    }
-
-    #[test]
-    fn test_motion_line_start_end() {
-        let content = "hello\nworld";
-        assert_eq!(motion_line_start(content, 8, 1), 6);
-        assert_eq!(motion_line_end(content, 0, 1), 5);
-    }
-
-    #[test]
-    fn test_motion_word_end_backward() {
-        let content = "one two.three four";
-        assert_eq!(motion_word_end_backward(content, 14, 1), 12);
-        assert_eq!(motion_word_end_backward(content, 14, 2), 7);
-        assert_eq!(motion_big_word_end_backward(content, 14, 1), 12);
-        assert_eq!(motion_big_word_end_backward(content, 14, 2), 2);
-    }
-
-    #[test]
-    fn test_line_first_non_whitespace_motions() {
-        let content = "one\n   two\n  three";
-        assert_eq!(motion_line_first_non_whitespace(content, 1, 2), 7);
-        assert_eq!(motion_next_line_first_non_whitespace(content, 1, 1), 7);
-        assert_eq!(motion_next_line_first_non_whitespace(content, 1, 2), 13);
-        assert_eq!(motion_prev_line_first_non_whitespace(content, 15, 1), 7);
-        assert_eq!(motion_last_non_whitespace("one  \n", 0, 1), 2);
-    }
-
-    #[test]
-    fn test_motion_doc_start_end() {
-        assert_eq!(motion_doc_start("hello", 3, 1), 0);
-        assert_eq!(motion_doc_end("hello", 0, 1), 5);
-    }
-
-    #[test]
-    fn test_matching_bracket() {
-        assert_eq!(motion_matching_bracket("(hello)", 0, 1), 6);
-        assert_eq!(motion_matching_bracket("(hello)", 6, 1), 0);
-        // No bracket at cursor
-        assert_eq!(motion_matching_bracket("hello", 0, 1), 0);
-    }
-
-    #[test]
-    fn test_g_prefix_trie() {
-        let mut stack = LayerStack::new();
-        register_defaults(&mut stack);
-        stack.activate_layer("editor:base");
-        stack.activate_layer("vim:normal");
-
-        // "g" should resolve to a Node (multi-key prefix)
-        let g = super::super::action::KeyCombo::parse("g");
-        let trie = stack.resolve(&g);
-        assert!(matches!(trie, Some(KeyTrie::Node(_))));
-
-        // "g g" should give goto-doc-start
-        if let Some(node) = trie {
-            let g2 = super::super::action::KeyCombo::parse("g");
-            let result = stack.resolve_in_trie(node, &g2);
-            assert!(matches!(result, Some(KeyTrie::Leaf(Action::Command("goto-doc-start")))));
-        }
-    }
-
-    #[test]
-    fn test_new_normal_bindings_resolve() {
-        let mut stack = LayerStack::new();
-        register_defaults(&mut stack);
-        stack.activate_layer("vim:normal");
-
-        let s = super::super::action::KeyCombo::parse("s");
-        assert!(matches!(stack.resolve(&s), Some(KeyTrie::Leaf(Action::Command("substitute-char")))));
-        let page = super::super::action::KeyCombo::parse("ctrl-f");
-        assert!(matches!(stack.resolve(&page), Some(KeyTrie::Leaf(Action::Command("scroll-page-down")))));
-    }
-
-    #[test]
-    fn test_visual_line_uses_linewise_movement_commands() {
-        let mut stack = LayerStack::new();
-        register_defaults(&mut stack);
-        stack.activate_layer("vim:visual-line");
-
-        let down = super::super::action::KeyCombo::parse("j");
-        assert!(matches!(stack.resolve(&down), Some(KeyTrie::Leaf(Action::Command("visual-line-down")))));
-        let up = super::super::action::KeyCombo::parse("k");
-        assert!(matches!(stack.resolve(&up), Some(KeyTrie::Leaf(Action::Command("visual-line-up")))));
-    }
-
-    #[test]
-    fn test_leader_space_bindings() {
-        let mut stack = LayerStack::new();
-        register_defaults(&mut stack);
-        stack.activate_layer("editor:base");
-        stack.activate_layer("vim:normal");
-        stack.activate_layer("leader");
-
-        // "space" should resolve to a Node (leader prefix)
-        let space = super::super::action::KeyCombo::parse("space");
-        let trie = stack.resolve(&space);
-        assert!(matches!(trie, Some(KeyTrie::Node(_))));
-
-        // "space f" should give find-note
-        if let Some(node) = trie {
-            let f = super::super::action::KeyCombo::parse("f");
-            let result = stack.resolve_in_trie(node, &f);
-            assert!(matches!(result, Some(KeyTrie::Leaf(Action::Command("find-note")))));
-
-            // "space v" should give another Node (deeper prefix)
-            let v = super::super::action::KeyCombo::parse("v");
-            let result = stack.resolve_in_trie(node, &v);
-            assert!(matches!(result, Some(KeyTrie::Node(_))));
-
-            // "space v s" should give vault-switch
-            if let Some(v_node) = result {
-                let s = super::super::action::KeyCombo::parse("s");
-                let result = stack.resolve_in_trie(v_node, &s);
-                assert!(matches!(result, Some(KeyTrie::Leaf(Action::Command("vault-switch")))));
-            }
-        }
-    }
-
-    // ── View-local layer builders ─────────────────────────────────────────
-
-    fn pdf_cmd_for(key: &str) -> Option<&'static str> {
-        let layer = build_pdf_layer();
-        let combo = super::super::action::KeyCombo::parse(key);
-        match layer.lookup(&combo)? {
-            KeyTrie::Leaf(Action::Command(id)) => Some(*id),
-            _ => None,
-        }
-    }
-
-    #[test]
-    fn test_pdf_layer_resolves_navigation() {
-        assert_eq!(pdf_cmd_for("j"), Some("pdf-scroll-down"));
-        assert_eq!(pdf_cmd_for("k"), Some("pdf-scroll-up"));
-        assert_eq!(pdf_cmd_for("ctrl-d"), Some("pdf-half-page-down"));
-        assert_eq!(pdf_cmd_for("ctrl-u"), Some("pdf-half-page-up"));
-        assert_eq!(pdf_cmd_for("g"), Some("pdf-goto-first"));
-        assert_eq!(pdf_cmd_for("G"), Some("pdf-goto-last"));
-    }
-
-    #[test]
-    fn test_pdf_layer_resolves_commands() {
-        assert_eq!(pdf_cmd_for("/"), Some("pdf-search"));
-        assert_eq!(pdf_cmd_for("o"), Some("pdf-toc"));
-        assert_eq!(pdf_cmd_for("P"), Some("pdf-goto-page"));
-        assert_eq!(pdf_cmd_for("h"), Some("pdf-highlight-selection"));
-        assert_eq!(pdf_cmd_for("x"), Some("pdf-delete-annotation"));
-        assert_eq!(pdf_cmd_for("escape"), Some("pdf-clear-selection"));
-        assert_eq!(pdf_cmd_for("q"), Some("quit"));
-    }
-
-    #[test]
-    fn test_pdf_layer_ignores_unbound() {
-        // Editor keys must not be in the pdf layer — that was the whole point of
-        // moving editor:base out of the shared "global" layer.
-        assert_eq!(pdf_cmd_for("ctrl-z"), None);
-        assert_eq!(pdf_cmd_for("backspace"), None);
-        assert_eq!(pdf_cmd_for("enter"), None);
-    }
-
-    fn graph_cmd_for(key: &str) -> Option<&'static str> {
-        let layer = build_graph_layer();
-        let combo = super::super::action::KeyCombo::parse(key);
-        match layer.lookup(&combo)? {
-            KeyTrie::Leaf(Action::Command(id)) => Some(*id),
-            _ => None,
-        }
-    }
-
-    #[test]
-    fn test_graph_layer_resolves_bindings() {
-        assert_eq!(graph_cmd_for("+"), Some("zoom-in"));
-        assert_eq!(graph_cmd_for("-"), Some("zoom-out"));
-        assert_eq!(graph_cmd_for("0"), Some("reset-zoom"));
-        assert_eq!(graph_cmd_for("c"), Some("center-graph"));
-        assert_eq!(graph_cmd_for("l"), Some("toggle-local-graph"));
-        assert_eq!(graph_cmd_for("q"), Some("quit"));
-    }
-
-    #[test]
-    fn test_graph_layer_ignores_unbound() {
-        assert_eq!(graph_cmd_for("j"), None); // j is a PDF key, not graph
-        assert_eq!(graph_cmd_for("ctrl-z"), None);
+fn register_graph_bindings(registry: &mut BindingRegistry) {
+    let graph = when().require("Graph");
+    for (key, command) in [
+        ("+", "zoom-in"),
+        ("=", "zoom-in"),
+        ("-", "zoom-out"),
+        ("0", "reset-zoom"),
+        ("c", "center-graph"),
+        ("l", "toggle-local-graph"),
+        ("q", "quit"),
+    ] {
+        bind(registry, graph.clone(), key, Action::Command(command));
     }
 }

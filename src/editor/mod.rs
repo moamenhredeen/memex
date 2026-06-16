@@ -688,9 +688,7 @@ impl EditorState {
                 }
             }
             InsertTab => {
-                if !self.handle_table_tab(true, cx) {
-                    self.edit_text("    ", cx);
-                }
+                self.edit_text("    ", cx);
             }
             InsertChar(ch) => {
                 let mut buf = [0u8; 4];
@@ -809,10 +807,6 @@ impl EditorState {
                 self.edit_text(&lower, cx);
             }
             OutlineCycleFold => {
-                // Table tab takes priority over outline folding
-                if self.handle_table_tab(true, cx) {
-                    return;
-                }
                 let content = self.content();
                 self.display_map.update(&content);
                 let kinds = self.display_map.line_kinds();
@@ -1006,7 +1000,7 @@ impl EditorState {
                 self.edit_text("", cx);
                 self.move_to(target.min(self.content_len()), cx);
                 if enter_insert {
-                    actions.push(ItemAction::ActivateLayer("vim:insert"));
+                    actions.push(ItemAction::SetVimMode(crate::keymap::VimMode::Insert));
                     self.insert_mode = true;
                     self.buffer.break_undo_coalescing();
                     cx.notify();
@@ -1034,12 +1028,13 @@ impl EditorState {
                     actions.extend(sub_actions);
                 }
             }
-            GrammarResult::ActivateLayer(layer_id) => {
-                self.on_layer_activated(layer_id, cx);
+            GrammarResult::SetVimMode(mode) => {
+                self.on_vim_mode_changed(mode, cx);
+                actions.push(ItemAction::SetVimMode(mode));
                 actions.push(ItemAction::SyncVimFlags);
             }
-            GrammarResult::PushTransient(_) => {
-                // Transient layer was pushed by grammar; nothing to do here
+            GrammarResult::PushTransient(transient) => {
+                actions.push(ItemAction::PushTransient(transient));
             }
             GrammarResult::ReplaceChar { ch, count } => {
                 let content = self.content();
@@ -1062,48 +1057,18 @@ impl EditorState {
                     self.edit_text(&replacement, cx);
                 }
             }
-            GrammarResult::RunScript(name) => {
-                let content = self.content();
-                let cursor = self.cursor;
-                let sel = (self.selected_range.start, self.selected_range.end);
-                if let Some(cmds) = self.buffer.run_plugin_command(&name, &content, cursor, sel) {
-                    for cmd in cmds {
-                        match cmd {
-                            commands::EditorCommand::EnterMode(mode_str) => {
-                                let layer_id = match mode_str.as_str() {
-                                    "insert" => "vim:insert",
-                                    "normal" => "vim:normal",
-                                    "visual" => "vim:visual",
-                                    "visual-line" => "vim:visual-line",
-                                    _ => "vim:insert",
-                                };
-                                actions.push(ItemAction::ActivateLayer(layer_id));
-                                actions.push(ItemAction::SyncVimFlags);
-                                cx.notify();
-                            }
-                            commands::EditorCommand::ToggleVimMode => {
-                                actions.push(ItemAction::SetVimEnabled(!vim.vim_enabled));
-                                actions.push(ItemAction::SyncVimFlags);
-                                self.buffer.break_undo_coalescing();
-                                cx.notify();
-                            }
-                            _ => self.dispatch(cmd, window, cx),
-                        }
-                    }
-                }
-            }
             GrammarResult::Pending | GrammarResult::Noop => {}
         }
         actions
     }
 
-    /// Handle keymap layer activation side effects (vim mode changes).
-    pub fn on_layer_activated(&mut self, layer_id: &str, cx: &mut Context<Self>) {
-        match layer_id {
-            "vim:insert" => {
+    /// Handle Vim mode side effects.
+    pub fn on_vim_mode_changed(&mut self, mode: crate::keymap::VimMode, cx: &mut Context<Self>) {
+        match mode {
+            crate::keymap::VimMode::Insert => {
                 self.begin_vim_edit_group();
             }
-            "vim:normal" => {
+            crate::keymap::VimMode::Normal => {
                 self.end_vim_edit_group();
                 self.visual_line_anchor = None;
                 if !self.selected_range.is_empty() {
@@ -1113,7 +1078,7 @@ impl EditorState {
                 }
                 self.buffer.break_undo_coalescing();
             }
-            "vim:visual" => {
+            crate::keymap::VimMode::Visual => {
                 self.visual_line_anchor = None;
                 if self.selected_range.is_empty() {
                     let pos = self.cursor;
@@ -1122,7 +1087,7 @@ impl EditorState {
                     self.selection_reversed = false;
                 }
             }
-            "vim:visual-line" => {
+            crate::keymap::VimMode::VisualLine => {
                 let content = self.content();
                 let line_start = line_start_at(&content, self.cursor);
                 let line_end = line_end_including_newline(&content, line_start);
@@ -1131,7 +1096,7 @@ impl EditorState {
                 self.selection_reversed = false;
                 self.cursor = line_start;
             }
-            _ => {}
+            crate::keymap::VimMode::Operator => {}
         }
         cx.notify();
     }
@@ -1171,7 +1136,7 @@ impl EditorState {
     /// Handle f/t/r transient char captures.
     pub fn handle_transient_capture(
         &mut self,
-        transient_id: &str,
+        transient: crate::keymap::TransientKind,
         ch: char,
         count: usize,
         window: &mut Window,
@@ -1179,8 +1144,8 @@ impl EditorState {
     ) {
         let content = self.content();
         let cursor = self.cursor;
-        match transient_id {
-            "replace_char" => {
+        match transient {
+            crate::keymap::TransientKind::ReplaceChar => {
                 if cursor < content.len() {
                     let next_char_len =
                         content[cursor..].chars().next().map_or(1, |c| c.len_utf8());
@@ -1190,48 +1155,49 @@ impl EditorState {
                 }
                 cx.notify();
             }
-            kind @ ("find_char_forward" | "til_char_forward" | "find_char_backward"
-            | "til_char_backward") => {
+            kind @ (crate::keymap::TransientKind::FindChar
+            | crate::keymap::TransientKind::TilChar
+            | crate::keymap::TransientKind::FindCharBack
+            | crate::keymap::TransientKind::TilCharBack) => {
                 let pos = match kind {
-                    "find_char_forward" => {
+                    crate::keymap::TransientKind::FindChar => {
                         crate::keymap::find_char_forward(&content, cursor, ch, count)
                     }
-                    "til_char_forward" => {
+                    crate::keymap::TransientKind::TilChar => {
                         crate::keymap::til_char_forward(&content, cursor, ch, count)
                     }
-                    "find_char_backward" => {
+                    crate::keymap::TransientKind::FindCharBack => {
                         crate::keymap::find_char_backward(&content, cursor, ch, count)
                     }
-                    "til_char_backward" => {
+                    crate::keymap::TransientKind::TilCharBack => {
                         crate::keymap::til_char_backward(&content, cursor, ch, count)
                     }
-                    _ => cursor,
+                    crate::keymap::TransientKind::ReplaceChar => cursor,
                 };
                 // Map to static str for storage
                 let static_kind: &'static str = match kind {
-                    "find_char_forward" => "find_char_forward",
-                    "til_char_forward" => "til_char_forward",
-                    "find_char_backward" => "find_char_backward",
-                    "til_char_backward" => "til_char_backward",
-                    _ => unreachable!(),
+                    crate::keymap::TransientKind::FindChar => "find-char",
+                    crate::keymap::TransientKind::TilChar => "til-char",
+                    crate::keymap::TransientKind::FindCharBack => "find-char-back",
+                    crate::keymap::TransientKind::TilCharBack => "til-char-back",
+                    crate::keymap::TransientKind::ReplaceChar => unreachable!(),
                 };
                 self.grammar.last_char_search = Some((ch, static_kind));
                 self.cursor = pos;
                 cx.notify();
             }
-            _ => {}
         }
     }
 
     /// Process a vim grammar action (Motion, Operator, SelfInsert, etc.).
-    /// Returns ItemActions for any layer changes needed.
+    /// Returns ItemActions for any keymap state changes needed.
     pub fn process_vim_action(
         &mut self,
         action: crate::keymap::Action,
         key: &str,
         count: usize,
         vim: crate::pane::VimSnapshot,
-        stack: &mut crate::keymap::LayerStack,
+        registry: &crate::keymap::BindingRegistry,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<ItemAction> {
@@ -1239,7 +1205,7 @@ impl EditorState {
         let cursor = self.cursor;
         let result = self
             .grammar
-            .process(action, key, count, &content, cursor, stack);
+            .process(action, key, count, &content, cursor, registry);
         let actions = self.execute_grammar_result(result, count, vim, window, cx);
         actions
     }
@@ -1267,6 +1233,8 @@ impl EditorState {
             "delete-forward" => self.dispatch(EditorCommand::DeleteForward, window, cx),
             "insert-newline" => self.dispatch(EditorCommand::InsertNewline, window, cx),
             "insert-tab" => self.dispatch(EditorCommand::InsertTab, window, cx),
+            "table-next-cell" => self.dispatch(EditorCommand::TableNextCell, window, cx),
+            "table-prev-cell" => self.dispatch(EditorCommand::TablePrevCell, window, cx),
             // Selection
             "select-left" => self.dispatch(EditorCommand::SelectLeft, window, cx),
             "select-right" => self.dispatch(EditorCommand::SelectRight, window, cx),
@@ -1291,14 +1259,14 @@ impl EditorState {
                 }
                 self.dispatch(EditorCommand::DeleteSelection, window, cx);
                 if vim.visual_active {
-                    actions.push(ItemAction::ActivateLayer("vim:normal"));
+                    actions.push(ItemAction::SetVimMode(crate::keymap::VimMode::Normal));
                     cx.notify();
                 }
             }
             "yank-selection" => {
                 self.dispatch(EditorCommand::YankSelection, window, cx);
                 if vim.visual_active {
-                    actions.push(ItemAction::ActivateLayer("vim:normal"));
+                    actions.push(ItemAction::SetVimMode(crate::keymap::VimMode::Normal));
                     cx.notify();
                 }
             }
@@ -1310,7 +1278,7 @@ impl EditorState {
                     self.grammar.register_content = content[s..e].to_string();
                 }
                 self.dispatch(EditorCommand::DeleteSelection, window, cx);
-                actions.push(ItemAction::ActivateLayer("vim:insert"));
+                actions.push(ItemAction::SetVimMode(crate::keymap::VimMode::Insert));
                 self.buffer.break_undo_coalescing();
                 cx.notify();
             }
@@ -1321,28 +1289,28 @@ impl EditorState {
             "toggle-case-selection" => {
                 self.dispatch(EditorCommand::ToggleCaseSelection, window, cx);
                 if vim.visual_active {
-                    actions.push(ItemAction::ActivateLayer("vim:normal"));
+                    actions.push(ItemAction::SetVimMode(crate::keymap::VimMode::Normal));
                     cx.notify();
                 }
             }
             "uppercase-selection" => {
                 self.dispatch(EditorCommand::UppercaseSelection, window, cx);
                 if vim.visual_active {
-                    actions.push(ItemAction::ActivateLayer("vim:normal"));
+                    actions.push(ItemAction::SetVimMode(crate::keymap::VimMode::Normal));
                     cx.notify();
                 }
             }
             "lowercase-selection" => {
                 self.dispatch(EditorCommand::LowercaseSelection, window, cx);
                 if vim.visual_active {
-                    actions.push(ItemAction::ActivateLayer("vim:normal"));
+                    actions.push(ItemAction::SetVimMode(crate::keymap::VimMode::Normal));
                     cx.notify();
                 }
             }
             "join-selection" => {
                 self.dispatch(EditorCommand::JoinSelection, window, cx);
                 if vim.visual_active {
-                    actions.push(ItemAction::ActivateLayer("vim:normal"));
+                    actions.push(ItemAction::SetVimMode(crate::keymap::VimMode::Normal));
                     cx.notify();
                 }
             }
@@ -1397,7 +1365,7 @@ impl EditorState {
                     self.selected_range = pos..end;
                     self.edit_text("", cx);
                 }
-                actions.push(ItemAction::ActivateLayer("vim:insert"));
+                actions.push(ItemAction::SetVimMode(crate::keymap::VimMode::Insert));
                 self.buffer.break_undo_coalescing();
                 cx.notify();
             }
@@ -1423,7 +1391,7 @@ impl EditorState {
                 // a — move right one char and enter insert
                 let pos = self.next_grapheme(self.cursor);
                 self.move_to(pos, cx);
-                actions.push(ItemAction::ActivateLayer("vim:insert"));
+                actions.push(ItemAction::SetVimMode(crate::keymap::VimMode::Insert));
                 self.buffer.break_undo_coalescing();
                 cx.notify();
             }
@@ -1432,7 +1400,7 @@ impl EditorState {
                 let content = self.content();
                 let target = crate::keymap::motion_first_non_whitespace(&content, self.cursor, 1);
                 self.move_to(target, cx);
-                actions.push(ItemAction::ActivateLayer("vim:insert"));
+                actions.push(ItemAction::SetVimMode(crate::keymap::VimMode::Insert));
                 self.buffer.break_undo_coalescing();
                 cx.notify();
             }
@@ -1441,7 +1409,7 @@ impl EditorState {
                 let content = self.content();
                 let target = crate::keymap::motion_line_end(&content, self.cursor, 1);
                 self.move_to(target, cx);
-                actions.push(ItemAction::ActivateLayer("vim:insert"));
+                actions.push(ItemAction::SetVimMode(crate::keymap::VimMode::Insert));
                 self.buffer.break_undo_coalescing();
                 cx.notify();
             }
@@ -1456,7 +1424,7 @@ impl EditorState {
                 self.begin_vim_edit_group();
                 self.move_to(line_end, cx);
                 self.edit_text("\n", cx);
-                actions.push(ItemAction::ActivateLayer("vim:insert"));
+                actions.push(ItemAction::SetVimMode(crate::keymap::VimMode::Insert));
                 self.buffer.break_undo_coalescing();
                 cx.notify();
             }
@@ -1470,7 +1438,7 @@ impl EditorState {
                 self.edit_text("\n", cx);
                 let new_pos = line_start;
                 self.move_to(new_pos, cx);
-                actions.push(ItemAction::ActivateLayer("vim:insert"));
+                actions.push(ItemAction::SetVimMode(crate::keymap::VimMode::Insert));
                 self.buffer.break_undo_coalescing();
                 cx.notify();
             }
@@ -1560,7 +1528,7 @@ impl EditorState {
                     self.selected_range = pos..line_end;
                     self.edit_text("", cx);
                 }
-                actions.push(ItemAction::ActivateLayer("vim:insert"));
+                actions.push(ItemAction::SetVimMode(crate::keymap::VimMode::Insert));
                 self.buffer.break_undo_coalescing();
                 cx.notify();
             }
@@ -1577,7 +1545,7 @@ impl EditorState {
                 self.grammar.register_content = content[line_start..line_end].to_string();
                 self.selected_range = line_start..line_end;
                 self.edit_text("", cx);
-                actions.push(ItemAction::ActivateLayer("vim:insert"));
+                actions.push(ItemAction::SetVimMode(crate::keymap::VimMode::Insert));
                 self.buffer.break_undo_coalescing();
                 cx.notify();
             }
@@ -1717,18 +1685,7 @@ impl EditorState {
                 actions.extend(set_actions);
             }
             _ => {
-                // Try plugin commands
-                let content = self.content();
-                let cursor = self.cursor;
-                let sel = (self.selected_range.start, self.selected_range.end);
-                if let Some(cmds) = self
-                    .buffer
-                    .run_plugin_command(cmd_id, &content, cursor, sel)
-                {
-                    for cmd in cmds {
-                        self.dispatch(cmd, window, cx);
-                    }
-                }
+                let _ = (cmd_id, window, cx);
             }
         }
         actions
@@ -1740,7 +1697,7 @@ impl EditorState {
         &mut self,
         input: &str,
         vim: crate::pane::VimSnapshot,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<ItemAction> {
         let mut actions = Vec::new();
@@ -1787,21 +1744,7 @@ impl EditorState {
                 cx.emit(EditorEvent::RequestNoteSearch);
             }
             _ => {
-                // Try plugin commands
-                let content = self.content();
-                let cursor = self.cursor;
-                let sel = (self.selected_range.start, self.selected_range.end);
-                let result = self.buffer.run_plugin_command(cmd, &content, cursor, sel);
-                match result {
-                    Some(cmds) => {
-                        for c in cmds {
-                            self.dispatch(c, window, cx);
-                        }
-                    }
-                    None => {
-                        self.status_message = Some(format!("E492: Not an editor command: {}", cmd));
-                    }
-                }
+                self.status_message = Some(format!("E492: Not an editor command: {}", cmd));
             }
         }
         actions

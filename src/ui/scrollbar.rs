@@ -135,10 +135,7 @@ impl<S: Scrollable> Element for Scrollbar<S> {
         let thumb_top = usable * scroll_ratio;
 
         let thumb_bounds = Bounds::new(
-            point(
-                track_bounds.origin.x + px(1.),
-                bounds.origin.y + thumb_top,
-            ),
+            point(track_bounds.origin.x + px(1.), bounds.origin.y + thumb_top),
             size(SCROLLBAR_WIDTH - px(2.), thumb_height),
         );
 
@@ -296,4 +293,3 @@ impl<S: Scrollable> Element for Scrollbar<S> {
         });
     }
 }
-

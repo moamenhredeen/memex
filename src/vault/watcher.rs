@@ -13,7 +13,7 @@ use std::sync::mpsc::{self, Receiver};
 use std::time::Duration;
 
 use notify::{EventKind, RecommendedWatcher, RecursiveMode};
-use notify_debouncer_full::{new_debouncer, DebounceEventResult, Debouncer, RecommendedCache};
+use notify_debouncer_full::{DebounceEventResult, Debouncer, RecommendedCache, new_debouncer};
 
 /// A vault change worth reacting to. Path is absolute.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,8 +51,7 @@ impl VaultWatcher {
             },
         )?;
 
-        debouncer
-            .watch(root.as_ref(), RecursiveMode::Recursive)?;
+        debouncer.watch(root.as_ref(), RecursiveMode::Recursive)?;
 
         Ok(Self {
             _debouncer: debouncer,
@@ -61,9 +60,7 @@ impl VaultWatcher {
     }
 }
 
-fn translate_events(
-    events: Vec<notify_debouncer_full::DebouncedEvent>,
-) -> Vec<VaultChange> {
+fn translate_events(events: Vec<notify_debouncer_full::DebouncedEvent>) -> Vec<VaultChange> {
     let mut out = Vec::new();
     for ev in events {
         if should_ignore_path(&ev.event.paths) {

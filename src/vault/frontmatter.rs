@@ -120,7 +120,9 @@ fn is_empty_frontmatter(f: &Frontmatter) -> bool {
 /// - Closing `---` must sit on its own line.
 /// - No trailing whitespace on either fence.
 fn split_frontmatter_block(content: &str) -> Option<(&str, String)> {
-    let rest = content.strip_prefix("---\n").or_else(|| content.strip_prefix("---\r\n"))?;
+    let rest = content
+        .strip_prefix("---\n")
+        .or_else(|| content.strip_prefix("---\r\n"))?;
     // Find the next line that is exactly `---`.
     let mut offset = 0usize;
     for line in rest.split_inclusive('\n') {

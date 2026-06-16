@@ -1,7 +1,7 @@
 use std::ops::Range;
 
-use super::action::{Action, LayerId, MotionId, MotionImpl, OperatorId};
-use super::layer::LayerStack;
+use super::action::{Action, MotionId, MotionImpl, OperatorId, TransientKind, VimMode};
+use super::binding::BindingRegistry;
 
 /// Result of the grammar engine processing an action.
 #[derive(Clone, Debug)]
@@ -26,14 +26,12 @@ pub enum GrammarResult {
     ExecuteCommand(&'static str),
     /// Execute a sequence of results.
     Batch(Vec<GrammarResult>),
-    /// Activate a layer (mode switch).
-    ActivateLayer(LayerId),
-    /// Push a transient layer.
-    PushTransient(LayerId),
+    /// Set Vim mode.
+    SetVimMode(VimMode),
+    /// Push a transient character capture.
+    PushTransient(TransientKind),
     /// Replace character(s) under cursor.
     ReplaceChar { ch: char, count: usize },
-    /// Run a Rhai script function.
-    RunScript(String),
     /// Waiting for more input (operator pending, count accumulation).
     Pending,
     /// Key consumed, nothing to do.
@@ -75,10 +73,19 @@ impl VimGrammar {
     /// Resolve a pre-computed motion target through the grammar.
     /// If an operator is pending, applies the operator to cursor..target range.
     /// Otherwise returns MoveCursor.
-    pub fn resolve_with_target(&mut self, target: usize, content: &str, cursor: usize) -> GrammarResult {
+    pub fn resolve_with_target(
+        &mut self,
+        target: usize,
+        content: &str,
+        cursor: usize,
+    ) -> GrammarResult {
         if let Some(op_id) = self.pending_operator.take() {
             self.pending_count = None;
-            let (start, end) = if target < cursor { (target, cursor) } else { (cursor, target) };
+            let (start, end) = if target < cursor {
+                (target, cursor)
+            } else {
+                (cursor, target)
+            };
             if start == end {
                 return GrammarResult::Noop;
             }
@@ -86,11 +93,19 @@ impl VimGrammar {
             match op_id {
                 "delete" => {
                     self.register_content = yanked.clone();
-                    GrammarResult::DeleteRange { range: start..end, yanked, enter_insert: false }
+                    GrammarResult::DeleteRange {
+                        range: start..end,
+                        yanked,
+                        enter_insert: false,
+                    }
                 }
                 "change" => {
                     self.register_content = yanked.clone();
-                    GrammarResult::DeleteRange { range: start..end, yanked, enter_insert: true }
+                    GrammarResult::DeleteRange {
+                        range: start..end,
+                        yanked,
+                        enter_insert: true,
+                    }
                 }
                 "yank" => {
                     self.register_content = yanked.clone();
@@ -112,24 +127,23 @@ impl VimGrammar {
         count: usize,
         content: &str,
         cursor: usize,
-        stack: &mut LayerStack,
+        registry: &BindingRegistry,
     ) -> GrammarResult {
         match action {
             Action::Motion(motion_id) => {
                 if let Some(op_id) = self.pending_operator.take() {
                     // Operator + motion → compute range, apply operator
                     self.pending_count = None;
-                    self.apply_operator_with_motion(op_id, motion_id, content, cursor, count, stack)
+                    self.apply_operator_with_motion(
+                        op_id, motion_id, content, cursor, count, registry,
+                    )
                 } else {
                     // Just move cursor
-                    if let Some(motion_impl) = stack.get_motion(motion_id) {
+                    if let Some(motion_impl) = registry.get_motion(motion_id) {
                         match motion_impl {
                             MotionImpl::Native(f) => {
                                 let target = f(content, cursor, count);
                                 GrammarResult::MoveCursor(target)
-                            }
-                            MotionImpl::Script(name) => {
-                                GrammarResult::RunScript(name.clone())
                             }
                         }
                     } else {
@@ -169,26 +183,17 @@ impl VimGrammar {
                 GrammarResult::ExecuteCommand(cmd_id)
             }
 
-            Action::ActivateLayer(layer_id) => {
+            Action::SetVimMode(mode) => {
                 self.clear_pending();
-                stack.activate_layer(layer_id);
-                GrammarResult::ActivateLayer(layer_id)
+                GrammarResult::SetVimMode(mode)
             }
 
-            Action::PushTransient(layer_id) => {
-                stack.push_transient(layer_id);
-                GrammarResult::PushTransient(layer_id)
-            }
-
-            Action::Script(name) => {
-                self.clear_pending();
-                GrammarResult::RunScript(name)
-            }
+            Action::PushTransient(transient) => GrammarResult::PushTransient(transient),
 
             Action::Sequence(actions) => {
                 let mut results = Vec::new();
                 for a in actions {
-                    let r = self.process(a, key, count, content, cursor, stack);
+                    let r = self.process(a, key, count, content, cursor, registry);
                     results.push(r);
                 }
                 GrammarResult::Batch(results)
@@ -206,9 +211,9 @@ impl VimGrammar {
         content: &str,
         cursor: usize,
         count: usize,
-        stack: &LayerStack,
+        registry: &BindingRegistry,
     ) -> GrammarResult {
-        let target = if let Some(MotionImpl::Native(f)) = stack.get_motion(motion_id) {
+        let target = if let Some(MotionImpl::Native(f)) = registry.get_motion(motion_id) {
             f(content, cursor, count)
         } else {
             return GrammarResult::Noop;
@@ -256,7 +261,11 @@ impl VimGrammar {
             }
             "dedent" => {
                 let line_start = content[..start].rfind('\n').map(|i| i + 1).unwrap_or(0);
-                let spaces = content[line_start..].chars().take_while(|c| *c == ' ').count().min(4);
+                let spaces = content[line_start..]
+                    .chars()
+                    .take_while(|c| *c == ' ')
+                    .count()
+                    .min(4);
                 if spaces > 0 {
                     GrammarResult::DedentRange {
                         range: line_start..line_start + spaces,
@@ -306,7 +315,11 @@ impl VimGrammar {
                 text: "    ".to_string(),
             },
             "dedent" => {
-                let spaces = content[line_start..].chars().take_while(|c| *c == ' ').count().min(4);
+                let spaces = content[line_start..]
+                    .chars()
+                    .take_while(|c| *c == ' ')
+                    .count()
+                    .min(4);
                 if spaces > 0 {
                     GrammarResult::DedentRange {
                         range: line_start..line_start + spaces,
@@ -324,77 +337,69 @@ impl VimGrammar {
 mod tests {
     use super::*;
     use crate::keymap::action::MotionImpl;
-    use crate::keymap::layer::Layer;
 
-    fn test_stack() -> LayerStack {
-        let mut stack = LayerStack::new();
+    fn test_registry() -> BindingRegistry {
+        let mut registry = BindingRegistry::new();
 
-        // Register motions
-        stack.register_motion("right", MotionImpl::Native(|content, cursor, count| {
-            let mut pos = cursor;
-            for _ in 0..count {
-                if pos < content.len() {
-                    pos += 1;
-                    while pos < content.len() && !content.is_char_boundary(pos) {
+        registry.register_motion(
+            "right",
+            MotionImpl::Native(|content, cursor, count| {
+                let mut pos = cursor;
+                for _ in 0..count {
+                    if pos < content.len() {
+                        pos += 1;
+                        while pos < content.len() && !content.is_char_boundary(pos) {
+                            pos += 1;
+                        }
+                    }
+                }
+                pos
+            }),
+        );
+        registry.register_motion(
+            "left",
+            MotionImpl::Native(|_content, cursor, count| cursor.saturating_sub(count)),
+        );
+        registry.register_motion(
+            "line-end",
+            MotionImpl::Native(|content, cursor, _count| {
+                content[cursor..]
+                    .find('\n')
+                    .map(|p| cursor + p)
+                    .unwrap_or(content.len())
+            }),
+        );
+        registry.register_motion(
+            "word-forward",
+            MotionImpl::Native(|content, cursor, count| {
+                let mut pos = cursor;
+                for _ in 0..count {
+                    // Skip current word chars
+                    while pos < content.len()
+                        && !content[pos..].starts_with(|c: char| c.is_whitespace())
+                    {
+                        pos += 1;
+                    }
+                    // Skip whitespace
+                    while pos < content.len()
+                        && content[pos..].starts_with(|c: char| c.is_whitespace())
+                    {
                         pos += 1;
                     }
                 }
-            }
-            pos
-        }));
-        stack.register_motion("left", MotionImpl::Native(|_content, cursor, count| {
-            cursor.saturating_sub(count)
-        }));
-        stack.register_motion("line-end", MotionImpl::Native(|content, cursor, _count| {
-            content[cursor..].find('\n').map(|p| cursor + p).unwrap_or(content.len())
-        }));
-        stack.register_motion("word-forward", MotionImpl::Native(|content, cursor, count| {
-            let mut pos = cursor;
-            for _ in 0..count {
-                // Skip current word chars
-                while pos < content.len() && !content[pos..].starts_with(|c: char| c.is_whitespace()) {
-                    pos += 1;
-                }
-                // Skip whitespace
-                while pos < content.len() && content[pos..].starts_with(|c: char| c.is_whitespace()) {
-                    pos += 1;
-                }
-            }
-            pos
-        }));
+                pos
+            }),
+        );
 
-        let vim_normal = Layer::new("vim:normal")
-            .with_group("vim-state")
-            .bind("h", Action::Motion("left"))
-            .bind("l", Action::Motion("right"))
-            .bind("$", Action::Motion("line-end"))
-            .bind("w", Action::Motion("word-forward"))
-            .bind("d", Action::Operator("delete"))
-            .bind("c", Action::Operator("change"))
-            .bind("y", Action::Operator("yank"))
-            .bind("i", Action::ActivateLayer("vim:insert"));
-
-        let vim_insert = Layer::new("vim:insert")
-            .with_group("vim-state")
-            .bind("escape", Action::ActivateLayer("vim:normal"));
-
-        let global = Layer::new("global")
-            .bind("a", Action::SelfInsert);
-
-        stack.register_layer(vim_normal);
-        stack.register_layer(vim_insert);
-        stack.register_layer(global);
-        stack.activate_layer("global");
-        stack.activate_layer("vim:normal");
-        stack
+        registry
     }
 
     #[test]
     fn test_motion_moves_cursor() {
-        let mut stack = test_stack();
+        let registry = test_registry();
         let mut grammar = VimGrammar::new();
 
-        let result = grammar.process(Action::Motion("right"), "l", 1, "hello", 1, &mut stack);
+        let result = grammar.process(Action::Motion("right"), "l", 1, "hello", 1, &registry);
         match result {
             GrammarResult::MoveCursor(pos) => assert_eq!(pos, 2),
             other => panic!("Expected MoveCursor, got {:?}", other),
@@ -403,26 +408,51 @@ mod tests {
 
     #[test]
     fn test_operator_pending() {
-        let mut stack = test_stack();
+        let registry = test_registry();
         let mut grammar = VimGrammar::new();
 
         // Press "d" — should go pending
-        let result = grammar.process(Action::Operator("delete"), "d", 1, "hello world", 0, &mut stack);
+        let result = grammar.process(
+            Action::Operator("delete"),
+            "d",
+            1,
+            "hello world",
+            0,
+            &registry,
+        );
         assert!(matches!(result, GrammarResult::Pending));
         assert_eq!(grammar.pending_operator, Some("delete"));
     }
 
     #[test]
     fn test_delete_word() {
-        let mut stack = test_stack();
+        let registry = test_registry();
         let mut grammar = VimGrammar::new();
 
         // "dw" — delete word
-        grammar.process(Action::Operator("delete"), "d", 1, "hello world", 0, &mut stack);
-        let result = grammar.process(Action::Motion("word-forward"), "w", 1, "hello world", 0, &mut stack);
+        grammar.process(
+            Action::Operator("delete"),
+            "d",
+            1,
+            "hello world",
+            0,
+            &registry,
+        );
+        let result = grammar.process(
+            Action::Motion("word-forward"),
+            "w",
+            1,
+            "hello world",
+            0,
+            &registry,
+        );
 
         match result {
-            GrammarResult::DeleteRange { range, yanked, enter_insert } => {
+            GrammarResult::DeleteRange {
+                range,
+                yanked,
+                enter_insert,
+            } => {
                 assert_eq!(range, 0..6);
                 assert_eq!(yanked, "hello ");
                 assert!(!enter_insert);
@@ -433,12 +463,26 @@ mod tests {
 
     #[test]
     fn test_change_word() {
-        let mut stack = test_stack();
+        let registry = test_registry();
         let mut grammar = VimGrammar::new();
 
         // "cw" — change word (delete + enter insert)
-        grammar.process(Action::Operator("change"), "c", 1, "hello world", 0, &mut stack);
-        let result = grammar.process(Action::Motion("word-forward"), "w", 1, "hello world", 0, &mut stack);
+        grammar.process(
+            Action::Operator("change"),
+            "c",
+            1,
+            "hello world",
+            0,
+            &registry,
+        );
+        let result = grammar.process(
+            Action::Motion("word-forward"),
+            "w",
+            1,
+            "hello world",
+            0,
+            &registry,
+        );
 
         match result {
             GrammarResult::DeleteRange { enter_insert, .. } => {
@@ -450,12 +494,26 @@ mod tests {
 
     #[test]
     fn test_yank_word() {
-        let mut stack = test_stack();
+        let registry = test_registry();
         let mut grammar = VimGrammar::new();
 
         // "yw" — yank word
-        grammar.process(Action::Operator("yank"), "y", 1, "hello world", 0, &mut stack);
-        let result = grammar.process(Action::Motion("word-forward"), "w", 1, "hello world", 0, &mut stack);
+        grammar.process(
+            Action::Operator("yank"),
+            "y",
+            1,
+            "hello world",
+            0,
+            &registry,
+        );
+        let result = grammar.process(
+            Action::Motion("word-forward"),
+            "w",
+            1,
+            "hello world",
+            0,
+            &registry,
+        );
 
         match result {
             GrammarResult::Yank(text) => assert_eq!(text, "hello "),
@@ -466,12 +524,26 @@ mod tests {
 
     #[test]
     fn test_dd_linewise_delete() {
-        let mut stack = test_stack();
+        let registry = test_registry();
         let mut grammar = VimGrammar::new();
 
         // "dd" — delete line
-        grammar.process(Action::Operator("delete"), "d", 1, "hello\nworld\n", 2, &mut stack);
-        let result = grammar.process(Action::Operator("delete"), "d", 1, "hello\nworld\n", 2, &mut stack);
+        grammar.process(
+            Action::Operator("delete"),
+            "d",
+            1,
+            "hello\nworld\n",
+            2,
+            &registry,
+        );
+        let result = grammar.process(
+            Action::Operator("delete"),
+            "d",
+            1,
+            "hello\nworld\n",
+            2,
+            &registry,
+        );
 
         match result {
             GrammarResult::DeleteRange { range, yanked, .. } => {
@@ -484,11 +556,11 @@ mod tests {
 
     #[test]
     fn test_count_with_motion() {
-        let mut stack = test_stack();
+        let registry = test_registry();
         let mut grammar = VimGrammar::new();
 
         // Count is now passed directly from the keymap system
-        let result = grammar.process(Action::Motion("right"), "l", 3, "hello world", 0, &mut stack);
+        let result = grammar.process(Action::Motion("right"), "l", 3, "hello world", 0, &registry);
 
         match result {
             GrammarResult::MoveCursor(pos) => assert_eq!(pos, 3),
@@ -498,10 +570,10 @@ mod tests {
 
     #[test]
     fn test_self_insert() {
-        let mut stack = test_stack();
+        let registry = test_registry();
         let mut grammar = VimGrammar::new();
 
-        let result = grammar.process(Action::SelfInsert, "a", 1, "hello", 0, &mut stack);
+        let result = grammar.process(Action::SelfInsert, "a", 1, "hello", 0, &registry);
         match result {
             GrammarResult::InsertChar('a') => {}
             other => panic!("Expected InsertChar('a'), got {:?}", other),
@@ -509,25 +581,30 @@ mod tests {
     }
 
     #[test]
-    fn test_activate_layer() {
-        let mut stack = test_stack();
+    fn test_set_vim_mode() {
+        let registry = test_registry();
         let mut grammar = VimGrammar::new();
 
-        let result = grammar.process(Action::ActivateLayer("vim:insert"), "i", 1, "hello", 0, &mut stack);
+        let result = grammar.process(
+            Action::SetVimMode(VimMode::Insert),
+            "i",
+            1,
+            "hello",
+            0,
+            &registry,
+        );
 
-        assert!(matches!(result, GrammarResult::ActivateLayer("vim:insert")));
-        assert!(stack.is_active("vim:insert"));
-        assert!(!stack.is_active("vim:normal")); // mutually exclusive
+        assert!(matches!(result, GrammarResult::SetVimMode(VimMode::Insert)));
     }
 
     #[test]
     fn test_command_clears_pending() {
-        let mut stack = test_stack();
+        let registry = test_registry();
         let mut grammar = VimGrammar::new();
 
         grammar.pending_operator = Some("delete");
 
-        let result = grammar.process(Action::Command("undo"), "u", 1, "hello", 0, &mut stack);
+        let result = grammar.process(Action::Command("undo"), "u", 1, "hello", 0, &registry);
         assert!(matches!(result, GrammarResult::ExecuteCommand("undo")));
         assert!(grammar.pending_operator.is_none());
     }

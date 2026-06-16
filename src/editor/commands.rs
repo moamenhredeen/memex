@@ -1,4 +1,4 @@
-/// All editor operations that can be triggered by keybindings, commands, or plugins.
+/// All editor operations that can be triggered by keybindings or commands.
 #[derive(Clone, Debug, PartialEq)]
 pub enum EditorCommand {
     // Cursor movement

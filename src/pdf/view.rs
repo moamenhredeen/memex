@@ -3,9 +3,9 @@ use std::sync::Arc;
 use gpui::*;
 
 use super::PdfState;
-use crate::ui::Scrollbar;
-use crate::keymap::{Action, KeyCombo, KeyTrie, Layer, build_pdf_layer};
+use crate::keymap::{Action, KeyContext, KeymapSystem, ResolvedKey};
 use crate::theme::Theme;
+use crate::ui::Scrollbar;
 
 fn top_spacer_height(page_y_offset: f32) -> f32 {
     (page_y_offset - super::PADDING_Y - super::PAGE_GAP).max(0.0)
@@ -24,8 +24,7 @@ impl EventEmitter<PdfViewEvent> for PdfView {}
 pub struct PdfView {
     pub state: Entity<PdfState>,
     focus_handle: FocusHandle,
-    /// PDF-local keymap layer. Only resolves when this view has focus.
-    keymap: Layer,
+    keymap: KeymapSystem,
     theme: Theme,
     _observe_state: Subscription,
 }
@@ -37,7 +36,7 @@ impl PdfView {
         Self {
             state,
             focus_handle,
-            keymap: build_pdf_layer(),
+            keymap: KeymapSystem::new(false),
             theme,
             _observe_state,
         }
@@ -48,12 +47,18 @@ impl PdfView {
         cx.notify();
     }
 
-    /// Resolve a keystroke against the PDF layer. Pure function — useful for
-    /// tests. Returns the bound command id, if any.
-    pub fn resolve_command(&self, key: &str, ctrl: bool, shift: bool, alt: bool) -> Option<&'static str> {
-        let combo = KeyCombo::from_keystroke(key, ctrl, shift, alt);
-        match self.keymap.lookup(&combo)? {
-            KeyTrie::Leaf(Action::Command(id)) => Some(*id),
+    /// Resolve a keystroke against the PDF key context.
+    pub fn resolve_command(
+        &mut self,
+        key: &str,
+        ctrl: bool,
+        shift: bool,
+        alt: bool,
+    ) -> Option<&'static str> {
+        let mut context = KeyContext::new();
+        context.add("Pdf");
+        match self.keymap.resolve_key(key, ctrl, shift, alt, &context) {
+            ResolvedKey::Action(Action::Command(id), _) => Some(id),
             _ => None,
         }
     }
@@ -106,22 +111,15 @@ impl Render for PdfView {
         });
 
         // Build the page column with spacers for off-screen pages
-        let mut pages_column = div()
-            .w_full()
-            .flex()
-            .flex_col()
-            .items_center()
-            .gap(px(8.));
+        let mut pages_column = div().w_full().flex().flex_col().items_center().gap(px(8.));
         let mut child_pages = Vec::new();
 
         // Top spacer covering all pages above visible range
         if vis_first > 0 {
             // The flex column inserts PAGE_GAP after this spacer. Exclude that
             // gap here so the rendered page top still matches PageLayout::y_offset.
-            let top_spacer_height =
-                top_spacer_height(self.state.read(cx).page_layout(vis_first).0);
-            pages_column =
-                pages_column.child(div().id("pdf-spacer-top").h(px(top_spacer_height)));
+            let top_spacer_height = top_spacer_height(self.state.read(cx).page_layout(vis_first).0);
+            pages_column = pages_column.child(div().id("pdf-spacer-top").h(px(top_spacer_height)));
             child_pages.push(None);
         }
 
@@ -148,7 +146,8 @@ impl Render for PdfView {
                     let st = self.state.read(cx);
                     let scale = st.page_scale(page_idx);
                     let current = st.search_current;
-                    let search: Vec<(bool, f32, f32, f32, f32)> = st.search_hits_for_page(page_idx)
+                    let search: Vec<(bool, f32, f32, f32, f32)> = st
+                        .search_hits_for_page(page_idx)
                         .into_iter()
                         .map(|(global_idx, hit)| {
                             let q = &hit.quad;
@@ -213,9 +212,16 @@ impl Render for PdfView {
                     for (i, quad) in quads.iter().enumerate() {
                         let rect = mupdf::Rect::from(quad.clone());
                         page_div = page_div.child(
-                            div().id(ElementId::Name(format!("{}-{}-{}", kind, page_idx, i).into()))
-                                .absolute().left(px(rect.x0 * scale)).top(px(rect.y0 * scale))
-                                .w(px(rect.width() * scale)).h(px(rect.height() * scale)).bg(color),
+                            div()
+                                .id(ElementId::Name(
+                                    format!("{}-{}-{}", kind, page_idx, i).into(),
+                                ))
+                                .absolute()
+                                .left(px(rect.x0 * scale))
+                                .top(px(rect.y0 * scale))
+                                .w(px(rect.width() * scale))
+                                .h(px(rect.height() * scale))
+                                .bg(color),
                         );
                     }
                 }
@@ -242,15 +248,18 @@ impl Render for PdfView {
             let bottom_of_visible = last_layout.0 + last_layout.2 + 8.0;
             let bottom_spacer = total_height - bottom_of_visible;
             if bottom_spacer > 0.0 {
-                pages_column = pages_column
-                    .child(div().id("pdf-spacer-bottom").h(px(bottom_spacer)));
+                pages_column =
+                    pages_column.child(div().id("pdf-spacer-bottom").h(px(bottom_spacer)));
                 child_pages.push(None);
             }
         }
 
         let bounds_state = self.state.clone();
         pages_column = pages_column.on_children_prepainted(move |bounds, _window, cx| {
-            let measured = child_pages.iter().copied().zip(bounds)
+            let measured = child_pages
+                .iter()
+                .copied()
+                .zip(bounds)
                 .filter_map(|(page, bounds)| page.map(|page| (page, bounds)));
             bounds_state.update(cx, |state, _| state.set_rendered_page_bounds(measured));
         });
@@ -278,7 +287,9 @@ impl Render for PdfView {
                 }
             }))
             .on_mouse_move(cx.listener(|this, e: &MouseMoveEvent, window, cx| {
-                if e.pressed_button != Some(MouseButton::Left) { return; }
+                if e.pressed_button != Some(MouseButton::Left) {
+                    return;
+                }
                 let vw: f32 = window.viewport_size().width.into();
                 this.state.update(cx, |state, cx| {
                     if let Some((page, point)) = state.screen_to_document_point(vw, e.position) {
@@ -289,24 +300,27 @@ impl Render for PdfView {
                     }
                 });
             }))
-            .on_mouse_up(MouseButton::Left, cx.listener(|this, e: &MouseUpEvent, window, cx| {
-                let vw: f32 = window.viewport_size().width.into();
-                this.state.update(cx, |state, cx| {
-                    let point = state.screen_to_document_point(vw, e.position);
-                    match state.finish_text_selection() {
-                        Ok(true) => cx.notify(),
-                        Ok(false) => {
-                            if let Some((page, point)) = point {
-                                if let Some(target) = state.hit_test_link_point(page, point) {
-                                    state.goto_page(target);
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, e: &MouseUpEvent, window, cx| {
+                    let vw: f32 = window.viewport_size().width.into();
+                    this.state.update(cx, |state, cx| {
+                        let point = state.screen_to_document_point(vw, e.position);
+                        match state.finish_text_selection() {
+                            Ok(true) => cx.notify(),
+                            Ok(false) => {
+                                if let Some((page, point)) = point {
+                                    if let Some(target) = state.hit_test_link_point(page, point) {
+                                        state.goto_page(target);
+                                    }
                                 }
+                                cx.notify();
                             }
-                            cx.notify();
+                            Err(error) => eprintln!("PDF selection failed: {}", error),
                         }
-                        Err(error) => eprintln!("PDF selection failed: {}", error),
-                    }
-                });
-            }))
+                    });
+                }),
+            )
             .child(
                 div()
                     .id("pdf-scroll-container")
@@ -328,8 +342,7 @@ impl Render for PdfView {
                         ScrollDelta::Pixels(pixels) => pixels.y,
                     };
                     let max = state.max_scroll(vh);
-                    state.scroll_offset =
-                        (state.scroll_offset - delta).clamp(px(0.), max);
+                    state.scroll_offset = (state.scroll_offset - delta).clamp(px(0.), max);
                     cx.notify();
                 });
             }))

@@ -97,7 +97,6 @@ impl GraphState {
         let mut id_index = HashMap::new();
 
         for (i, note) in notes.iter().enumerate() {
-
             // Scatter initial positions in a circle
             let angle = (i as f32 / notes.len().max(1) as f32) * std::f32::consts::TAU;
             let radius = 150.0 + (notes.len() as f32).sqrt() * 30.0;

@@ -1,4 +1,4 @@
-#![windows_subsystem="windows"]
+#![windows_subsystem = "windows"]
 
 mod app;
 mod command;
@@ -12,7 +12,6 @@ mod markdown;
 mod minibuffer;
 mod pane;
 mod pdf;
-mod plugin;
 mod state;
 mod syntax;
 mod theme;
@@ -30,12 +29,22 @@ fn main() {
 
             // Embed FiraCode Nerd Font so we don't depend on system fonts
             let font_data: Vec<std::borrow::Cow<'static, [u8]>> = vec![
-                std::borrow::Cow::Borrowed(include_bytes!("../assets/fonts/FiraCodeNerdFont-Regular.ttf")),
-                std::borrow::Cow::Borrowed(include_bytes!("../assets/fonts/FiraCodeNerdFont-Bold.ttf")),
-                std::borrow::Cow::Borrowed(include_bytes!("../assets/fonts/FiraCodeNerdFontMono-Regular.ttf")),
-                std::borrow::Cow::Borrowed(include_bytes!("../assets/fonts/FiraCodeNerdFontMono-Bold.ttf")),
+                std::borrow::Cow::Borrowed(include_bytes!(
+                    "../assets/fonts/FiraCodeNerdFont-Regular.ttf"
+                )),
+                std::borrow::Cow::Borrowed(include_bytes!(
+                    "../assets/fonts/FiraCodeNerdFont-Bold.ttf"
+                )),
+                std::borrow::Cow::Borrowed(include_bytes!(
+                    "../assets/fonts/FiraCodeNerdFontMono-Regular.ttf"
+                )),
+                std::borrow::Cow::Borrowed(include_bytes!(
+                    "../assets/fonts/FiraCodeNerdFontMono-Bold.ttf"
+                )),
             ];
-            cx.text_system().add_fonts(font_data).expect("Failed to load embedded fonts");
+            cx.text_system()
+                .add_fonts(font_data)
+                .expect("Failed to load embedded fonts");
 
             cx.bind_keys([
                 gpui::KeyBinding::new("tab", editor::TabAction, Some("Editor")),

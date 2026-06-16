@@ -60,8 +60,7 @@ Memex is a single-binary desktop app with a WYSIWYG markdown editor, PDF viewer,
 ### Other
 
 - **Undo/redo** with full history
-- **Rhai plugin system** — extend with custom commands and keybindings
-- **Configurable** — global configuration via TOML; Rhai is reserved for plugins
+- **Configurable keybindings** — override contextual bindings with TOML
 
 ### Configuration
 
@@ -77,6 +76,17 @@ Built-in theme IDs are `solarized-light`, `solarized-dark`, `gruvbox-dark`, and
 `nord`. The `:theme` command selects a theme and saves it to the global config.
 `editor_width` sets the centered reading-column width in pixels. Narrow panes
 retain 24 pixels of horizontal padding.
+
+Optional keybindings are read from `~/.config/memex/keymap.toml`:
+
+```toml
+[[bindings]]
+context = "Editor && vim_mode == normal"
+key = "space x"
+command = "custom-command"
+```
+
+Contexts support flags, values, `&&`, `||`, `!`, `==`, and `!=`.
 
 ## Building
 
