@@ -96,6 +96,41 @@ fn parse_pdf_link(target: &str) -> Option<(&str, PdfLinkTarget)> {
         .map(|id| (file, PdfLinkTarget::Annotation(id.to_string())))
 }
 
+fn is_pdf_path(path: &std::path::Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"))
+}
+
+fn unique_attachment_path(dir: &std::path::Path, filename: &std::ffi::OsStr) -> std::path::PathBuf {
+    let candidate = dir.join(filename);
+    if !candidate.exists() {
+        return candidate;
+    }
+
+    let original = std::path::Path::new(filename);
+    let stem = original
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or("attachment");
+    let extension = original
+        .extension()
+        .and_then(|extension| extension.to_str());
+
+    for ix in 1.. {
+        let filename = match extension {
+            Some(extension) if !extension.is_empty() => format!("{}-{}.{}", stem, ix, extension),
+            _ => format!("{}-{}", stem, ix),
+        };
+        let candidate = dir.join(filename);
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+
+    unreachable!("unbounded attachment filename search must return")
+}
+
 impl Memex {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let mut state = AppState::new();
@@ -718,6 +753,85 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         }
         self.minibuffer
             .set_message(format!("Attached {}", filename));
+        cx.notify();
+    }
+
+    fn attach_dropped_files(
+        &mut self,
+        paths: &[std::path::PathBuf],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(vault) = self.state.vault.as_ref() else {
+            self.minibuffer.set_message("No vault open");
+            cx.notify();
+            return;
+        };
+        let attachments_dir = vault.layout().attachments;
+        if let Err(e) = std::fs::create_dir_all(&attachments_dir) {
+            self.minibuffer.set_message(format!("drop attach: {}", e));
+            cx.notify();
+            return;
+        }
+
+        let mut copied = Vec::new();
+        let mut skipped = 0usize;
+        let canonical_attachments_dir = attachments_dir.canonicalize().ok();
+        for src in paths {
+            if !src.is_file() || !is_pdf_path(src) {
+                skipped += 1;
+                continue;
+            }
+
+            if let (Some(attachments_dir), Ok(src)) =
+                (&canonical_attachments_dir, src.canonicalize())
+                && src.starts_with(attachments_dir)
+            {
+                copied.push(src);
+                continue;
+            }
+
+            let Some(filename) = src.file_name() else {
+                skipped += 1;
+                continue;
+            };
+            let dest = unique_attachment_path(&attachments_dir, filename);
+            if let Err(e) = std::fs::copy(src, &dest) {
+                self.minibuffer.set_message(format!("drop attach: {}", e));
+                cx.notify();
+                return;
+            }
+            copied.push(dest);
+        }
+
+        if copied.is_empty() {
+            let message = if skipped == 0 {
+                "No files dropped".to_string()
+            } else {
+                "Drop a PDF to add it to attachments".to_string()
+            };
+            self.minibuffer.set_message(message);
+            cx.notify();
+            return;
+        }
+
+        if let Some(vault) = self.state.vault.as_mut() {
+            let _ = vault.refresh();
+        }
+
+        let open_path = copied.last().expect("copied is non-empty").clone();
+        let count = copied.len();
+        let name = open_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("PDF")
+            .to_string();
+        self.open_pdf(open_path, window, cx);
+        self.minibuffer.set_message(if count == 1 {
+            format!("Attached {}", name)
+        } else {
+            format!("Attached {} PDFs, opened {}", count, name)
+        });
         cx.notify();
     }
 
@@ -2022,11 +2136,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if path
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"))
-        {
+        if is_pdf_path(&path) {
             self.open_pdf(path, window, cx);
             return;
         }
@@ -2897,6 +3007,9 @@ impl Render for Memex {
             .size_full()
             .bg(rgb(self.theme.background))
             .font_family("FiraCode Nerd Font")
+            .on_drop(cx.listener(|this, paths: &ExternalPaths, window, cx| {
+                this.attach_dropped_files(paths.paths(), window, cx);
+            }))
             // App-wide actions — work regardless of which view has focus.
             .on_action(cx.listener(|this, _: &Save, window, cx| {
                 if this.minibuffer.active {
