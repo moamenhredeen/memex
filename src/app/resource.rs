@@ -10,6 +10,7 @@ pub(crate) enum ResourceKey {
     Markdown(PathBuf),
     Pdf(PathBuf),
     Graph(PathBuf),
+    Backlinks(PathBuf),
 }
 
 #[derive(Clone)]
@@ -17,11 +18,11 @@ pub(crate) enum BufferContent {
     Markdown(EditorBuffer),
     Pdf(PathBuf),
     Graph(PathBuf),
+    Backlinks,
 }
 
 pub(crate) enum SecondaryContent {
     Item { item: ActiveItem },
-    Backlinks,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -65,7 +66,9 @@ pub(crate) fn unique_attachment_path(dir: &Path, filename: &OsStr) -> PathBuf {
         .file_stem()
         .and_then(|stem| stem.to_str())
         .unwrap_or("attachment");
-    let extension = original.extension().and_then(|extension| extension.to_str());
+    let extension = original
+        .extension()
+        .and_then(|extension| extension.to_str());
 
     for ix in 1.. {
         let filename = match extension {

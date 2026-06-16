@@ -1,6 +1,7 @@
 #![windows_subsystem = "windows"]
 
 mod app;
+mod backlinks;
 mod command;
 mod config;
 mod document;

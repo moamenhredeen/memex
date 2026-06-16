@@ -1,17 +1,21 @@
 use fuzzy_matcher::FuzzyMatcher;
 use fuzzy_matcher::skim::SkimMatcherV2;
 use gpui::*;
-use gpui_component::{Icon, IconName, h_flex, v_flex};
+use gpui_component::{h_flex, v_flex};
 
 mod command_registry;
+mod minibuffer_view;
+mod mode_line;
 mod resource;
+mod title_bar;
 mod ui_helpers;
 
+use crate::backlinks::{BacklinksState, BacklinksView, BacklinksViewEvent};
 use crate::command::Command;
 use crate::document::Document;
 use crate::editor::{EditorBuffer, EditorEvent, EditorState, EditorView, EditorViewEvent};
 use crate::graph::{GraphEvent, GraphState, GraphView, GraphViewEvent};
-use crate::minibuffer::{Candidate, DelegateKind, Minibuffer, MinibufferAction, MinibufferVimMode};
+use crate::minibuffer::{Candidate, DelegateKind, Minibuffer, MinibufferAction};
 use crate::pane::{ActiveItem, CommandOutcome, ItemAction, VimSnapshot};
 use crate::pdf::{PdfState, PdfView, PdfViewEvent};
 use crate::state::AppState;
@@ -333,7 +337,6 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         let secondary = self.secondary.as_ref().map(|content| {
             let child = match content {
                 SecondaryContent::Item { item, .. } => item.view_element().into_any_element(),
-                SecondaryContent::Backlinks => self.render_backlinks_panel(cx).into_any_element(),
             };
             div()
                 .id("secondary-slot")
@@ -1209,7 +1212,10 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 }
             }
             "toggle-backlinks" | "backlinks-panel" => {
-                if matches!(self.secondary, Some(SecondaryContent::Backlinks)) {
+                if matches!(
+                    &self.secondary,
+                    Some(SecondaryContent::Item { item }) if item.is_backlinks()
+                ) {
                     self.close_secondary(window, cx);
                 } else {
                     self.show_backlinks(window, cx);
@@ -2251,9 +2257,50 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
     }
 
     fn show_backlinks(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.secondary = Some(SecondaryContent::Backlinks);
-        self.workspace.show_secondary(None);
-        self.focus_secondary(window, cx);
+        let key = ResourceKey::Backlinks(
+            self.state
+                .vault
+                .as_ref()
+                .map(|vault| vault.path.clone())
+                .unwrap_or_default(),
+        );
+        let buffer = if let Some(buffer) = self.workspace.buffers.id_for_resource(&key) {
+            buffer
+        } else {
+            self.workspace
+                .buffers
+                .open_with(key, || BufferContent::Backlinks)
+        };
+        let item = self.create_backlinks_item(window, cx);
+        self.show_secondary_item(buffer, item, window, cx);
+    }
+
+    fn create_backlinks_item(&mut self, window: &mut Window, cx: &mut Context<Self>) -> ActiveItem {
+        let current_title = self.current_document_title(cx);
+        let backlinks = self
+            .state
+            .vault
+            .as_ref()
+            .filter(|_| !current_title.is_empty())
+            .map(|v| v.find_backlinks(&current_title))
+            .unwrap_or_default();
+        let backlinks_state = cx.new(|cx| BacklinksState::new(current_title, backlinks, cx));
+        let theme = self.theme;
+        let backlinks_view = cx.new(|cx| BacklinksView::new(backlinks_state.clone(), theme, cx));
+        let view_sub = cx.subscribe_in(
+            &backlinks_view,
+            window,
+            |this, _view, ev: &BacklinksViewEvent, window, cx| match ev {
+                BacklinksViewEvent::OpenPath(path) => {
+                    this.open_note_by_path(path.clone(), window, cx);
+                }
+            },
+        );
+        self._subscriptions.push(view_sub);
+        ActiveItem::Backlinks {
+            state: backlinks_state,
+            view: backlinks_view,
+        }
     }
 
     fn create_note_by_title(&mut self, title: &str, window: &mut Window, cx: &mut Context<Self>) {
@@ -2350,387 +2397,6 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
             .map(|(_, title, path)| (title, path))
             .collect()
     }
-
-    fn render_title_bar(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let title = {
-            let t = self.current_document_title(cx);
-            if t.is_empty() { "Memex".to_string() } else { t }
-        };
-        let dirty = self.current_document_dirty(cx);
-        let title_text = if dirty {
-            format!("{} ●", title)
-        } else {
-            title
-        };
-
-        h_flex()
-            .id("title-bar")
-            .w_full()
-            .items_center()
-            .justify_between()
-            // Left: spacer for symmetry — part of the drag area
-            .child(
-                div()
-                    .w(px(72.))
-                    .h_full()
-                    .window_control_area(WindowControlArea::Drag)
-                    .on_mouse_down(MouseButton::Left, |_, window, _| {
-                        window.start_window_move();
-                    }),
-            )
-            // Center: title — part of the drag area
-            .child(
-                div()
-                    .flex_1()
-                    .h_full()
-                    .flex()
-                    .justify_center()
-                    .items_center()
-                    .window_control_area(WindowControlArea::Drag)
-                    .on_mouse_down(MouseButton::Left, |_, window, _| {
-                        window.start_window_move();
-                    })
-                    .child(
-                        div()
-                            .text_size(px(12.))
-                            .text_color(rgb(self.theme.text))
-                            .child(title_text),
-                    ),
-            )
-            // Right: window controls — NOT inside the drag area, so Close hitbox wins
-            .child(h_flex().gap(px(0.)).child(self.title_bar_close_button(cx)))
-    }
-
-    fn title_bar_close_button(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .id("close-btn")
-            .w(px(24.))
-            .h(px(24.))
-            .m_2()
-            .rounded_full()
-            .flex()
-            .items_center()
-            .justify_center()
-            .text_size(px(12.))
-            .bg(rgba(0x00000010))
-            .cursor_pointer()
-            .hover(|s| s.text_color(rgba(0x00000010)).bg(rgba(0xFF000040)))
-            // Register close hitbox for Windows hit testing
-            .window_control_area(WindowControlArea::Close)
-            .on_click(cx.listener(|_this, _e: &ClickEvent, _window, cx| {
-                cx.quit();
-            }))
-            .child(Icon::new(IconName::WindowClose))
-    }
-
-    /// Backlinks secondary view for the current editor note.
-    fn render_backlinks_panel(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let current_title = self.current_document_title(cx);
-        let backlinks = self
-            .state
-            .vault
-            .as_ref()
-            .filter(|_| !current_title.is_empty())
-            .map(|v| v.find_backlinks(&current_title))
-            .unwrap_or_default();
-
-        let mut header = h_flex()
-            .w_full()
-            .px(px(8.))
-            .py(px(3.))
-            .bg(rgb(self.theme.surface))
-            .items_center()
-            .gap(px(8.))
-            .child(
-                div()
-                    .text_size(px(11.))
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(rgb(self.theme.text_strong))
-                    .child("Backlinks"),
-            );
-        header = header.child(
-            div()
-                .text_size(px(11.))
-                .text_color(rgb(self.theme.text_muted))
-                .child(format!("{}", backlinks.len())),
-        );
-
-        let mut list = v_flex()
-            .w_full()
-            .flex_1()
-            .overflow_hidden()
-            .bg(rgb(self.theme.background));
-
-        if backlinks.is_empty() {
-            list = list.child(
-                div()
-                    .px(px(10.))
-                    .py(px(6.))
-                    .text_size(px(12.))
-                    .text_color(rgb(self.theme.text_muted))
-                    .child(if current_title.is_empty() {
-                        "No note open."
-                    } else {
-                        "No backlinks yet. Link to this note from another note with [[…]]."
-                    }),
-            );
-        } else {
-            for (title, path) in backlinks {
-                let path_for_click = path.clone();
-                list = list.child(
-                    div()
-                        .id(ElementId::Name(
-                            format!("bl-{}", path.to_string_lossy()).into(),
-                        ))
-                        .w_full()
-                        .px(px(10.))
-                        .py(px(3.))
-                        .text_size(px(12.))
-                        .text_color(rgb(self.theme.accent))
-                        .cursor_pointer()
-                        .hover(|s| s.bg(rgba(0x00000010)))
-                        .child(title)
-                        .on_mouse_down(
-                            MouseButton::Left,
-                            cx.listener(move |this, _e: &MouseDownEvent, window, cx| {
-                                this.open_note_by_path(path_for_click.clone(), window, cx);
-                            }),
-                        ),
-                );
-            }
-        }
-
-        v_flex().w_full().h_full().child(header).child(list)
-    }
-
-    fn render_mode_line(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let editor_view = self.active_editor_view();
-        let ev = editor_view.read(cx);
-        let vim_enabled = ev.keymap.vim_enabled;
-        let vim_state = ev.keymap.active_vim_state().map(|s| s.to_string());
-
-        let vault_name = self.state.vault_name();
-        let note_title = self.current_document_title(cx);
-        let dirty = self.current_document_dirty(cx);
-        let dirty_indicator = if dirty { " ●" } else { "" };
-
-        // Position info depends on the focused window.
-        let focused_item = self.focused_item();
-        let position_text = focused_item.position_text(600.0, cx);
-
-        // Mode badge (left) — show focused item's badge
-        let show_non_editor = focused_item.is_pdf() || focused_item.is_graph();
-        let mode_badge = if show_non_editor {
-            let (label, color) = focused_item.mode_badge();
-            div().px(px(6.)).py(px(1.)).bg(rgb(color)).child(
-                div()
-                    .text_size(px(14.))
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(rgb(self.theme.background))
-                    .child(label),
-            )
-        } else if vim_enabled {
-            let (label, bg) = match vim_state.as_deref() {
-                Some("NORMAL") => ("NORMAL", rgb(self.theme.accent)),
-                Some("INSERT") => ("INSERT", rgb(self.theme.success)),
-                Some("VISUAL") => ("VISUAL", rgb(self.theme.violet)),
-                Some("V-LINE") => ("V-LINE", rgb(self.theme.violet)),
-                _ => ("NOR", rgb(self.theme.accent)),
-            };
-            div().px(px(6.)).py(px(1.)).bg(bg).child(
-                div()
-                    .text_size(px(14.))
-                    .font_weight(FontWeight::BOLD)
-                    .text_color(rgb(self.theme.background))
-                    .child(label),
-            )
-        } else {
-            div()
-                .px(px(6.))
-                .py(px(1.))
-                .bg(rgb(self.theme.success))
-                .child(
-                    div()
-                        .text_size(px(14.))
-                        .font_weight(FontWeight::BOLD)
-                        .text_color(rgb(self.theme.background))
-                        .child("EDT"),
-                )
-        };
-
-        h_flex()
-            .w_full()
-            .h(px(24.))
-            .bg(rgb(self.theme.surface))
-            .items_center()
-            .gap(px(0.))
-            .child(mode_badge)
-            // Vault + file
-            .child(
-                div().px(px(8.)).child(
-                    div()
-                        .text_size(px(14.))
-                        .text_color(rgb(self.theme.text_strong))
-                        .child(format!(
-                            " {} › {}{}",
-                            vault_name, note_title, dirty_indicator
-                        )),
-                ),
-            )
-            // Spacer
-            .child(div().flex_1())
-            // Position (always L:C)
-            .child(
-                div().px(px(8.)).child(
-                    div()
-                        .text_size(px(14.))
-                        .text_color(rgb(self.theme.text_muted))
-                        .child(position_text),
-                ),
-            )
-    }
-
-    /// Render the minibuffer area — unified, single rendering path.
-    /// Always visible like emacs: shows echo area messages when idle,
-    /// prompt + input + vertico candidates when active.
-    fn render_minibuffer(&self, cx: &mut Context<Self>) -> impl IntoElement {
-        let base = v_flex().w_full().bg(rgb(self.theme.background));
-
-        if !self.minibuffer.active {
-            // Idle — echo area: show message or status from editor
-            let msg = self
-                .minibuffer
-                .message
-                .clone()
-                .or_else(|| self.active_editor_state().read(cx).status_message.clone())
-                .unwrap_or_default();
-            return base.child(
-                h_flex().w_full().h(px(22.)).px(px(8.)).py(px(3.)).child(
-                    div()
-                        .text_size(px(13.))
-                        .text_color(rgb(self.theme.text_muted))
-                        .child(msg),
-                ),
-            );
-        }
-
-        // Active — prompt + input with cursor + vertico candidate list
-        let candidates = self.get_candidates(cx);
-        let selected = self.minibuffer.selected;
-        let (before_cursor, after_cursor) = self.minibuffer.input_parts();
-
-        // Cursor character: block for vim normal, line for insert
-        let cursor_char = match self.minibuffer.vim_mode {
-            MinibufferVimMode::Normal => "█",
-            MinibufferVimMode::Insert => "│",
-        };
-
-        // Fixed candidate area: 10 visible rows (each ~20px)
-        let max_visible = 10usize;
-        let candidate_area_h = px((max_visible as f32) * 20.0);
-
-        // Compute scroll window so selected item stays visible
-        let scroll_top = if candidates.len() <= max_visible {
-            0
-        } else if selected < max_visible / 2 {
-            0
-        } else if selected + max_visible / 2 >= candidates.len() {
-            candidates.len().saturating_sub(max_visible)
-        } else {
-            selected - max_visible / 2
-        };
-        let visible_end = (scroll_top + max_visible).min(candidates.len());
-
-        // Build candidate list (only visible window)
-        let mut items = v_flex().w_full().h(candidate_area_h);
-        for i in scroll_top..visible_end {
-            let candidate = &candidates[i];
-            let is_selected = i == selected;
-            let bg_color = if is_selected {
-                rgb(self.theme.selection)
-            } else {
-                rgb(self.theme.background)
-            };
-
-            let text_color = if candidate.is_action {
-                rgb(self.theme.success)
-            } else if is_selected {
-                rgb(self.theme.text_strong)
-            } else {
-                rgb(self.theme.text)
-            };
-
-            let label_element = if matches!(self.minibuffer.delegate_kind, DelegateKind::Item(ref id) if self.focused_item().highlight_input(id))
-                && !self.minibuffer.input.is_empty()
-            {
-                // Highlight the search term within the candidate label
-                ui_helpers::render_highlighted_label(
-                    &candidate.label,
-                    &self.minibuffer.input,
-                    text_color,
-                    self.theme.warning,
-                )
-            } else {
-                div()
-                    .text_size(px(13.))
-                    .text_color(text_color)
-                    .child(candidate.label.clone())
-            };
-
-            let mut row = h_flex().gap(px(8.)).child(label_element);
-
-            if let Some(detail) = &candidate.detail {
-                row = row.child(
-                    div()
-                        .text_size(px(11.))
-                        .text_color(rgb(self.theme.text_muted))
-                        .child(detail.clone()),
-                );
-            }
-
-            items = items.child(
-                div()
-                    .id(ElementId::Name(format!("mb-item-{}", i).into()))
-                    .w_full()
-                    .px(px(8.))
-                    .py(px(2.))
-                    .bg(bg_color)
-                    .child(row),
-            );
-        }
-
-        base.border_t_1()
-            .border_color(rgb(self.theme.border))
-            .track_focus(&self.minibuffer_focus)
-            .on_key_down(cx.listener(|this, e: &KeyDownEvent, window, cx| {
-                let key = e.keystroke.key.as_str();
-                let ctrl = e.keystroke.modifiers.control;
-                let shift = e.keystroke.modifiers.shift;
-                this.handle_minibuffer_key(key, ctrl, shift, window, cx);
-            }))
-            // Prompt line with cursor-aware input
-            .child(
-                h_flex()
-                    .w_full()
-                    .px(px(8.))
-                    .py(px(3.))
-                    .gap(px(4.))
-                    .child(
-                        div()
-                            .text_size(px(13.))
-                            .text_color(rgb(self.theme.accent))
-                            .child(self.minibuffer.prompt.clone()),
-                    )
-                    .child(
-                        div()
-                            .text_size(px(13.))
-                            .text_color(rgb(self.theme.text_strong))
-                            .child(format!("{}{}{}", before_cursor, cursor_char, after_cursor)),
-                    ),
-            )
-            // Vertico candidate list
-            .child(items)
-    }
 }
 
 impl Render for Memex {
@@ -2797,7 +2463,10 @@ impl Render for Memex {
                 if this.minibuffer.active {
                     return;
                 }
-                if matches!(this.secondary, Some(SecondaryContent::Backlinks)) {
+                if matches!(
+                    &this.secondary,
+                    Some(SecondaryContent::Item { item }) if item.is_backlinks()
+                ) {
                     this.close_secondary(window, cx);
                 } else {
                     this.show_backlinks(window, cx);

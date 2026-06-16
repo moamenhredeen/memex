@@ -13,6 +13,7 @@
 
 use gpui::*;
 
+use crate::backlinks::{BacklinksState, BacklinksView};
 use crate::command::Command;
 use crate::editor::{EditorState, EditorView};
 use crate::graph::{GraphState, GraphView};
@@ -94,6 +95,10 @@ pub enum ActiveItem {
         state: Entity<GraphState>,
         view: Entity<GraphView>,
     },
+    Backlinks {
+        state: Entity<BacklinksState>,
+        view: Entity<BacklinksView>,
+    },
 }
 
 impl ActiveItem {
@@ -102,6 +107,7 @@ impl ActiveItem {
             Self::Editor { view, .. } => view.update(cx, |view, cx| view.set_theme(theme, cx)),
             Self::Pdf { view, .. } => view.update(cx, |view, cx| view.set_theme(theme, cx)),
             Self::Graph { view, .. } => view.update(cx, |view, cx| view.set_theme(theme, cx)),
+            Self::Backlinks { view, .. } => view.update(cx, |view, cx| view.set_theme(theme, cx)),
         }
     }
 
@@ -133,6 +139,7 @@ impl ActiveItem {
             Self::Editor { .. } => "Markdown",
             Self::Pdf { .. } => "PDF",
             Self::Graph { .. } => "Graph",
+            Self::Backlinks { .. } => "Backlinks",
         }
     }
 
@@ -142,6 +149,7 @@ impl ActiveItem {
             Self::Editor { .. } => EditorState::commands(),
             Self::Pdf { .. } => PdfState::commands(),
             Self::Graph { .. } => GraphState::commands(),
+            Self::Backlinks { .. } => BacklinksState::commands(),
         }
     }
 
@@ -172,6 +180,12 @@ impl ActiveItem {
                     s.execute_command(cmd_id, viewport, vim.vim_enabled, cx)
                 })
             }
+            Self::Backlinks { state, .. } => {
+                let state = state.clone();
+                state.update(cx, |s, cx| {
+                    s.execute_command(cmd_id, viewport, vim.vim_enabled, cx)
+                })
+            }
         }
     }
 
@@ -181,6 +195,7 @@ impl ActiveItem {
             Self::Editor { state, .. } => state.read(cx).item_get_candidates(delegate_id, input),
             Self::Pdf { state, .. } => state.read(cx).get_candidates(delegate_id, input),
             Self::Graph { state, .. } => state.read(cx).get_candidates(delegate_id, input),
+            Self::Backlinks { state, .. } => state.read(cx).get_candidates(delegate_id, input),
         }
     }
 
@@ -211,6 +226,12 @@ impl ActiveItem {
                     s.handle_confirm(delegate_id, input, candidate, cx)
                 })
             }
+            Self::Backlinks { state, .. } => {
+                let state = state.clone();
+                state.update(cx, |s, cx| {
+                    s.handle_confirm(delegate_id, input, candidate, cx)
+                })
+            }
         }
     }
 
@@ -231,6 +252,10 @@ impl ActiveItem {
                 let state = state.clone();
                 state.update(cx, |s, cx| s.on_input_changed(delegate_id, input, cx));
             }
+            Self::Backlinks { state, .. } => {
+                let state = state.clone();
+                state.update(cx, |s, cx| s.on_input_changed(delegate_id, input, cx));
+            }
         }
     }
 
@@ -240,6 +265,7 @@ impl ActiveItem {
             Self::Editor { .. } => false,
             Self::Pdf { .. } => delegate_id == "pdf-search",
             Self::Graph { .. } => false,
+            Self::Backlinks { .. } => false,
         }
     }
 
@@ -257,12 +283,17 @@ impl ActiveItem {
         matches!(self, Self::Graph { .. })
     }
 
+    pub fn is_backlinks(&self) -> bool {
+        matches!(self, Self::Backlinks { .. })
+    }
+
     /// Get the view element for rendering.
     pub fn view_element(&self) -> AnyView {
         match self {
             Self::Editor { view, .. } => view.clone().into(),
             Self::Pdf { view, .. } => view.clone().into(),
             Self::Graph { view, .. } => view.clone().into(),
+            Self::Backlinks { view, .. } => view.clone().into(),
         }
     }
 
@@ -272,6 +303,7 @@ impl ActiveItem {
             Self::Editor { state, .. } => state.read(cx).focus(window),
             Self::Pdf { state, .. } => state.read(cx).focus(window),
             Self::Graph { state, .. } => state.read(cx).focus(window),
+            Self::Backlinks { state, .. } => state.read(cx).focus(window),
         }
     }
 
@@ -306,6 +338,10 @@ impl ActiveItem {
                 let mode = if gs.local_mode { "local" } else { "global" };
                 format!("Graph {} nodes {} edges {}% {}", n, e, zoom_pct, mode)
             }
+            Self::Backlinks { state, .. } => {
+                let state = state.read(cx);
+                format!("{} backlinks", state.backlinks.len())
+            }
         }
     }
 
@@ -315,6 +351,7 @@ impl ActiveItem {
             Self::Editor { .. } => ("EDI", 0x268BD2), // solarized blue (overridden by vim state)
             Self::Pdf { .. } => ("PDF", 0xCB4B16),    // solarized orange
             Self::Graph { .. } => ("GRP", 0x6C71C4),  // solarized violet
+            Self::Backlinks { .. } => ("BL", 0x859900), // solarized green
         }
     }
 }
