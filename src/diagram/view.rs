@@ -373,7 +373,10 @@ impl Render for DiagramView {
                     match tool {
                         Tool::Select => {
                             if let Some(idx) = hit {
-                                this.state.update(cx, |s, _| s.select_only(idx));
+                                this.state.update(cx, |s, _| {
+                                    s.select_only(idx);
+                                    s.push_undo();
+                                });
                                 let origins = this.state.read(cx).selected_origins();
                                 this.drag = Some(Drag::Move {
                                     start: world,
@@ -392,9 +395,10 @@ impl Render for DiagramView {
                             cx.stop_propagation();
                         }
                         creation => {
-                            let idx = this
-                                .state
-                                .update(cx, |s, _| s.create_element(creation, world.0, world.1));
+                            let idx = this.state.update(cx, |s, _| {
+                                s.push_undo();
+                                s.create_element(creation, world.0, world.1)
+                            });
                             if let Some(idx) = idx {
                                 this.drag = Some(Drag::Create {
                                     index: idx,
@@ -402,6 +406,8 @@ impl Render for DiagramView {
                                     start: world,
                                 });
                                 cx.notify();
+                            } else {
+                                this.state.update(cx, |s, _| s.discard_last_undo());
                             }
                         }
                     }
@@ -471,6 +477,11 @@ impl Render for DiagramView {
                         Some(Drag::Move { moved: true, .. }) => {
                             this.state.update(cx, |s, _| s.dirty = true);
                             cx.notify();
+                        }
+                        // A click that selected but did not move: cancel the
+                        // snapshot pushed on mouse-down.
+                        Some(Drag::Move { moved: false, .. }) => {
+                            this.state.update(cx, |s, _| s.discard_last_undo());
                         }
                         Some(Drag::Create { index, .. }) => {
                             let idx = *index;

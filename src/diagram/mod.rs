@@ -74,6 +74,9 @@ pub struct DiagramState {
     /// World position where a pending text element will be created (set when
     /// the Text tool is clicked, consumed when the minibuffer confirms).
     pending_text_pos: Option<(f64, f64)>,
+    /// Undo/redo history of whole-document snapshots.
+    undo_stack: Vec<ExcalidrawFile>,
+    redo_stack: Vec<ExcalidrawFile>,
     /// Screen origin of the canvas, stashed each paint for hit-testing.
     origin_x: f32,
     origin_y: f32,
@@ -92,6 +95,8 @@ impl DiagramState {
             selected: Vec::new(),
             dirty: false,
             pending_text_pos: None,
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
             origin_x: 0.0,
             origin_y: 0.0,
             focus_handle: cx.focus_handle(),
@@ -168,6 +173,47 @@ impl DiagramState {
         let wx = (sx - self.origin_x - self.pan_x) / self.zoom;
         let wy = (sy - self.origin_y - self.pan_y) / self.zoom;
         (wx as f64, wy as f64)
+    }
+
+    // ─── Undo / redo ────────────────────────────────────────────────────
+
+    /// Snapshot the document before a mutating operation. Clears the redo
+    /// stack (a new edit forks history).
+    pub fn push_undo(&mut self) {
+        const CAP: usize = 100;
+        self.undo_stack.push(self.file.clone());
+        if self.undo_stack.len() > CAP {
+            self.undo_stack.remove(0);
+        }
+        self.redo_stack.clear();
+    }
+
+    /// Drop the most recent undo snapshot (used to cancel a no-op operation,
+    /// e.g. a click that created nothing or a drag that did not move).
+    pub fn discard_last_undo(&mut self) {
+        self.undo_stack.pop();
+    }
+
+    pub fn undo(&mut self) -> bool {
+        let Some(prev) = self.undo_stack.pop() else {
+            return false;
+        };
+        let current = std::mem::replace(&mut self.file, prev);
+        self.redo_stack.push(current);
+        self.selected.clear();
+        self.dirty = true;
+        true
+    }
+
+    pub fn redo(&mut self) -> bool {
+        let Some(next) = self.redo_stack.pop() else {
+            return false;
+        };
+        let current = std::mem::replace(&mut self.file, next);
+        self.undo_stack.push(current);
+        self.selected.clear();
+        self.dirty = true;
+        true
     }
 
     // ─── Selection & editing ────────────────────────────────────────────
@@ -297,6 +343,8 @@ impl DiagramState {
         if degenerate && index + 1 == self.file.elements.len() {
             self.file.elements.pop();
             self.selected.clear();
+            // Cancel the undo snapshot pushed before this (no-op) creation.
+            self.discard_last_undo();
         } else {
             self.select_only(index);
         }
@@ -320,6 +368,7 @@ impl DiagramState {
         if text.is_empty() {
             return;
         }
+        self.push_undo();
         let font = 20.0;
         let lines = text.split('\n').count().max(1) as f64;
         let width = text
@@ -339,6 +388,13 @@ impl DiagramState {
 
     /// Mark the selected elements deleted (excalidraw `isDeleted`).
     pub fn delete_selected(&mut self) -> usize {
+        let has_live = self
+            .selected
+            .iter()
+            .any(|&i| self.file.elements.get(i).is_some_and(|el| !el.is_deleted));
+        if has_live {
+            self.push_undo();
+        }
         let mut n = 0;
         for &i in &self.selected {
             if let Some(el) = self.file.elements.get_mut(i)
@@ -464,6 +520,20 @@ impl DiagramState {
                 aliases: &[],
                 binding: Some("t"),
             },
+            Command {
+                id: "diagram-undo",
+                name: "Diagram: Undo",
+                description: "Undo the last change",
+                aliases: &[],
+                binding: Some("u"),
+            },
+            Command {
+                id: "diagram-redo",
+                name: "Diagram: Redo",
+                description: "Redo the last undone change",
+                aliases: &[],
+                binding: None,
+            },
         ]
     }
 
@@ -517,6 +587,20 @@ impl DiagramState {
                 prompt: "Text:".into(),
                 highlight_input: false,
             }],
+            "diagram-undo" => {
+                if self.undo() {
+                    vec![ItemAction::SetMessage("Undo".into())]
+                } else {
+                    vec![ItemAction::SetMessage("Nothing to undo".into())]
+                }
+            }
+            "diagram-redo" => {
+                if self.redo() {
+                    vec![ItemAction::SetMessage("Redo".into())]
+                } else {
+                    vec![ItemAction::SetMessage("Nothing to redo".into())]
+                }
+            }
             _ => return CommandOutcome::Unhandled,
         };
         CommandOutcome::handled(actions)
