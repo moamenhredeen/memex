@@ -28,6 +28,83 @@ enum Drag {
         tool: Tool,
         start: (f64, f64),
     },
+    /// Resizing a box element by dragging a handle.
+    Resize {
+        index: usize,
+        handle: Handle,
+        orig: (f64, f64, f64, f64),
+    },
+}
+
+/// A resize handle on the selection bounding box.
+#[derive(Clone, Copy)]
+enum Handle {
+    NW,
+    N,
+    NE,
+    E,
+    SE,
+    S,
+    SW,
+    W,
+}
+
+/// World positions of the eight resize handles for a `(x, y, w, h)` box.
+fn handle_world_positions(b: (f64, f64, f64, f64)) -> [(Handle, f64, f64); 8] {
+    let (x, y, w, h) = b;
+    [
+        (Handle::NW, x, y),
+        (Handle::N, x + w / 2.0, y),
+        (Handle::NE, x + w, y),
+        (Handle::E, x + w, y + h / 2.0),
+        (Handle::SE, x + w, y + h),
+        (Handle::S, x + w / 2.0, y + h),
+        (Handle::SW, x, y + h),
+        (Handle::W, x, y + h / 2.0),
+    ]
+}
+
+/// Find a handle near the screen point `(mx, my)`, if any.
+fn handle_at(ds: &DiagramState, b: (f64, f64, f64, f64), mx: f32, my: f32) -> Option<Handle> {
+    const TOL: f32 = 7.0;
+    for (handle, wx, wy) in handle_world_positions(b) {
+        let (sx, sy) = ds.world_to_screen(wx, wy);
+        if (sx - mx).abs() <= TOL && (sy - my).abs() <= TOL {
+            return Some(handle);
+        }
+    }
+    None
+}
+
+/// New `(x, y, w, h)` after dragging `handle` to world point `cur`.
+fn resize_box(handle: Handle, orig: (f64, f64, f64, f64), cur: (f64, f64)) -> (f64, f64, f64, f64) {
+    let (x, y, w, h) = orig;
+    let (mut left, mut top, mut right, mut bottom) = (x, y, x + w, y + h);
+    match handle {
+        Handle::NW => {
+            left = cur.0;
+            top = cur.1;
+        }
+        Handle::N => top = cur.1,
+        Handle::NE => {
+            right = cur.0;
+            top = cur.1;
+        }
+        Handle::E => right = cur.0,
+        Handle::SE => {
+            right = cur.0;
+            bottom = cur.1;
+        }
+        Handle::S => bottom = cur.1,
+        Handle::SW => {
+            left = cur.0;
+            bottom = cur.1;
+        }
+        Handle::W => left = cur.0,
+    }
+    let nw = (right - left).max(1.0);
+    let nh = (bottom - top).max(1.0);
+    (left.min(right), top.min(bottom), nw, nh)
 }
 
 pub struct DiagramView {
@@ -335,6 +412,7 @@ impl Render for DiagramView {
         let pan_y = ds.pan_y;
         let tool = ds.tool;
         let selected = ds.selected.clone();
+        let handle_box = ds.selected_single_box().and_then(|i| ds.element_bounds(i));
         let elements = ds.file.elements.clone();
         let bg = ds
             .file
@@ -365,14 +443,32 @@ impl Render for DiagramView {
                 cx.listener(move |this, e: &MouseDownEvent, _window, cx| {
                     let mx: f32 = e.position.x.into();
                     let my: f32 = e.position.y.into();
-                    let (tool, world, hit, pan_x, pan_y) = {
+                    let (tool, world, hit, handle_hit, pan_x, pan_y) = {
                         let ds = this.state.read(cx);
                         let (wx, wy) = ds.screen_to_world(mx, my);
-                        (ds.tool, (wx, wy), ds.hit_test(wx, wy), ds.pan_x, ds.pan_y)
+                        let handle_hit = ds.selected_single_box().and_then(|i| {
+                            let b = ds.element_bounds(i)?;
+                            handle_at(ds, b, mx, my).map(|h| (i, h, b))
+                        });
+                        (
+                            ds.tool,
+                            (wx, wy),
+                            ds.hit_test(wx, wy),
+                            handle_hit,
+                            ds.pan_x,
+                            ds.pan_y,
+                        )
                     };
                     match tool {
                         Tool::Select => {
-                            if let Some(idx) = hit {
+                            if let Some((idx, handle, orig)) = handle_hit {
+                                this.state.update(cx, |s, _| s.push_undo());
+                                this.drag = Some(Drag::Resize {
+                                    index: idx,
+                                    handle,
+                                    orig,
+                                });
+                            } else if let Some(idx) = hit {
                                 this.state.update(cx, |s, _| {
                                     s.select_only(idx);
                                     s.push_undo();
@@ -424,6 +520,7 @@ impl Render for DiagramView {
                     Pan(f32, f32, f32, f32),
                     Move((f64, f64), Vec<(usize, f64, f64)>),
                     Create(usize, Tool, (f64, f64)),
+                    Resize(usize, Handle, (f64, f64, f64, f64)),
                 }
                 let act = match &this.drag {
                     Some(Drag::Pan(a, b, c, d)) => Some(Act::Pan(*a, *b, *c, *d)),
@@ -433,6 +530,11 @@ impl Render for DiagramView {
                     Some(Drag::Create { index, tool, start }) => {
                         Some(Act::Create(*index, *tool, *start))
                     }
+                    Some(Drag::Resize {
+                        index,
+                        handle,
+                        orig,
+                    }) => Some(Act::Resize(*index, *handle, *orig)),
                     None => None,
                 };
                 match act {
@@ -467,6 +569,12 @@ impl Render for DiagramView {
                         });
                         cx.notify();
                     }
+                    Some(Act::Resize(index, handle, orig)) => {
+                        let cur = this.state.read(cx).screen_to_world(mx, my);
+                        let (x, y, w, h) = resize_box(handle, orig, cur);
+                        this.state.update(cx, |s, _| s.set_element_box(index, x, y, w, h));
+                        cx.notify();
+                    }
                     None => {}
                 }
             }))
@@ -486,6 +594,10 @@ impl Render for DiagramView {
                         Some(Drag::Create { index, .. }) => {
                             let idx = *index;
                             this.state.update(cx, |s, _| s.finish_creation(idx));
+                            cx.notify();
+                        }
+                        Some(Drag::Resize { .. }) => {
+                            this.state.update(cx, |s, _| s.dirty = true);
                             cx.notify();
                         }
                         _ => {}
@@ -559,6 +671,21 @@ impl Render for DiagramView {
                                     (sx - pad, sy + h + pad),
                                 ];
                                 stroke_polyline(window, &corners, 1.5, accent, true);
+                            }
+                            // Resize handles for a single box selection.
+                            if let Some(b) = handle_box {
+                                let hs = 4.0; // half-size in screen px
+                                for (_, wx, wy) in handle_world_positions(b) {
+                                    let sx = wx as f32 * zoom + ox + pan_x;
+                                    let sy = wy as f32 * zoom + oy + pan_y;
+                                    let sq = [
+                                        (sx - hs, sy - hs),
+                                        (sx + hs, sy - hs),
+                                        (sx + hs, sy + hs),
+                                        (sx - hs, sy + hs),
+                                    ];
+                                    fill_polygon(window, &sq, accent);
+                                }
                             }
                         }
                     },

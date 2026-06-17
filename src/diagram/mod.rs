@@ -175,6 +175,50 @@ impl DiagramState {
         (wx as f64, wy as f64)
     }
 
+    /// Map a world point to screen (window) coordinates.
+    pub fn world_to_screen(&self, wx: f64, wy: f64) -> (f32, f32) {
+        (
+            wx as f32 * self.zoom + self.pan_x + self.origin_x,
+            wy as f32 * self.zoom + self.pan_y + self.origin_y,
+        )
+    }
+
+    /// If exactly one box-like element (rectangle/ellipse/diamond/text/image)
+    /// is selected, return its index. Resize handles apply only to these.
+    pub fn selected_single_box(&self) -> Option<usize> {
+        if self.selected.len() != 1 {
+            return None;
+        }
+        let i = self.selected[0];
+        let el = self.file.elements.get(i)?;
+        if el.is_deleted {
+            return None;
+        }
+        matches!(
+            el.element_type.as_str(),
+            "rectangle" | "ellipse" | "diamond" | "text" | "image" | "frame"
+        )
+        .then_some(i)
+    }
+
+    /// World-space `(x, y, width, height)` of an element.
+    pub fn element_bounds(&self, index: usize) -> Option<(f64, f64, f64, f64)> {
+        self.file
+            .elements
+            .get(index)
+            .map(|el| (el.x, el.y, el.width, el.height))
+    }
+
+    /// Set an element's full box (used by resize).
+    pub fn set_element_box(&mut self, index: usize, x: f64, y: f64, w: f64, h: f64) {
+        if let Some(el) = self.file.elements.get_mut(index) {
+            el.x = x;
+            el.y = y;
+            el.width = w;
+            el.height = h;
+        }
+    }
+
     // ─── Undo / redo ────────────────────────────────────────────────────
 
     /// Snapshot the document before a mutating operation. Clears the redo
