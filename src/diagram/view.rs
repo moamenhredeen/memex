@@ -265,6 +265,64 @@ fn arrowhead(window: &mut Window, from: (f32, f32), tip: (f32, f32), size: f32, 
     }
 }
 
+/// Paint a tool's glyph inside a button's bounds (used by the palette icons).
+fn paint_tool_glyph(window: &mut Window, tool: Tool, bounds: Bounds<Pixels>, color: Rgba) {
+    let ox: f32 = bounds.origin.x.into();
+    let oy: f32 = bounds.origin.y.into();
+    let s: f32 = bounds.size.width.into();
+    let p = 3.0;
+    let (l, t, r, b) = (ox + p, oy + p, ox + s - p, oy + s - p);
+    let (w, h) = (r - l, b - t);
+    let (cx, cy) = ((l + r) * 0.5, (t + b) * 0.5);
+    let sw = 1.6;
+    match tool {
+        Tool::Select => {
+            // Mouse-cursor silhouette.
+            let pts = [
+                (l, t),
+                (l, b),
+                (l + w * 0.30, b - h * 0.26),
+                (l + w * 0.50, b),
+                (l + w * 0.62, b - h * 0.05),
+                (l + w * 0.42, b - h * 0.32),
+                (l + w * 0.72, b - h * 0.32),
+            ];
+            fill_polygon(window, &pts, color);
+        }
+        Tool::Rectangle => {
+            let c = [(l, t), (r, t), (r, b), (l, b)];
+            stroke_polyline(window, &c, sw, color, true);
+        }
+        Tool::Ellipse => {
+            let e = ellipse_points(cx, cy, w * 0.5, h * 0.5);
+            stroke_polyline(window, &e, sw, color, true);
+        }
+        Tool::Diamond => {
+            let d = [(cx, t), (r, cy), (cx, b), (l, cy)];
+            stroke_polyline(window, &d, sw, color, true);
+        }
+        Tool::Arrow => {
+            stroke_polyline(window, &[(l, b), (r, t)], sw, color, false);
+            arrowhead(window, (l, b), (r, t), 6.0, color);
+        }
+        Tool::Line => stroke_polyline(window, &[(l, b), (r, t)], sw, color, false),
+        Tool::Draw => {
+            let z = [
+                (l, b),
+                (l + w * 0.3, t),
+                (cx, b),
+                (l + w * 0.7, t),
+                (r, b),
+            ];
+            stroke_polyline(window, &z, sw, color, false);
+        }
+        Tool::Text => {
+            stroke_polyline(window, &[(l, t), (r, t)], sw, color, false);
+            stroke_polyline(window, &[(cx, t), (cx, b)], sw, color, false);
+        }
+    }
+}
+
 /// Paint one element with the given camera (`zoom`, screen origin `ox`/`oy`).
 fn paint_element(
     window: &mut Window,
@@ -413,6 +471,7 @@ impl Render for DiagramView {
         let tool = ds.tool;
         let selected = ds.selected.clone();
         let handle_box = ds.selected_single_box().and_then(|i| ds.element_bounds(i));
+        let editing = ds.editing_text();
         let elements = ds.file.elements.clone();
         let bg = ds
             .file
@@ -428,6 +487,37 @@ impl Render for DiagramView {
             .track_focus(&focus)
             .on_key_down(cx.listener(|this, e: &KeyDownEvent, _window, cx| {
                 let k = &e.keystroke;
+                // While editing text, keys feed the text element, not commands.
+                if this.state.read(cx).editing_text().is_some() {
+                    let handled = match k.key.as_str() {
+                        "escape" => {
+                            this.state.update(cx, |s, _| s.finish_text_editing());
+                            true
+                        }
+                        "backspace" => {
+                            this.state.update(cx, |s, _| s.text_backspace());
+                            true
+                        }
+                        "enter" => {
+                            this.state.update(cx, |s, _| s.text_input("\n"));
+                            true
+                        }
+                        _ if !k.modifiers.control && !k.modifiers.alt => {
+                            if let Some(ch) = &k.key_char {
+                                this.state.update(cx, |s, _| s.text_input(ch));
+                                true
+                            } else {
+                                false
+                            }
+                        }
+                        _ => false,
+                    };
+                    if handled {
+                        cx.notify();
+                        cx.stop_propagation();
+                    }
+                    return;
+                }
                 if let Some(cmd) = this.resolve_command(
                     k.key.as_str(),
                     k.modifiers.control,
@@ -443,6 +533,11 @@ impl Render for DiagramView {
                 cx.listener(move |this, e: &MouseDownEvent, _window, cx| {
                     let mx: f32 = e.position.x.into();
                     let my: f32 = e.position.y.into();
+                    // Commit any in-progress text edit before handling the click.
+                    if this.state.read(cx).editing_text().is_some() {
+                        this.state.update(cx, |s, _| s.finish_text_editing());
+                        cx.notify();
+                    }
                     let (tool, world, hit, handle_hit, pan_x, pan_y) = {
                         let ds = this.state.read(cx);
                         let (wx, wy) = ds.screen_to_world(mx, my);
@@ -486,8 +581,13 @@ impl Render for DiagramView {
                             cx.notify();
                         }
                         Tool::Text => {
-                            this.state.update(cx, |s, _| s.set_pending_text(world.0, world.1));
-                            cx.emit(DiagramViewEvent::Command("diagram-text-input"));
+                            let existing =
+                                hit.filter(|&i| this.state.read(cx).is_text_element(i));
+                            this.state.update(cx, |s, _| match existing {
+                                Some(i) => s.edit_existing_text(i),
+                                None => s.start_text(world.0, world.1),
+                            });
+                            cx.notify();
                             cx.stop_propagation();
                         }
                         creation => {
@@ -687,6 +787,28 @@ impl Render for DiagramView {
                                     fill_polygon(window, &sq, accent);
                                 }
                             }
+                            // Text caret while editing.
+                            if let Some(eidx) = editing
+                                && let Some(el) = elements.get(eidx)
+                            {
+                                let fs = el.font_size.unwrap_or(20.0) as f32 * zoom;
+                                let txt = el.text.as_deref().unwrap_or("");
+                                let last = txt.split('\n').next_back().unwrap_or("");
+                                let lines = txt.split('\n').count().max(1);
+                                let caret_x = el.x as f32 * zoom
+                                    + ox
+                                    + pan_x
+                                    + last.chars().count() as f32 * fs * 0.6;
+                                let caret_y =
+                                    el.y as f32 * zoom + oy + pan_y + (lines - 1) as f32 * fs * 1.25;
+                                stroke_segment(
+                                    window,
+                                    (caret_x, caret_y),
+                                    (caret_x, caret_y + fs),
+                                    1.5,
+                                    accent,
+                                );
+                            }
                         }
                     },
                 )
@@ -697,47 +819,59 @@ impl Render for DiagramView {
 }
 
 impl DiagramView {
-    /// Build the floating tool palette.
+    /// Build the floating, centered tool palette with drawn glyph icons.
     fn render_palette(&self, active: Tool, cx: &mut Context<Self>) -> impl IntoElement {
-        const TOOLS: [(&str, &str, Tool); 8] = [
-            ("Sel", "diagram-tool-select", Tool::Select),
-            ("Rect", "diagram-tool-rectangle", Tool::Rectangle),
-            ("Ellip", "diagram-tool-ellipse", Tool::Ellipse),
-            ("Diam", "diagram-tool-diamond", Tool::Diamond),
-            ("Arrow", "diagram-tool-arrow", Tool::Arrow),
-            ("Line", "diagram-tool-line", Tool::Line),
-            ("Draw", "diagram-tool-draw", Tool::Draw),
-            ("Text", "diagram-tool-text", Tool::Text),
+        const TOOLS: [(&str, Tool); 8] = [
+            ("diagram-tool-select", Tool::Select),
+            ("diagram-tool-rectangle", Tool::Rectangle),
+            ("diagram-tool-ellipse", Tool::Ellipse),
+            ("diagram-tool-diamond", Tool::Diamond),
+            ("diagram-tool-arrow", Tool::Arrow),
+            ("diagram-tool-line", Tool::Line),
+            ("diagram-tool-draw", Tool::Draw),
+            ("diagram-tool-text", Tool::Text),
         ];
         let theme = self.theme;
-        let mut row = div()
-            .absolute()
-            .top_2()
-            .left_2()
+        let mut bar = div()
             .flex()
             .flex_row()
-            .gap_1();
-        for (label, cmd, tool) in TOOLS {
+            .gap_1()
+            .p_1()
+            .rounded_lg()
+            .bg(rgb(theme.surface))
+            .border_1()
+            .border_color(rgb(theme.border))
+            .shadow_md();
+        for (cmd, tool) in TOOLS {
             let is_active = active == tool;
-            row = row.child(
+            let icon_color = rgba(
+                ((if is_active { theme.background } else { theme.text }) << 8) | 0xFF,
+            );
+            bar = bar.child(
                 div()
                     .id(cmd)
-                    .px_2()
-                    .py_1()
+                    .size(px(30.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
                     .rounded_md()
-                    .border_1()
-                    .border_color(rgb(theme.text_muted))
-                    .bg(rgb(if is_active {
-                        theme.accent
-                    } else {
-                        theme.background
-                    }))
-                    .text_color(rgb(if is_active {
-                        theme.background
-                    } else {
-                        theme.text
-                    }))
-                    .child(SharedString::from(label))
+                    .bg(rgb(if is_active { theme.accent } else { theme.surface }))
+                    .hover(move |s| {
+                        s.bg(rgb(if is_active {
+                            theme.accent
+                        } else {
+                            theme.selection
+                        }))
+                    })
+                    .child(
+                        canvas(
+                            |_, _, _| {},
+                            move |bounds, _: (), window, _cx| {
+                                paint_tool_glyph(window, tool, bounds, icon_color);
+                            },
+                        )
+                        .size(px(20.0)),
+                    )
                     .on_mouse_down(
                         MouseButton::Left,
                         cx.listener(move |_this, _e: &MouseDownEvent, _window, cx| {
@@ -747,6 +881,13 @@ impl DiagramView {
                     ),
             );
         }
-        row
+        div()
+            .absolute()
+            .top_3()
+            .left_0()
+            .right_0()
+            .flex()
+            .justify_center()
+            .child(bar)
     }
 }

@@ -71,9 +71,8 @@ pub struct DiagramState {
     pub selected: Vec<usize>,
     /// Unsaved changes pending.
     pub dirty: bool,
-    /// World position where a pending text element will be created (set when
-    /// the Text tool is clicked, consumed when the minibuffer confirms).
-    pending_text_pos: Option<(f64, f64)>,
+    /// Index of the text element currently being typed into (inline editing).
+    editing_text: Option<usize>,
     /// Undo/redo history of whole-document snapshots.
     undo_stack: Vec<ExcalidrawFile>,
     redo_stack: Vec<ExcalidrawFile>,
@@ -94,7 +93,7 @@ impl DiagramState {
             tool: Tool::Select,
             selected: Vec::new(),
             dirty: false,
-            pending_text_pos: None,
+            editing_text: None,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             origin_x: 0.0,
@@ -199,6 +198,14 @@ impl DiagramState {
             "rectangle" | "ellipse" | "diamond" | "text" | "image" | "frame"
         )
         .then_some(i)
+    }
+
+    /// Whether the element at `index` is an editable text element.
+    pub fn is_text_element(&self, index: usize) -> bool {
+        self.file
+            .elements
+            .get(index)
+            .is_some_and(|el| el.element_type == "text" && !el.is_deleted)
     }
 
     /// World-space `(x, y, width, height)` of an element.
@@ -396,38 +403,95 @@ impl DiagramState {
         self.dirty = true;
     }
 
-    /// Stash where the next text element will be placed (Text-tool click).
-    pub fn set_pending_text(&mut self, wx: f64, wy: f64) {
-        self.pending_text_pos = Some((wx, wy));
+    // ─── Inline text editing ────────────────────────────────────────────
+
+    /// Index of the text element being edited, if any.
+    pub fn editing_text(&self) -> Option<usize> {
+        self.editing_text
     }
 
-    /// Create a text element from confirmed minibuffer input at the pending
-    /// position. Returns to the Select tool.
-    pub fn commit_pending_text(&mut self, text: &str) {
-        let Some((wx, wy)) = self.pending_text_pos.take() else {
-            return;
-        };
-        self.tool = Tool::Select;
-        let text = text.trim();
-        if text.is_empty() {
-            return;
-        }
+    /// Begin a new text element at the world point and enter editing mode.
+    pub fn start_text(&mut self, wx: f64, wy: f64) {
         self.push_undo();
         let font = 20.0;
-        let lines = text.split('\n').count().max(1) as f64;
-        let width = text
-            .split('\n')
-            .map(|l| l.chars().count())
-            .max()
-            .unwrap_or(0) as f64
-            * font
-            * 0.6;
-        let mut el = Element::base(gen_id(), "text", wx, wy, width, lines * font * 1.25);
-        el.text = Some(text.to_string());
+        let mut el = Element::base(gen_id(), "text", wx, wy, font * 0.6, font * 1.25);
+        el.text = Some(String::new());
         el.font_size = Some(font);
         self.file.elements.push(el);
-        self.select_only(self.file.elements.len() - 1);
+        let idx = self.file.elements.len() - 1;
+        self.select_only(idx);
+        self.editing_text = Some(idx);
         self.dirty = true;
+    }
+
+    /// Begin editing an existing text element.
+    pub fn edit_existing_text(&mut self, index: usize) {
+        if self
+            .file
+            .elements
+            .get(index)
+            .is_some_and(|el| el.element_type == "text" && !el.is_deleted)
+        {
+            self.push_undo();
+            self.select_only(index);
+            self.editing_text = Some(index);
+        }
+    }
+
+    /// Append typed text to the element being edited.
+    pub fn text_input(&mut self, s: &str) {
+        if let Some(idx) = self.editing_text {
+            if let Some(el) = self.file.elements.get_mut(idx) {
+                el.text.get_or_insert_with(String::new).push_str(s);
+            }
+            self.recompute_text_metrics(idx);
+            self.dirty = true;
+        }
+    }
+
+    /// Delete the last character of the element being edited.
+    pub fn text_backspace(&mut self) {
+        if let Some(idx) = self.editing_text {
+            if let Some(el) = self.file.elements.get_mut(idx) {
+                el.text.get_or_insert_with(String::new).pop();
+            }
+            self.recompute_text_metrics(idx);
+            self.dirty = true;
+        }
+    }
+
+    /// Finish text editing: drop an empty element (cancelling its undo step),
+    /// otherwise keep it. Always leaves editing mode.
+    pub fn finish_text_editing(&mut self) {
+        let Some(idx) = self.editing_text.take() else {
+            return;
+        };
+        let empty = self
+            .file
+            .elements
+            .get(idx)
+            .map(|el| el.text.as_deref().unwrap_or("").is_empty())
+            .unwrap_or(true);
+        if empty && idx + 1 == self.file.elements.len() {
+            self.file.elements.pop();
+            self.selected.clear();
+            self.discard_last_undo();
+        }
+    }
+
+    fn recompute_text_metrics(&mut self, index: usize) {
+        if let Some(el) = self.file.elements.get_mut(index) {
+            let font = el.font_size.unwrap_or(20.0);
+            let text = el.text.as_deref().unwrap_or("");
+            let lines = text.split('\n').count().max(1) as f64;
+            let cols = text
+                .split('\n')
+                .map(|l| l.chars().count())
+                .max()
+                .unwrap_or(0) as f64;
+            el.width = (cols * font * 0.6).max(font * 0.6);
+            el.height = lines * font * 1.25;
+        }
     }
 
     /// Mark the selected elements deleted (excalidraw `isDeleted`).
@@ -626,11 +690,6 @@ impl DiagramState {
             "diagram-tool-line" => self.set_tool(Tool::Line),
             "diagram-tool-draw" => self.set_tool(Tool::Draw),
             "diagram-tool-text" => self.set_tool(Tool::Text),
-            "diagram-text-input" => vec![ItemAction::ActivateDelegate {
-                id: "diagram-text".into(),
-                prompt: "Text:".into(),
-                highlight_input: false,
-            }],
             "diagram-undo" => {
                 if self.undo() {
                     vec![ItemAction::SetMessage("Undo".into())]
@@ -651,6 +710,7 @@ impl DiagramState {
     }
 
     fn set_tool(&mut self, tool: Tool) -> Vec<ItemAction> {
+        self.finish_text_editing();
         self.tool = tool;
         if tool != Tool::Select {
             self.selected.clear();
@@ -664,15 +724,11 @@ impl DiagramState {
 
     pub fn handle_confirm(
         &mut self,
-        delegate_id: &str,
-        input: &str,
+        _delegate_id: &str,
+        _input: &str,
         _candidate: Option<&Candidate>,
         _cx: &mut Context<Self>,
     ) -> Vec<ItemAction> {
-        if delegate_id == "diagram-text" {
-            self.commit_pending_text(input);
-            return vec![ItemAction::Dismiss];
-        }
         vec![]
     }
 
