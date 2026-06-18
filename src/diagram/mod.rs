@@ -372,6 +372,62 @@ impl DiagramState {
         }
     }
 
+    /// First non-deleted selected element (drives the properties panel's
+    /// displayed/active values).
+    pub fn primary_selected(&self) -> Option<&Element> {
+        self.selected
+            .iter()
+            .filter_map(|&i| self.file.elements.get(i))
+            .find(|el| !el.is_deleted)
+    }
+
+    /// Apply a mutation to every selected, non-deleted element as one undo
+    /// step. No-op (and no undo entry) when nothing is selected/changed.
+    fn mutate_selected(&mut self, f: impl Fn(&mut Element)) {
+        if self.selected.is_empty() {
+            return;
+        }
+        self.push_undo();
+        let mut changed = false;
+        for &i in &self.selected {
+            if let Some(el) = self.file.elements.get_mut(i)
+                && !el.is_deleted
+            {
+                f(el);
+                changed = true;
+            }
+        }
+        if changed {
+            self.dirty = true;
+        } else {
+            self.discard_last_undo();
+        }
+    }
+
+    pub fn set_selected_stroke_color(&mut self, color: &str) {
+        let c = color.to_string();
+        self.mutate_selected(|el| el.stroke_color = c.clone());
+    }
+
+    pub fn set_selected_background(&mut self, color: &str) {
+        let c = color.to_string();
+        self.mutate_selected(|el| el.background_color = c.clone());
+    }
+
+    pub fn set_selected_fill_style(&mut self, style: &str) {
+        let s = style.to_string();
+        self.mutate_selected(|el| el.fill_style = s.clone());
+    }
+
+    pub fn set_selected_stroke_style(&mut self, style: &str) {
+        let s = style.to_string();
+        self.mutate_selected(|el| el.stroke_style = s.clone());
+    }
+
+    pub fn set_selected_stroke_width(&mut self, width: f64) {
+        self.mutate_selected(|el| el.stroke_width = width);
+    }
+
     /// World-space (x, y) of each selected element, for drag anchoring.
     pub fn selected_origins(&self) -> Vec<(usize, f64, f64)> {
         self.selected

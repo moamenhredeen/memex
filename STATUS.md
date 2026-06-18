@@ -2,6 +2,26 @@
 
 Last updated: 2026-06-18
 
+## drawio-parity P2 COMPLETE (2026-06-18)
+Properties side panel + styled rendering. Builds clean, 6 diagram tests pass.
+- mod.rs: primary_selected(), mutate_selected() (one undo step over the whole
+  selection), setters set_selected_{stroke_color,background,fill_style,
+  stroke_style,stroke_width}.
+- view.rs render: stroke_polyline_dashed() (pattern carries across vertices),
+  dash_pattern() (dashed/dotted scaled by stroke width), stroke_styled()
+  wrapper. Shapes + lines/arrows honor el.stroke_style. Arrowhead stays solid.
+  hatch_dir() + fill_shape(): hachure / cross-hatch fills via scanline lines
+  clipped to the (convex) shape polygon; "solid" = fill_polygon as before.
+- view.rs render_panel(): right-side panel, shown only when selection
+  non-empty. Stroke + Background color swatches (excalidraw palette,
+  transparent included), Width (1/2/4 with bar glyph), Stroke style
+  (solid/dash/dot), Fill style (solid/hach/cross). Active = accent border/bg.
+  Each button calls the matching setter; panel swallows Left clicks so they
+  don't hit the canvas. Wired via .children(render_panel) in render().
+
+NEXT: P3 (connectors -- shape snap points + arrow start/end binding +
+re-route on move/resize). See PLAN.md.
+
 ## drawio-parity P1 COMPLETE (2026-06-18)
 Builds clean (no new warnings); 6 diagram tests pass.
 - Arrowhead: now a filled triangle (view.rs arrowhead()) -- fixes the

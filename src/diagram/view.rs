@@ -240,6 +240,149 @@ fn stroke_polyline(
     }
 }
 
+/// Stroke a polyline with a dash pattern `(on, off)` in screen pixels. The
+/// pattern carries continuously across vertices so corners stay even.
+fn stroke_polyline_dashed(
+    window: &mut Window,
+    pts: &[(f32, f32)],
+    width: f32,
+    color: Rgba,
+    closed: bool,
+    on: f32,
+    off: f32,
+) {
+    if pts.len() < 2 || on <= 0.0 || off <= 0.0 {
+        return;
+    }
+    let mut seq = pts.to_vec();
+    if closed {
+        seq.push(pts[0]);
+    }
+    let mut cell_left = on; // remaining length in the current cell
+    let mut drawing = true; // on-cell first
+    for i in 0..seq.len() - 1 {
+        let (mut ax, mut ay) = seq[i];
+        let (bx, by) = seq[i + 1];
+        let dx = bx - ax;
+        let dy = by - ay;
+        let seg = (dx * dx + dy * dy).sqrt();
+        if seg < 1e-3 {
+            continue;
+        }
+        let (ux, uy) = (dx / seg, dy / seg);
+        let mut pos = 0.0;
+        while pos < seg {
+            let step = cell_left.min(seg - pos);
+            let (nx, ny) = (ax + ux * step, ay + uy * step);
+            if drawing {
+                stroke_segment(window, (ax, ay), (nx, ny), width, color);
+            }
+            ax = nx;
+            ay = ny;
+            pos += step;
+            cell_left -= step;
+            if cell_left <= 1e-4 {
+                drawing = !drawing;
+                cell_left = if drawing { on } else { off };
+            }
+        }
+    }
+}
+
+/// Dash pattern (screen px) for an excalidraw `strokeStyle`, or `None` for
+/// solid. Scales with the stroke width so it reads at any zoom.
+fn dash_pattern(style: &str, stroke_w: f32) -> Option<(f32, f32)> {
+    match style {
+        "dashed" => Some(((stroke_w * 4.0).max(6.0), (stroke_w * 3.0).max(5.0))),
+        "dotted" => Some((stroke_w.max(1.5), (stroke_w * 2.0).max(3.0))),
+        _ => None,
+    }
+}
+
+/// Stroke a polyline either solid or dashed, per `dash`.
+fn stroke_styled(
+    window: &mut Window,
+    pts: &[(f32, f32)],
+    width: f32,
+    color: Rgba,
+    closed: bool,
+    dash: Option<(f32, f32)>,
+) {
+    match dash {
+        Some((on, off)) => stroke_polyline_dashed(window, pts, width, color, closed, on, off),
+        None => stroke_polyline(window, pts, width, color, closed),
+    }
+}
+
+/// Draw one family of parallel hatch lines clipped to a convex polygon `poly`
+/// (screen coords). `slope_pos` picks the diagonal direction.
+fn hatch_dir(
+    window: &mut Window,
+    poly: &[(f32, f32)],
+    color: Rgba,
+    line_w: f32,
+    spacing: f32,
+    slope_pos: bool,
+) {
+    if poly.len() < 3 {
+        return;
+    }
+    // Line family: x + s*y = c. s=+1 gives slope -1, s=-1 gives slope +1.
+    let s = if slope_pos { 1.0 } else { -1.0 };
+    let mut cmin = f32::MAX;
+    let mut cmax = f32::MIN;
+    for &(x, y) in poly {
+        let c = x + s * y;
+        cmin = cmin.min(c);
+        cmax = cmax.max(c);
+    }
+    let step = spacing * std::f32::consts::SQRT_2;
+    if step < 1.0 {
+        return;
+    }
+    let mut c = (cmin / step).ceil() * step;
+    while c <= cmax {
+        // Intersections of the line with each polygon edge.
+        let mut hits: Vec<(f32, f32)> = Vec::new();
+        for i in 0..poly.len() {
+            let (x0, y0) = poly[i];
+            let (x1, y1) = poly[(i + 1) % poly.len()];
+            let f0 = x0 + s * y0 - c;
+            let f1 = x1 + s * y1 - c;
+            if (f0 <= 0.0 && f1 > 0.0) || (f0 > 0.0 && f1 <= 0.0) {
+                let t = f0 / (f0 - f1);
+                hits.push((x0 + t * (x1 - x0), y0 + t * (y1 - y0)));
+            }
+        }
+        // Order along the line (key = projection onto its direction) and draw
+        // between consecutive intersection pairs.
+        hits.sort_by(|a, b| {
+            let ka = s * a.0 - a.1;
+            let kb = s * b.0 - b.1;
+            ka.partial_cmp(&kb).unwrap_or(std::cmp::Ordering::Equal)
+        });
+        let mut k = 0;
+        while k + 1 < hits.len() {
+            stroke_segment(window, hits[k], hits[k + 1], line_w, color);
+            k += 2;
+        }
+        c += step;
+    }
+}
+
+/// Fill a shape polygon: solid, hachure, or cross-hatch per `fill_style`.
+fn fill_shape(window: &mut Window, poly: &[(f32, f32)], color: Rgba, fill_style: &str, line_w: f32) {
+    let w = line_w.max(1.0);
+    match fill_style {
+        "hachure" => hatch_dir(window, poly, color, w, 8.0, true),
+        "cross-hatch" => {
+            hatch_dir(window, poly, color, w, 8.0, true);
+            hatch_dir(window, poly, color, w, 8.0, false);
+        }
+        _ => fill_polygon(window, poly, color),
+    }
+}
+
 /// Paint the background grid. `(bx, by)` is the canvas screen origin, `(w, h)`
 /// its size; `(ox, oy)` is the world-to-screen offset (canvas origin + pan).
 #[allow(clippy::too_many_arguments)]
@@ -394,6 +537,9 @@ fn paint_element(
         .unwrap_or_else(|| rgba((fallback_stroke << 8) | 0xFF));
     let fill = elem_rgba(&el.background_color, el.opacity);
     let stroke_w = (el.stroke_width as f32 * zoom).max(1.0);
+    let dash = dash_pattern(el.stroke_style.as_str(), stroke_w);
+    let fill_style = el.fill_style.as_str();
+    let hatch_w = (stroke_w * 0.6).max(1.0);
 
     let (sx, sy) = to_screen(el.x, el.y);
     let w = el.width as f32 * zoom;
@@ -408,9 +554,9 @@ fn paint_element(
                 (sx, sy + h),
             ];
             if let Some(c) = fill {
-                fill_polygon(window, &corners, c);
+                fill_shape(window, &corners, c, fill_style, hatch_w);
             }
-            stroke_polyline(window, &corners, stroke_w, stroke, true);
+            stroke_styled(window, &corners, stroke_w, stroke, true, dash);
         }
         "diamond" => {
             let pts = [
@@ -420,16 +566,16 @@ fn paint_element(
                 (sx, sy + h * 0.5),
             ];
             if let Some(c) = fill {
-                fill_polygon(window, &pts, c);
+                fill_shape(window, &pts, c, fill_style, hatch_w);
             }
-            stroke_polyline(window, &pts, stroke_w, stroke, true);
+            stroke_styled(window, &pts, stroke_w, stroke, true, dash);
         }
         "ellipse" => {
             let pts = ellipse_points(sx + w * 0.5, sy + h * 0.5, w * 0.5, h * 0.5);
             if let Some(c) = fill {
-                fill_polygon(window, &pts, c);
+                fill_shape(window, &pts, c, fill_style, hatch_w);
             }
-            stroke_polyline(window, &pts, stroke_w, stroke, true);
+            stroke_styled(window, &pts, stroke_w, stroke, true, dash);
         }
         "line" | "arrow" => {
             let Some(points) = &el.points else {
@@ -439,7 +585,7 @@ fn paint_element(
                 .iter()
                 .map(|p| to_screen(el.x + p[0], el.y + p[1]))
                 .collect();
-            stroke_polyline(window, &screen, stroke_w, stroke, false);
+            stroke_styled(window, &screen, stroke_w, stroke, false, dash);
             if el.element_type == "arrow" && screen.len() >= 2 {
                 let n = screen.len();
                 let head = (12.0 * zoom).max(8.0);
@@ -986,6 +1132,7 @@ impl Render for DiagramView {
                 .size_full(),
             )
             .child(self.render_palette(tool, cx))
+            .children(self.render_panel(cx))
     }
 }
 
@@ -1061,5 +1208,214 @@ impl DiagramView {
             .flex()
             .justify_center()
             .child(bar)
+    }
+
+    /// Properties panel for the current selection: stroke/background colors,
+    /// width, stroke style, fill style. `None` when nothing is selected.
+    fn render_panel(&self, cx: &mut Context<Self>) -> Option<Stateful<Div>> {
+        let theme = self.theme;
+        let (cur_stroke, cur_bg, cur_width, cur_sstyle, cur_fill) = {
+            let s = self.state.read(cx);
+            let el = s.primary_selected()?;
+            (
+                el.stroke_color.clone(),
+                el.background_color.clone(),
+                el.stroke_width,
+                el.stroke_style.clone(),
+                el.fill_style.clone(),
+            )
+        };
+
+        const STROKES: [(&str, &str); 5] = [
+            ("dstk-0", "#1e1e1e"),
+            ("dstk-1", "#e03131"),
+            ("dstk-2", "#2f9e44"),
+            ("dstk-3", "#1971c2"),
+            ("dstk-4", "#f08c00"),
+        ];
+        const BGS: [(&str, &str); 5] = [
+            ("dbg-0", "transparent"),
+            ("dbg-1", "#ffc9c9"),
+            ("dbg-2", "#b2f2bb"),
+            ("dbg-3", "#a5d8ff"),
+            ("dbg-4", "#ffec99"),
+        ];
+
+        let label = |text: &'static str| div().text_color(rgb(theme.text)).child(text);
+
+        // Stroke color swatches.
+        let mut stroke_row = div().flex().flex_row().gap_1();
+        for (id, hex) in STROKES {
+            let active = cur_stroke.eq_ignore_ascii_case(hex);
+            let col = parse_hex_rgb(hex).unwrap_or(0);
+            stroke_row = stroke_row.child(
+                div()
+                    .id(id)
+                    .size(px(20.0))
+                    .rounded_md()
+                    .bg(rgb(col))
+                    .border_2()
+                    .border_color(rgb(if active { theme.accent } else { theme.border }))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _e: &MouseDownEvent, _window, cx| {
+                            this.state.update(cx, |s, _| s.set_selected_stroke_color(hex));
+                            cx.notify();
+                            cx.stop_propagation();
+                        }),
+                    ),
+            );
+        }
+
+        // Background swatches.
+        let mut bg_row = div().flex().flex_row().gap_1();
+        for (id, hex) in BGS {
+            let active = cur_bg.eq_ignore_ascii_case(hex);
+            let transparent = hex == "transparent";
+            let col = parse_hex_rgb(hex).unwrap_or(theme.background);
+            bg_row = bg_row.child(
+                div()
+                    .id(id)
+                    .size(px(20.0))
+                    .rounded_md()
+                    .bg(rgb(if transparent { theme.background } else { col }))
+                    .border_2()
+                    .border_color(rgb(if active { theme.accent } else { theme.border }))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _e: &MouseDownEvent, _window, cx| {
+                            this.state.update(cx, |s, _| s.set_selected_background(hex));
+                            cx.notify();
+                            cx.stop_propagation();
+                        }),
+                    ),
+            );
+        }
+
+        // Stroke width.
+        let mut width_row = div().flex().flex_row().gap_1();
+        for (id, wv, bar_h) in [
+            ("dw-1", 1.0_f64, 2.0_f32),
+            ("dw-2", 2.0, 4.0),
+            ("dw-3", 4.0, 6.0),
+        ] {
+            let active = (cur_width - wv).abs() < 0.01;
+            width_row = width_row.child(
+                div()
+                    .id(id)
+                    .w(px(30.0))
+                    .h(px(20.0))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .rounded_md()
+                    .bg(rgb(if active { theme.accent } else { theme.surface }))
+                    .border_1()
+                    .border_color(rgb(theme.border))
+                    .child(div().w(px(16.0)).h(px(bar_h)).rounded_sm().bg(rgb(theme.text)))
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _e: &MouseDownEvent, _window, cx| {
+                            this.state.update(cx, |s, _| s.set_selected_stroke_width(wv));
+                            cx.notify();
+                            cx.stop_propagation();
+                        }),
+                    ),
+            );
+        }
+
+        // Stroke style + fill style (text buttons).
+        let mut sstyle_row = div().flex().flex_row().gap_1();
+        for (id, val, lbl) in [
+            ("dss-solid", "solid", "solid"),
+            ("dss-dashed", "dashed", "dash"),
+            ("dss-dotted", "dotted", "dot"),
+        ] {
+            let active = cur_sstyle == val;
+            sstyle_row = sstyle_row.child(
+                div()
+                    .id(id)
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .text_color(rgb(theme.text))
+                    .bg(rgb(if active { theme.accent } else { theme.surface }))
+                    .border_1()
+                    .border_color(rgb(theme.border))
+                    .child(lbl)
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _e: &MouseDownEvent, _window, cx| {
+                            this.state.update(cx, |s, _| s.set_selected_stroke_style(val));
+                            cx.notify();
+                            cx.stop_propagation();
+                        }),
+                    ),
+            );
+        }
+
+        let mut fill_row = div().flex().flex_row().gap_1();
+        for (id, val, lbl) in [
+            ("dfs-solid", "solid", "solid"),
+            ("dfs-hachure", "hachure", "hach"),
+            ("dfs-cross", "cross-hatch", "cross"),
+        ] {
+            let active = cur_fill == val;
+            fill_row = fill_row.child(
+                div()
+                    .id(id)
+                    .px_2()
+                    .py_1()
+                    .rounded_md()
+                    .text_color(rgb(theme.text))
+                    .bg(rgb(if active { theme.accent } else { theme.surface }))
+                    .border_1()
+                    .border_color(rgb(theme.border))
+                    .child(lbl)
+                    .on_mouse_down(
+                        MouseButton::Left,
+                        cx.listener(move |this, _e: &MouseDownEvent, _window, cx| {
+                            this.state.update(cx, |s, _| s.set_selected_fill_style(val));
+                            cx.notify();
+                            cx.stop_propagation();
+                        }),
+                    ),
+            );
+        }
+
+        Some(
+            div()
+                .id("diagram-panel")
+                .absolute()
+                .top_3()
+                .right_3()
+                .flex()
+                .flex_col()
+                .gap_2()
+                .p_2()
+                .rounded_lg()
+                .bg(rgb(theme.surface))
+                .border_1()
+                .border_color(rgb(theme.border))
+                .shadow_md()
+                .text_color(rgb(theme.text))
+                // Swallow clicks on the panel so they don't reach the canvas.
+                .on_mouse_down(
+                    MouseButton::Left,
+                    cx.listener(|_this, _e: &MouseDownEvent, _window, cx| {
+                        cx.stop_propagation();
+                    }),
+                )
+                .child(label("Stroke"))
+                .child(stroke_row)
+                .child(label("Background"))
+                .child(bg_row)
+                .child(label("Width"))
+                .child(width_row)
+                .child(label("Stroke style"))
+                .child(sstyle_row)
+                .child(label("Fill style"))
+                .child(fill_row),
+        )
     }
 }
