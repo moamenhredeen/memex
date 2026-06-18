@@ -69,6 +69,10 @@ pub struct DiagramState {
     pub tool: Tool,
     /// Indices into `file.elements` of the current selection.
     pub selected: Vec<usize>,
+    /// Whether to draw the background grid.
+    pub show_grid: bool,
+    /// Whether move/create/resize snap to the grid (Alt at drag time inverts).
+    pub snap_enabled: bool,
     /// Unsaved changes pending.
     pub dirty: bool,
     /// Index of the text element currently being typed into (inline editing).
@@ -92,6 +96,8 @@ impl DiagramState {
             pan_y: 0.0,
             tool: Tool::Select,
             selected: Vec::new(),
+            show_grid: true,
+            snap_enabled: true,
             dirty: false,
             editing_text: None,
             undo_stack: Vec::new(),
@@ -180,6 +186,23 @@ impl DiagramState {
             wx as f32 * self.zoom + self.pan_x + self.origin_x,
             wy as f32 * self.zoom + self.pan_y + self.origin_y,
         )
+    }
+
+    /// Grid spacing in world units. Reads `appState.gridSize` when set to a
+    /// number, else the excalidraw default of 20.
+    pub fn grid_size(&self) -> f64 {
+        self.file
+            .app_state
+            .get("gridSize")
+            .and_then(serde_json::Value::as_f64)
+            .filter(|g| *g > 0.0)
+            .unwrap_or(20.0)
+    }
+
+    /// Round a world coordinate to the nearest grid line.
+    pub fn snap_coord(&self, v: f64) -> f64 {
+        let g = self.grid_size();
+        (v / g).round() * g
     }
 
     /// If exactly one box-like element (rectangle/ellipse/diamond/text/image)
@@ -296,6 +319,57 @@ impl DiagramState {
 
     pub fn clear_selection(&mut self) {
         self.selected.clear();
+    }
+
+    /// Toggle an element's membership in the selection (Ctrl+click).
+    pub fn toggle_select(&mut self, index: usize) {
+        if let Some(pos) = self.selected.iter().position(|&i| i == index) {
+            self.selected.remove(pos);
+        } else {
+            self.selected.push(index);
+        }
+    }
+
+    /// Whether an element index is currently selected.
+    pub fn is_selected(&self, index: usize) -> bool {
+        self.selected.contains(&index)
+    }
+
+    /// Select every non-deleted element whose bounding box overlaps the world
+    /// rectangle `(x0, y0)`..`(x1, y1)` (rubber-band). When `additive`, union
+    /// the hits onto `base` (the selection at drag start); otherwise replace.
+    pub fn select_in_rect(
+        &mut self,
+        x0: f64,
+        y0: f64,
+        x1: f64,
+        y1: f64,
+        additive: bool,
+        base: &[usize],
+    ) {
+        let mut hits = Vec::new();
+        for (i, el) in self.file.elements.iter().enumerate() {
+            if el.is_deleted {
+                continue;
+            }
+            let ex0 = el.x.min(el.x + el.width);
+            let ey0 = el.y.min(el.y + el.height);
+            let ex1 = el.x.max(el.x + el.width);
+            let ey1 = el.y.max(el.y + el.height);
+            if ex0 <= x1 && ex1 >= x0 && ey0 <= y1 && ey1 >= y0 {
+                hits.push(i);
+            }
+        }
+        if additive {
+            self.selected = base.to_vec();
+            for h in hits {
+                if !self.selected.contains(&h) {
+                    self.selected.push(h);
+                }
+            }
+        } else {
+            self.selected = hits;
+        }
     }
 
     /// World-space (x, y) of each selected element, for drag anchoring.

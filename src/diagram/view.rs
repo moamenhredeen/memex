@@ -34,6 +34,14 @@ enum Drag {
         handle: Handle,
         orig: (f64, f64, f64, f64),
     },
+    /// Rubber-band selection: world start + current corner. `additive` unions
+    /// onto `base` (the selection when the drag began).
+    Marquee {
+        start: (f64, f64),
+        cur: (f64, f64),
+        additive: bool,
+        base: Vec<usize>,
+    },
 }
 
 /// A resize handle on the selection bounding box.
@@ -232,6 +240,47 @@ fn stroke_polyline(
     }
 }
 
+/// Paint the background grid. `(bx, by)` is the canvas screen origin, `(w, h)`
+/// its size; `(ox, oy)` is the world-to-screen offset (canvas origin + pan).
+#[allow(clippy::too_many_arguments)]
+fn paint_grid(
+    window: &mut Window,
+    bx: f32,
+    by: f32,
+    w: f32,
+    h: f32,
+    ox: f32,
+    oy: f32,
+    zoom: f32,
+    grid: f32,
+    color: Rgba,
+) {
+    let step = grid * zoom;
+    if step < 4.0 {
+        // Too dense to be useful; skip rather than flood the canvas.
+        return;
+    }
+    // Visible world range (inverse of `sx = wx * zoom + ox`).
+    let wl = (bx - ox) / zoom;
+    let wr = (bx + w - ox) / zoom;
+    let wt = (by - oy) / zoom;
+    let wb = (by + h - oy) / zoom;
+    // Vertical lines.
+    let mut gx = (wl / grid).ceil() * grid;
+    while gx <= wr {
+        let sx = gx * zoom + ox;
+        stroke_segment(window, (sx, by), (sx, by + h), 1.0, color);
+        gx += grid;
+    }
+    // Horizontal lines.
+    let mut gy = (wt / grid).ceil() * grid;
+    while gy <= wb {
+        let sy = gy * zoom + oy;
+        stroke_segment(window, (bx, sy), (bx + w, sy), 1.0, color);
+        gy += grid;
+    }
+}
+
 /// Approximate an axis-aligned ellipse as a polygon.
 fn ellipse_points(cx: f32, cy: f32, rx: f32, ry: f32) -> Vec<(f32, f32)> {
     const SEGMENTS: usize = 48;
@@ -244,6 +293,8 @@ fn ellipse_points(cx: f32, cy: f32, rx: f32, ry: f32) -> Vec<(f32, f32)> {
 }
 
 /// Draw an arrowhead at `tip`, pointing along the direction `from -> tip`.
+/// Painted as a filled triangle (not two strokes) so the tip is solid, like
+/// drawio/excalidraw.
 fn arrowhead(window: &mut Window, from: (f32, f32), tip: (f32, f32), size: f32, color: Rgba) {
     let dx = tip.0 - from.0;
     let dy = tip.1 - from.1;
@@ -253,16 +304,16 @@ fn arrowhead(window: &mut Window, from: (f32, f32), tip: (f32, f32), size: f32, 
     }
     let ux = dx / len;
     let uy = dy / len;
-    // Rotate the reversed direction by +/- ~28 degrees.
+    // Two barbs: rotate the reversed direction by +/- ~28 degrees.
     let ang = 0.5_f32;
     let (sa, ca) = ang.sin_cos();
-    let w = (size * 0.6).max(1.0);
-    for s in [sa, -sa] {
+    let mut barbs = [(0.0f32, 0.0f32); 2];
+    for (k, s) in [sa, -sa].into_iter().enumerate() {
         let rx = -ux * ca + uy * s;
         let ry = -ux * s - uy * ca;
-        let barb = (tip.0 + rx * size, tip.1 + ry * size);
-        stroke_segment(window, tip, barb, w, color);
+        barbs[k] = (tip.0 + rx * size, tip.1 + ry * size);
     }
+    fill_polygon(window, &[tip, barbs[0], barbs[1]], color);
 }
 
 /// Paint a tool's glyph inside a button's bounds (used by the palette icons).
@@ -472,7 +523,16 @@ impl Render for DiagramView {
         let selected = ds.selected.clone();
         let handle_box = ds.selected_single_box().and_then(|i| ds.element_bounds(i));
         let editing = ds.editing_text();
+        let show_grid = ds.show_grid;
+        let grid = ds.grid_size() as f32;
+        let grid_color = rgba((theme.border << 8) | 0x66);
         let elements = ds.file.elements.clone();
+        let marquee = if let Some(Drag::Marquee { start, cur, .. }) = &self.drag {
+            Some((*start, *cur))
+        } else {
+            None
+        };
+        let marquee_fill = rgba((theme.accent << 8) | 0x22);
         let bg = ds
             .file
             .background_color()
@@ -538,24 +598,18 @@ impl Render for DiagramView {
                         this.state.update(cx, |s, _| s.finish_text_editing());
                         cx.notify();
                     }
-                    let (tool, world, hit, handle_hit, pan_x, pan_y) = {
+                    let (tool, world, hit, handle_hit) = {
                         let ds = this.state.read(cx);
                         let (wx, wy) = ds.screen_to_world(mx, my);
                         let handle_hit = ds.selected_single_box().and_then(|i| {
                             let b = ds.element_bounds(i)?;
                             handle_at(ds, b, mx, my).map(|h| (i, h, b))
                         });
-                        (
-                            ds.tool,
-                            (wx, wy),
-                            ds.hit_test(wx, wy),
-                            handle_hit,
-                            ds.pan_x,
-                            ds.pan_y,
-                        )
+                        (ds.tool, (wx, wy), ds.hit_test(wx, wy), handle_hit)
                     };
                     match tool {
                         Tool::Select => {
+                            let ctrl = e.modifiers.control;
                             if let Some((idx, handle, orig)) = handle_hit {
                                 this.state.update(cx, |s, _| s.push_undo());
                                 this.drag = Some(Drag::Resize {
@@ -565,7 +619,13 @@ impl Render for DiagramView {
                                 });
                             } else if let Some(idx) = hit {
                                 this.state.update(cx, |s, _| {
-                                    s.select_only(idx);
+                                    if ctrl {
+                                        s.toggle_select(idx);
+                                    } else if !s.is_selected(idx) {
+                                        // Click on an already-selected element of
+                                        // a group keeps the group (moves all).
+                                        s.select_only(idx);
+                                    }
                                     s.push_undo();
                                 });
                                 let origins = this.state.read(cx).selected_origins();
@@ -575,8 +635,18 @@ impl Render for DiagramView {
                                     moved: false,
                                 });
                             } else {
-                                this.state.update(cx, |s, _| s.clear_selection());
-                                this.drag = Some(Drag::Pan(mx, my, pan_x, pan_y));
+                                // Empty canvas: rubber-band select. Ctrl adds to
+                                // the existing selection.
+                                let base = this.state.read(cx).selected.clone();
+                                if !ctrl {
+                                    this.state.update(cx, |s, _| s.clear_selection());
+                                }
+                                this.drag = Some(Drag::Marquee {
+                                    start: world,
+                                    cur: world,
+                                    additive: ctrl,
+                                    base,
+                                });
                             }
                             cx.notify();
                         }
@@ -591,15 +661,24 @@ impl Render for DiagramView {
                             cx.stop_propagation();
                         }
                         creation => {
+                            // Snap the origin corner so drag-created shapes sit
+                            // on the grid. Alt inverts snap.
+                            let snap = this.state.read(cx).snap_enabled ^ e.modifiers.alt;
+                            let start = if snap {
+                                let s = this.state.read(cx);
+                                (s.snap_coord(world.0), s.snap_coord(world.1))
+                            } else {
+                                world
+                            };
                             let idx = this.state.update(cx, |s, _| {
                                 s.push_undo();
-                                s.create_element(creation, world.0, world.1)
+                                s.create_element(creation, start.0, start.1)
                             });
                             if let Some(idx) = idx {
                                 this.drag = Some(Drag::Create {
                                     index: idx,
                                     tool: creation,
-                                    start: world,
+                                    start,
                                 });
                                 cx.notify();
                             } else {
@@ -609,18 +688,41 @@ impl Render for DiagramView {
                     }
                 }),
             )
+            .on_mouse_down(
+                MouseButton::Middle,
+                cx.listener(|this, e: &MouseDownEvent, _window, cx| {
+                    let mx: f32 = e.position.x.into();
+                    let my: f32 = e.position.y.into();
+                    let (px0, py0) = {
+                        let ds = this.state.read(cx);
+                        (ds.pan_x, ds.pan_y)
+                    };
+                    this.drag = Some(Drag::Pan(mx, my, px0, py0));
+                    cx.stop_propagation();
+                }),
+            )
+            .on_mouse_up(
+                MouseButton::Middle,
+                cx.listener(|this, _e: &MouseUpEvent, _window, _cx| {
+                    this.drag = None;
+                }),
+            )
             .on_mouse_move(cx.listener(move |this, e: &MouseMoveEvent, _window, cx| {
-                if e.pressed_button != Some(MouseButton::Left) {
+                if e.pressed_button != Some(MouseButton::Left)
+                    && e.pressed_button != Some(MouseButton::Middle)
+                {
                     this.drag = None;
                     return;
                 }
                 let mx: f32 = e.position.x.into();
                 let my: f32 = e.position.y.into();
+                let alt = e.modifiers.alt;
                 enum Act {
                     Pan(f32, f32, f32, f32),
                     Move((f64, f64), Vec<(usize, f64, f64)>),
                     Create(usize, Tool, (f64, f64)),
                     Resize(usize, Handle, (f64, f64, f64, f64)),
+                    Marquee((f64, f64), bool, Vec<usize>),
                 }
                 let act = match &this.drag {
                     Some(Drag::Pan(a, b, c, d)) => Some(Act::Pan(*a, *b, *c, *d)),
@@ -635,6 +737,12 @@ impl Render for DiagramView {
                         handle,
                         orig,
                     }) => Some(Act::Resize(*index, *handle, *orig)),
+                    Some(Drag::Marquee {
+                        start,
+                        additive,
+                        base,
+                        ..
+                    }) => Some(Act::Marquee(*start, *additive, base.clone())),
                     None => None,
                 };
                 match act {
@@ -647,7 +755,16 @@ impl Render for DiagramView {
                     }
                     Some(Act::Move(start, origins)) => {
                         let (wx, wy) = this.state.read(cx).screen_to_world(mx, my);
-                        let (dx, dy) = (wx - start.0, wy - start.1);
+                        let (mut dx, mut dy) = (wx - start.0, wy - start.1);
+                        // Snap by aligning the anchor element's origin to the
+                        // grid, then move the rest by the same delta (keeps the
+                        // group's relative layout). Alt inverts snap.
+                        let snap = this.state.read(cx).snap_enabled ^ alt;
+                        if snap && let Some((_, ax, ay)) = origins.first() {
+                            let s = this.state.read(cx);
+                            dx = s.snap_coord(ax + dx) - ax;
+                            dy = s.snap_coord(ay + dy) - ay;
+                        }
                         this.state.update(cx, |s, _| {
                             for (i, ox, oy) in &origins {
                                 s.set_element_position(*i, ox + dx, oy + dy);
@@ -659,7 +776,12 @@ impl Render for DiagramView {
                         cx.notify();
                     }
                     Some(Act::Create(index, tool, start)) => {
-                        let cur = this.state.read(cx).screen_to_world(mx, my);
+                        let mut cur = this.state.read(cx).screen_to_world(mx, my);
+                        let snap = this.state.read(cx).snap_enabled ^ alt;
+                        if snap {
+                            let s = this.state.read(cx);
+                            cur = (s.snap_coord(cur.0), s.snap_coord(cur.1));
+                        }
                         this.state.update(cx, |s, _| {
                             if tool == Tool::Draw {
                                 s.append_freedraw_point(index, start, cur);
@@ -670,9 +792,27 @@ impl Render for DiagramView {
                         cx.notify();
                     }
                     Some(Act::Resize(index, handle, orig)) => {
-                        let cur = this.state.read(cx).screen_to_world(mx, my);
+                        let mut cur = this.state.read(cx).screen_to_world(mx, my);
+                        let snap = this.state.read(cx).snap_enabled ^ alt;
+                        if snap {
+                            let s = this.state.read(cx);
+                            cur = (s.snap_coord(cur.0), s.snap_coord(cur.1));
+                        }
                         let (x, y, w, h) = resize_box(handle, orig, cur);
                         this.state.update(cx, |s, _| s.set_element_box(index, x, y, w, h));
+                        cx.notify();
+                    }
+                    Some(Act::Marquee(start, additive, base)) => {
+                        let cur = this.state.read(cx).screen_to_world(mx, my);
+                        if let Some(Drag::Marquee { cur: c, .. }) = &mut this.drag {
+                            *c = cur;
+                        }
+                        let x0 = start.0.min(cur.0);
+                        let y0 = start.1.min(cur.1);
+                        let x1 = start.0.max(cur.0);
+                        let y1 = start.1.max(cur.1);
+                        this.state
+                            .update(cx, |s, _| s.select_in_rect(x0, y0, x1, y1, additive, &base));
                         cx.notify();
                     }
                     None => {}
@@ -737,6 +877,22 @@ impl Render for DiagramView {
                         move |bounds, _prepaint: (), window, cx| {
                             let ox: f32 = bounds.origin.x.into();
                             let oy: f32 = bounds.origin.y.into();
+                            if show_grid {
+                                let bw: f32 = bounds.size.width.into();
+                                let bh: f32 = bounds.size.height.into();
+                                paint_grid(
+                                    window,
+                                    ox,
+                                    oy,
+                                    bw,
+                                    bh,
+                                    ox + pan_x,
+                                    oy + pan_y,
+                                    zoom,
+                                    grid,
+                                    grid_color,
+                                );
+                            }
                             for el in &elements {
                                 if el.is_deleted {
                                     continue;
@@ -787,6 +943,21 @@ impl Render for DiagramView {
                                     fill_polygon(window, &sq, accent);
                                 }
                             }
+                            // Rubber-band marquee rectangle.
+                            if let Some((s, c)) = marquee {
+                                let sx0 = s.0.min(c.0) as f32 * zoom + ox + pan_x;
+                                let sy0 = s.1.min(c.1) as f32 * zoom + oy + pan_y;
+                                let sx1 = s.0.max(c.0) as f32 * zoom + ox + pan_x;
+                                let sy1 = s.1.max(c.1) as f32 * zoom + oy + pan_y;
+                                let corners = [
+                                    (sx0, sy0),
+                                    (sx1, sy0),
+                                    (sx1, sy1),
+                                    (sx0, sy1),
+                                ];
+                                fill_polygon(window, &corners, marquee_fill);
+                                stroke_polyline(window, &corners, 1.0, accent, true);
+                            }
                             // Text caret while editing.
                             if let Some(eidx) = editing
                                 && let Some(el) = elements.get(eidx)
@@ -821,14 +992,15 @@ impl Render for DiagramView {
 impl DiagramView {
     /// Build the floating, centered tool palette with drawn glyph icons.
     fn render_palette(&self, active: Tool, cx: &mut Context<Self>) -> impl IntoElement {
-        const TOOLS: [(&str, Tool); 8] = [
+        // Freehand (Tool::Draw) is intentionally absent: this is a diagramming
+        // tool, not a sketch pad. The tool + model + import support remain.
+        const TOOLS: [(&str, Tool); 7] = [
             ("diagram-tool-select", Tool::Select),
             ("diagram-tool-rectangle", Tool::Rectangle),
             ("diagram-tool-ellipse", Tool::Ellipse),
             ("diagram-tool-diamond", Tool::Diamond),
             ("diagram-tool-arrow", Tool::Arrow),
             ("diagram-tool-line", Tool::Line),
-            ("diagram-tool-draw", Tool::Draw),
             ("diagram-tool-text", Tool::Text),
         ];
         let theme = self.theme;
