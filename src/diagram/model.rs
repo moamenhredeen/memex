@@ -79,6 +79,21 @@ impl ExcalidrawFile {
     }
 }
 
+/// A connector binding: an arrow endpoint pinned to another element at a
+/// relative anchor `(rx, ry)` in `0..1` of that element's bounding box.
+///
+/// This is memex-specific (excalidraw uses an elementId/focus/gap model). We
+/// serialize it under `memexStartBinding`/`memexEndBinding` so it does not
+/// collide with excalidraw's own `startBinding`/`endBinding` (which round-trip
+/// untouched via `extra`).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Binding {
+    pub element_id: String,
+    pub rx: f64,
+    pub ry: f64,
+}
+
 /// A single drawing element. Excalidraw discriminates by the `type` string;
 /// type-specific fields are optional. Unmodeled fields land in `extra` so we
 /// preserve them on save.
@@ -120,6 +135,11 @@ pub struct Element {
     pub start_arrowhead: Option<Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub end_arrowhead: Option<Value>,
+    /// memex-specific connector bindings (see `Binding`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memex_start_binding: Option<Binding>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub memex_end_binding: Option<Binding>,
 
     // ── text ─────────────────────────────────────────────────────────────
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -170,6 +190,8 @@ impl Element {
             points: None,
             start_arrowhead: None,
             end_arrowhead: None,
+            memex_start_binding: None,
+            memex_end_binding: None,
             text: None,
             font_size: None,
             font_family: None,
@@ -248,6 +270,31 @@ mod tests {
         let json = file.to_json().unwrap();
         assert!(json.contains("roundness"));
         assert!(json.contains("boundElements"));
+    }
+
+    #[test]
+    fn memex_bindings_round_trip() {
+        let mut file = ExcalidrawFile::empty();
+        let mut arrow = Element::base("arr", "arrow", 0.0, 0.0, 10.0, 0.0);
+        arrow.points = Some(vec![[0.0, 0.0], [10.0, 0.0]]);
+        arrow.memex_start_binding = Some(Binding {
+            element_id: "box1".to_string(),
+            rx: 1.0,
+            ry: 0.5,
+        });
+        file.elements.push(arrow);
+        let json = file.to_json().unwrap();
+        // Serializes under the memex-specific key, not excalidraw's.
+        assert!(json.contains("memexStartBinding"));
+        assert!(!json.contains("\"startBinding\""));
+        let reparsed = ExcalidrawFile::from_json(json.as_bytes()).unwrap();
+        let b = reparsed.elements[0].memex_start_binding.as_ref().unwrap();
+        assert_eq!(b.element_id, "box1");
+        assert_eq!(b.rx, 1.0);
+        assert_eq!(b.ry, 0.5);
+        // An unbound endpoint stays None and is omitted from JSON.
+        assert!(reparsed.elements[0].memex_end_binding.is_none());
+        assert!(!json.contains("memexEndBinding"));
     }
 
     #[test]

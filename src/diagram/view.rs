@@ -1,6 +1,6 @@
 use gpui::*;
 
-use super::{DiagramState, Element, Tool};
+use super::{Binding, DiagramState, Element, Tool};
 use crate::keymap::{Action, KeyContext, KeymapSystem, ResolvedKey};
 use crate::theme::Theme;
 
@@ -672,6 +672,8 @@ impl Render for DiagramView {
         let show_grid = ds.show_grid;
         let grid = ds.grid_size() as f32;
         let grid_color = rgba((theme.border << 8) | 0x66);
+        // Show shape connection points while a connector tool is active.
+        let show_conn = matches!(tool, Tool::Arrow | Tool::Line);
         let elements = ds.file.elements.clone();
         let marquee = if let Some(Drag::Marquee { start, cur, .. }) = &self.drag {
             Some((*start, *cur))
@@ -807,20 +809,36 @@ impl Render for DiagramView {
                             cx.stop_propagation();
                         }
                         creation => {
-                            // Snap the origin corner so drag-created shapes sit
-                            // on the grid. Alt inverts snap.
-                            let snap = this.state.read(cx).snap_enabled ^ e.modifiers.alt;
-                            let start = if snap {
+                            // For connectors, bind the start to a shape's
+                            // connection point if the press lands near one;
+                            // otherwise snap the origin to the grid (Alt
+                            // inverts). Connection beats grid snap.
+                            let is_connector = matches!(creation, Tool::Arrow | Tool::Line);
+                            let mut start_binding: Option<Binding> = None;
+                            let start = {
                                 let s = this.state.read(cx);
-                                (s.snap_coord(world.0), s.snap_coord(world.1))
-                            } else {
-                                world
+                                let tol = 10.0 / s.zoom.max(0.01) as f64;
+                                if is_connector
+                                    && let Some((id, rx, ry, ax, ay)) =
+                                        s.connection_point_at(world.0, world.1, tol, None)
+                                {
+                                    start_binding = Some(Binding { element_id: id, rx, ry });
+                                    (ax, ay)
+                                } else if s.snap_enabled ^ e.modifiers.alt {
+                                    (s.snap_coord(world.0), s.snap_coord(world.1))
+                                } else {
+                                    world
+                                }
                             };
                             let idx = this.state.update(cx, |s, _| {
                                 s.push_undo();
                                 s.create_element(creation, start.0, start.1)
                             });
                             if let Some(idx) = idx {
+                                if let Some(b) = start_binding {
+                                    this.state
+                                        .update(cx, |s, _| s.set_binding(idx, true, Some(b)));
+                                }
                                 this.drag = Some(Drag::Create {
                                     index: idx,
                                     tool: creation,
@@ -915,6 +933,7 @@ impl Render for DiagramView {
                             for (i, ox, oy) in &origins {
                                 s.set_element_position(*i, ox + dx, oy + dy);
                             }
+                            s.reroute_bindings();
                         });
                         if let Some(Drag::Move { moved, .. }) = &mut this.drag {
                             *moved = true;
@@ -927,6 +946,17 @@ impl Render for DiagramView {
                         if snap {
                             let s = this.state.read(cx);
                             cur = (s.snap_coord(cur.0), s.snap_coord(cur.1));
+                        }
+                        // Connectors snap their moving end to a shape's
+                        // connection point (overrides grid snap) for feedback.
+                        if matches!(tool, Tool::Arrow | Tool::Line) {
+                            let s = this.state.read(cx);
+                            let tol = 10.0 / s.zoom.max(0.01) as f64;
+                            if let Some((_, _, _, ax, ay)) =
+                                s.connection_point_at(cur.0, cur.1, tol, Some(index))
+                            {
+                                cur = (ax, ay);
+                            }
                         }
                         this.state.update(cx, |s, _| {
                             if tool == Tool::Draw {
@@ -945,7 +975,10 @@ impl Render for DiagramView {
                             cur = (s.snap_coord(cur.0), s.snap_coord(cur.1));
                         }
                         let (x, y, w, h) = resize_box(handle, orig, cur);
-                        this.state.update(cx, |s, _| s.set_element_box(index, x, y, w, h));
+                        this.state.update(cx, |s, _| {
+                            s.set_element_box(index, x, y, w, h);
+                            s.reroute_bindings();
+                        });
                         cx.notify();
                     }
                     Some(Act::Marquee(start, additive, base)) => {
@@ -966,7 +999,7 @@ impl Render for DiagramView {
             }))
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(|this, _e: &MouseUpEvent, _window, cx| {
+                cx.listener(|this, e: &MouseUpEvent, _window, cx| {
                     match &this.drag {
                         Some(Drag::Move { moved: true, .. }) => {
                             this.state.update(cx, |s, _| s.dirty = true);
@@ -977,8 +1010,27 @@ impl Render for DiagramView {
                         Some(Drag::Move { moved: false, .. }) => {
                             this.state.update(cx, |s, _| s.discard_last_undo());
                         }
-                        Some(Drag::Create { index, .. }) => {
+                        Some(Drag::Create { index, tool, .. }) => {
                             let idx = *index;
+                            let tool = *tool;
+                            // Bind the end of a connector if released near a
+                            // shape's connection point; reroute pins it there.
+                            if matches!(tool, Tool::Arrow | Tool::Line) {
+                                let mx: f32 = e.position.x.into();
+                                let my: f32 = e.position.y.into();
+                                let end = {
+                                    let s = this.state.read(cx);
+                                    let (wx, wy) = s.screen_to_world(mx, my);
+                                    let tol = 10.0 / s.zoom.max(0.01) as f64;
+                                    s.connection_point_at(wx, wy, tol, Some(idx))
+                                };
+                                if let Some((id, rx, ry, _, _)) = end {
+                                    this.state.update(cx, |s, _| {
+                                        s.set_binding(idx, false, Some(Binding { element_id: id, rx, ry }));
+                                        s.reroute_bindings();
+                                    });
+                                }
+                            }
                             this.state.update(cx, |s, _| s.finish_creation(idx));
                             cx.notify();
                         }
@@ -1052,6 +1104,40 @@ impl Render for DiagramView {
                                     oy + pan_y,
                                     fallback_stroke,
                                 );
+                            }
+                            // Shape connection points (connector tools).
+                            if show_conn {
+                                for el in &elements {
+                                    if el.is_deleted
+                                        || !matches!(
+                                            el.element_type.as_str(),
+                                            "rectangle"
+                                                | "ellipse"
+                                                | "diamond"
+                                                | "text"
+                                                | "image"
+                                                | "frame"
+                                        )
+                                    {
+                                        continue;
+                                    }
+                                    for (rx, ry) in
+                                        [(0.5, 0.5), (0.5, 0.0), (1.0, 0.5), (0.5, 1.0), (0.0, 0.5)]
+                                    {
+                                        let wx = el.x + rx * el.width;
+                                        let wy = el.y + ry * el.height;
+                                        let sx = wx as f32 * zoom + ox + pan_x;
+                                        let sy = wy as f32 * zoom + oy + pan_y;
+                                        let r = 3.0;
+                                        let sq = [
+                                            (sx - r, sy - r),
+                                            (sx + r, sy - r),
+                                            (sx + r, sy + r),
+                                            (sx - r, sy + r),
+                                        ];
+                                        fill_polygon(window, &sq, accent);
+                                    }
+                                }
                             }
                             // Selection outlines.
                             for &idx in &selected {

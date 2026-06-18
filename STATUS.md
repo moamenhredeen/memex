@@ -2,6 +2,31 @@
 
 Last updated: 2026-06-18
 
+## drawio-parity P3 COMPLETE (connectors, 2026-06-18)
+Straight arrows/lines bind to shape connection points; re-route on move/resize.
+Builds clean (no diagram warnings); 7 diagram tests pass (added binding test).
+- model.rs: Binding {element_id, rx, ry}; Element.memex_start_binding /
+  memex_end_binding (Option, camelCase -> memexStartBinding/memexEndBinding).
+  Kept memex-prefixed so excalidraw's own startBinding/endBinding round-trip
+  untouched via extra. base() inits both None. Round-trip test added.
+- mod.rs: anchor_rels() (center + 4 edge mids for rect/ellipse/diamond/text/
+  image/frame). connection_point_at(wx,wy,tol,exclude) -> nearest anchor
+  (id,rx,ry,wx,wy). set_binding(). reroute_bindings(): recompute every bound
+  connector's endpoints from its shapes' current bbox, interior waypoints
+  preserved; called after move/resize and once in new() (load).
+- view.rs: connector create binds start (press near a connection point) and
+  end (release near one); while dragging, the moving end snaps to the nearest
+  connection point (overrides grid snap, tol 10px/zoom). Connection points
+  drawn as small accent squares for all box shapes while Arrow/Line active.
+
+P3 limitations (candidates for P3b):
+- No re-drag of an existing arrow's endpoints (arrows have no endpoint handles);
+  binding happens only at creation. Move/resize of bound shapes re-routes fine.
+- Deleting a bound shape leaves the connector's endpoint at its last position
+  (dangling binding; reroute skips the missing id). No auto-unbind yet.
+- Connection points show for ALL shapes (not hover-only). Fine for small
+  diagrams; revisit if cluttered.
+
 ## drawio-parity P2 COMPLETE (2026-06-18)
 Properties side panel + styled rendering. Builds clean, 6 diagram tests pass.
 - mod.rs: primary_selected(), mutate_selected() (one undo step over the whole

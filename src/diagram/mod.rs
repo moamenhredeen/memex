@@ -21,7 +21,7 @@ use crate::minibuffer::Candidate;
 use crate::pane::{CommandOutcome, ItemAction};
 
 pub use import::import_file;
-pub use model::{Element, ExcalidrawFile};
+pub use model::{Binding, Element, ExcalidrawFile};
 pub use view::{DiagramView, DiagramViewEvent};
 
 /// The active editing tool.
@@ -88,7 +88,7 @@ pub struct DiagramState {
 
 impl DiagramState {
     pub fn new(path: &Path, file: ExcalidrawFile, cx: &mut App) -> Self {
-        Self {
+        let mut state = Self {
             path: path.to_path_buf(),
             file,
             zoom: 1.0,
@@ -105,7 +105,11 @@ impl DiagramState {
             origin_x: 0.0,
             origin_y: 0.0,
             focus_handle: cx.focus_handle(),
-        }
+        };
+        // Pin bound connectors to their shapes (no-op for files without
+        // memex bindings; corrects geometry if shapes were moved elsewhere).
+        state.reroute_bindings();
+        state
     }
 
     pub fn focus(&self, window: &mut Window) {
@@ -426,6 +430,102 @@ impl DiagramState {
 
     pub fn set_selected_stroke_width(&mut self, width: f64) {
         self.mutate_selected(|el| el.stroke_width = width);
+    }
+
+    // ─── Connector bindings ─────────────────────────────────────────────
+
+    /// Find the nearest shape connection point to `(wx, wy)` within `tol`
+    /// (world units), skipping `exclude`. Returns the bound element's id, the
+    /// relative anchor `(rx, ry)`, and the anchor's world position.
+    pub fn connection_point_at(
+        &self,
+        wx: f64,
+        wy: f64,
+        tol: f64,
+        exclude: Option<usize>,
+    ) -> Option<(String, f64, f64, f64, f64)> {
+        let mut best: Option<(f64, (String, f64, f64, f64, f64))> = None;
+        for (i, el) in self.file.elements.iter().enumerate() {
+            if el.is_deleted || Some(i) == exclude {
+                continue;
+            }
+            let Some(rels) = anchor_rels(&el.element_type) else {
+                continue;
+            };
+            for (rx, ry) in rels {
+                let ax = el.x + rx * el.width;
+                let ay = el.y + ry * el.height;
+                let d = ((ax - wx).powi(2) + (ay - wy).powi(2)).sqrt();
+                if d <= tol && best.as_ref().is_none_or(|(bd, _)| d < *bd) {
+                    best = Some((d, (el.id.clone(), rx, ry, ax, ay)));
+                }
+            }
+        }
+        best.map(|(_, v)| v)
+    }
+
+    /// Set or clear an arrow endpoint binding.
+    pub fn set_binding(&mut self, index: usize, is_start: bool, binding: Option<Binding>) {
+        if let Some(el) = self.file.elements.get_mut(index) {
+            if is_start {
+                el.memex_start_binding = binding;
+            } else {
+                el.memex_end_binding = binding;
+            }
+        }
+    }
+
+    /// Recompute the endpoints of every bound connector from its shapes'
+    /// current geometry. Interior waypoints are preserved (in absolute terms).
+    pub fn reroute_bindings(&mut self) {
+        use std::collections::HashMap;
+        let boxes: HashMap<String, (f64, f64, f64, f64)> = self
+            .file
+            .elements
+            .iter()
+            .filter(|e| !e.is_deleted)
+            .map(|e| (e.id.clone(), (e.x, e.y, e.width, e.height)))
+            .collect();
+        for el in self.file.elements.iter_mut() {
+            if el.is_deleted
+                || (el.memex_start_binding.is_none() && el.memex_end_binding.is_none())
+            {
+                continue;
+            }
+            let Some(points) = el.points.clone() else {
+                continue;
+            };
+            if points.len() < 2 {
+                continue;
+            }
+            let mut abs: Vec<(f64, f64)> =
+                points.iter().map(|p| (el.x + p[0], el.y + p[1])).collect();
+            if let Some(b) = &el.memex_start_binding
+                && let Some(&(bx, by, bw, bh)) = boxes.get(&b.element_id)
+            {
+                abs[0] = (bx + b.rx * bw, by + b.ry * bh);
+            }
+            if let Some(b) = &el.memex_end_binding
+                && let Some(&(bx, by, bw, bh)) = boxes.get(&b.element_id)
+            {
+                let n = abs.len() - 1;
+                abs[n] = (bx + b.rx * bw, by + b.ry * bh);
+            }
+            let (ox, oy) = abs[0];
+            el.x = ox;
+            el.y = oy;
+            let rel: Vec<[f64; 2]> = abs.iter().map(|(x, y)| [x - ox, y - oy]).collect();
+            let (mut min_x, mut min_y, mut max_x, mut max_y) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+            for p in &rel {
+                min_x = min_x.min(p[0]);
+                min_y = min_y.min(p[1]);
+                max_x = max_x.max(p[0]);
+                max_y = max_y.max(p[1]);
+            }
+            el.width = max_x - min_x;
+            el.height = max_y - min_y;
+            el.points = Some(rel);
+        }
     }
 
     /// World-space (x, y) of each selected element, for drag anchoring.
@@ -863,6 +963,22 @@ impl DiagramState {
     }
 
     pub fn on_input_changed(&mut self, _delegate_id: &str, _input: &str, _cx: &mut Context<Self>) {}
+}
+
+/// Relative connection anchors (center + 4 edge midpoints) for a box-like
+/// element type, or `None` for connectors/freedraw.
+fn anchor_rels(element_type: &str) -> Option<[(f64, f64); 5]> {
+    matches!(
+        element_type,
+        "rectangle" | "ellipse" | "diamond" | "text" | "image" | "frame"
+    )
+    .then_some([
+        (0.5, 0.5),
+        (0.5, 0.0),
+        (1.0, 0.5),
+        (0.5, 1.0),
+        (0.0, 0.5),
+    ])
 }
 
 /// Generate an excalidraw-style random element id.
