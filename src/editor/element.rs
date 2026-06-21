@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use crate::markdown::{LineKind, StyleKind, StyleSpan};
 use crate::theme::Theme;
 
-use super::{EditorState, LinePaintInfo};
+use super::{DIAGRAM_EMBED_HEIGHT_PX, EditorState, LinePaintInfo};
 
 pub struct EditorElement {
     state: Entity<EditorState>,
@@ -40,6 +40,7 @@ struct PrepaintLine {
     origin: Point<Pixels>,
     row_height: Pixels,
     line_height: Pixels,
+    is_diagram_embed: bool,
     content_offset: usize,
     source_len: usize,
     source_to_display: Vec<usize>,
@@ -262,6 +263,8 @@ impl Element for EditorElement {
             let ellipsis_suffix = "...";
             let cursor_offset = (cursor_pos >= line_start && cursor_pos <= line_byte_end)
                 .then_some(cursor_pos - line_start);
+            let is_diagram_embed =
+                cursor_offset.is_none() && state.diagram_embed_for_line(line_text).is_some();
             let mut display_line = build_display_line(
                 line_text,
                 &info.spans,
@@ -585,7 +588,11 @@ impl Element for EditorElement {
                 .expect("single editor line should shape")
                 .pop()
                 .expect("single editor line should produce a layout");
-            let line_height = shaped.size(row_height).height;
+            let line_height = if is_diagram_embed {
+                px(DIAGRAM_EMBED_HEIGHT_PX)
+            } else {
+                shaped.size(row_height).height
+            };
             height_updates.push((i, line_height));
             accumulated_height_delta += line_height - cached_line_height;
 
@@ -694,6 +701,7 @@ impl Element for EditorElement {
                 origin,
                 row_height,
                 line_height,
+                is_diagram_embed,
                 content_offset: line_start,
                 source_len: line_text.len(),
                 source_to_display: display_line.source_to_display,
@@ -766,9 +774,11 @@ impl Element for EditorElement {
             {
                 continue;
             }
-            let _ = pl
-                .shaped
-                .paint(pl.origin, pl.row_height, TextAlign::Left, None, window, cx);
+            if !pl.is_diagram_embed {
+                let _ =
+                    pl.shaped
+                        .paint(pl.origin, pl.row_height, TextAlign::Left, None, window, cx);
+            }
 
             line_paint_infos.push(LinePaintInfo {
                 content_offset: pl.content_offset,

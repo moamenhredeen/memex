@@ -7,7 +7,7 @@ use super::resource::{
 };
 use super::{MAX_RESULTS, Memex};
 use crate::backlinks::{BacklinksState, BacklinksView, BacklinksViewEvent};
-use crate::diagram::{DiagramState, DiagramView, DiagramViewEvent, ExcalidrawFile};
+use crate::diagram::{self, ChromeConfig, DiagramView, DiagramViewEvent, Mode};
 use crate::document::Document;
 use crate::editor::{EditorBuffer, EditorEvent, EditorState, EditorView, EditorViewEvent};
 use crate::graph::{GraphEvent, GraphState, GraphView, GraphViewEvent};
@@ -17,6 +17,33 @@ use crate::workspace::{BufferId, WorkspaceFocus};
 
 impl Memex {
     pub(super) fn save(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.workspace.focus == WorkspaceFocus::Secondary
+            && let Some(SecondaryContent::Item {
+                item:
+                    ActiveItem::Diagram {
+                        path,
+                        state,
+                        view: _,
+                    },
+            }) = &self.secondary
+        {
+            match state.update(cx, |state, _| diagram::save_graph(path, state)) {
+                Ok(()) => {
+                    state.update(cx, |state, _| state.mark_saved());
+                    let path = path.clone();
+                    self.editor_view
+                        .update(cx, |view, cx| view.reload_diagram_embed(&path, cx));
+                    self.minibuffer.set_message("Diagram saved");
+                }
+                Err(e) => {
+                    self.minibuffer
+                        .set_message(format!("Failed to save diagram: {e}"));
+                }
+            }
+            cx.notify();
+            return;
+        }
+
         let editor = self.active_editor_state();
         if let Err(e) = editor.update(cx, |state, _| state.save_document()) {
             eprintln!("save error: {}", e);
@@ -63,7 +90,11 @@ impl Memex {
         let editor_state = cx.new(|cx| EditorState::from_buffer(buffer, cx));
         if let Some(vault) = self.state.vault.as_ref() {
             let titles = vault.index.wikilink_titles();
-            editor_state.update(cx, |editor, cx| editor.set_wikilink_titles(titles, cx));
+            let diagram_dir = vault.layout().diagrams.clone();
+            editor_state.update(cx, |editor, cx| {
+                editor.set_wikilink_titles(titles, cx);
+                editor.set_diagram_dir(Some(diagram_dir), cx);
+            });
         }
         let theme = self.theme;
         let editor_width = self.state.config.editor_width;
@@ -80,6 +111,9 @@ impl Memex {
                     this.process_item_actions(actions.clone(), window, cx);
                 }
                 EditorViewEvent::VimStateChanged => cx.notify(),
+                EditorViewEvent::OpenDiagram(title) => {
+                    this.follow_wikilink(title.clone(), window, cx);
+                }
             },
         );
         let state_sub = cx.subscribe_in(
@@ -402,8 +436,8 @@ impl Memex {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<ActiveItem> {
-        let file = match ExcalidrawFile::load(path) {
-            Ok(file) => file,
+        let graph = match diagram::load_graph(path) {
+            Ok(graph) => graph,
             Err(e) => {
                 self.minibuffer
                     .set_message(format!("Failed to open diagram: {}", e));
@@ -411,25 +445,42 @@ impl Memex {
                 return None;
             }
         };
-        let diagram_state = cx.new(|cx| DiagramState::new(path, file, cx));
-        // Frame the content on open (assumed pane size; user can pan/zoom).
-        diagram_state.update(cx, |s, _| s.fit_to_content(800.0, 600.0));
         let theme = self.theme;
-        let diagram_view = cx.new(|cx| DiagramView::new(diagram_state.clone(), theme, cx));
+        let base_dir = path.parent().map(|parent| parent.to_path_buf());
+        let diagram_view = cx.new(|cx| {
+            let mut view = if let Some(base_dir) = base_dir.as_ref() {
+                DiagramView::with_base_dir(graph, base_dir, cx)
+            } else {
+                DiagramView::new(graph, cx)
+            };
+            view.set_theme(diagram::theme_from_memex(theme), cx);
+            view.set_mode(Mode::Edit, cx);
+            view.set_chrome(ChromeConfig::with_toolbar(), cx);
+            view.fit_to_content(cx);
+            view
+        });
+        let diagram_state = diagram_view.read(cx).state().clone();
         let obs = cx.observe(&diagram_state, |_, _, cx| cx.notify());
         self._subscriptions.push(obs);
         let key_sub = cx.subscribe_in(
             &diagram_view,
             window,
-            |this, _view, ev: &DiagramViewEvent, window, cx| match ev {
-                DiagramViewEvent::Command(cmd) => {
-                    this.execute_command(cmd, "", 1, window, cx);
+            |this, _view, ev: &DiagramViewEvent, _window, cx| match ev {
+                DiagramViewEvent::Command(_) => cx.notify(),
+                DiagramViewEvent::Message(message) => {
+                    this.minibuffer.set_message(message.clone());
+                    cx.notify();
                 }
+                DiagramViewEvent::Dirty
+                | DiagramViewEvent::Clean
+                | DiagramViewEvent::SelectionChanged
+                | DiagramViewEvent::TitleChanged => cx.notify(),
             },
         );
         self._subscriptions.push(key_sub);
 
         Some(ActiveItem::Diagram {
+            path: path.to_path_buf(),
             state: diagram_state,
             view: diagram_view,
         })
@@ -470,8 +521,9 @@ impl Memex {
     ) {
         // Reuse an already-open diagram in the secondary slot.
         if let Some(SecondaryContent::Item { item, .. }) = &self.secondary
-            && let Some(state) = item.diagram_state()
-            && state.read(cx).path == path
+            && item
+                .diagram_path()
+                .is_some_and(|open_path| open_path == &path)
         {
             self.focus_secondary(window, cx);
             return;
@@ -483,7 +535,7 @@ impl Memex {
     }
 
     /// Create a new empty diagram in the vault's `diagrams/` folder, insert a
-    /// `[[name.excalidraw]]` link at the editor cursor, and open it.
+    /// `[[name.diagram]]` link at the editor cursor, and open it.
     pub(super) fn new_diagram(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(vault) = self.state.vault.as_ref() else {
             self.minibuffer.set_message("No vault open");
@@ -498,10 +550,10 @@ impl Memex {
             return;
         }
 
-        // Pick a unique `diagram-N.excalidraw` name.
+        // Pick a unique `diagram-N.diagram` name.
         let mut file_name = String::new();
         for ix in 1.. {
-            let candidate = format!("diagram-{}.excalidraw", ix);
+            let candidate = format!("diagram-{}.diagram", ix);
             if !layout.diagram_path(&candidate).exists() {
                 file_name = candidate;
                 break;
@@ -509,7 +561,13 @@ impl Memex {
         }
         let path = layout.diagram_path(&file_name);
 
-        if let Err(e) = ExcalidrawFile::empty().save(&path) {
+        let graph = diagram_view::diagram_core::Graph::empty();
+        if let Err(e) = diagram_view::diagram_core::io::native::to_json_pretty(&graph)
+            .map_err(|e| e.to_string())
+            .and_then(|json| {
+                std::fs::write(&path, json).map_err(|e| format!("failed to write diagram: {e}"))
+            })
+        {
             self.minibuffer
                 .set_message(format!("Failed to create diagram: {}", e));
             cx.notify();
@@ -533,7 +591,7 @@ impl Memex {
         cx.notify();
     }
 
-    /// Import an external diagram (drawio/excalidraw) at `source_path` into the
+    /// Import an external diagram at `source_path` into the
     /// vault's `diagrams/` folder, link it in the current note, and open it.
     pub(super) fn import_diagram(
         &mut self,
@@ -548,8 +606,8 @@ impl Memex {
         };
         let layout = vault.layout();
 
-        let file = match crate::diagram::import_file(source_path) {
-            Ok(file) => file,
+        let graph = match diagram::import_graph(source_path) {
+            Ok(graph) => graph,
             Err(e) => {
                 self.minibuffer.set_message(format!("Import failed: {}", e));
                 cx.notify();
@@ -564,21 +622,26 @@ impl Memex {
             return;
         }
 
-        // Destination name: <source stem>.excalidraw, made unique.
+        // Destination name: <source stem>.diagram, made unique.
         let stem = source_path
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("diagram");
-        let mut file_name = format!("{}.excalidraw", stem);
+        let mut file_name = format!("{}.diagram", stem);
         for ix in 1.. {
             if !layout.diagram_path(&file_name).exists() {
                 break;
             }
-            file_name = format!("{}-{}.excalidraw", stem, ix);
+            file_name = format!("{}-{}.diagram", stem, ix);
         }
         let path = layout.diagram_path(&file_name);
 
-        if let Err(e) = file.save(&path) {
+        if let Err(e) = diagram_view::diagram_core::io::native::to_json_pretty(&graph)
+            .map_err(|e| e.to_string())
+            .and_then(|json| {
+                std::fs::write(&path, json).map_err(|e| format!("failed to write diagram: {e}"))
+            })
+        {
             self.minibuffer
                 .set_message(format!("Failed to write diagram: {}", e));
             cx.notify();

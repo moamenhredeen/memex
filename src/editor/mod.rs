@@ -13,6 +13,7 @@ mod view;
 
 use std::collections::HashMap;
 use std::ops::Range;
+use std::path::PathBuf;
 
 use crate::command::Command;
 use crate::document::Document;
@@ -25,6 +26,8 @@ pub use buffer::EditorBuffer;
 pub use view::{EditorView, EditorViewEvent};
 
 actions!(editor, [TabAction, ShiftTabAction]);
+
+pub const DIAGRAM_EMBED_HEIGHT_PX: f32 = 320.0;
 
 pub struct EditorState {
     pub buffer: EditorBuffer,
@@ -55,6 +58,7 @@ pub struct EditorState {
     /// it scrolls the cursor into view.
     pub needs_scroll_to_cursor: bool,
     pub wikilink_titles: HashMap<String, String>,
+    pub diagram_dir: Option<PathBuf>,
     vim_edit_group_active: bool,
     visual_line_anchor: Option<usize>,
     _blink_sub: Subscription,
@@ -73,6 +77,12 @@ pub struct LinePaintInfo {
     pub line_height: Pixels,
 }
 
+#[derive(Clone, Debug)]
+pub struct DiagramEmbed {
+    pub target: String,
+    pub path: PathBuf,
+}
+
 impl LinePaintInfo {
     pub fn display_offset(&self, source_offset: usize) -> usize {
         self.source_to_display[source_offset.min(self.source_len)]
@@ -86,6 +96,17 @@ impl LinePaintInfo {
         self.shaped_line
             .position_for_index(self.display_offset(source_offset), self.row_height)
             .unwrap_or_default()
+    }
+}
+
+fn diagram_link_target(line_text: &str) -> Option<String> {
+    let trimmed = line_text.trim();
+    let inner = trimmed.strip_prefix("[[")?.strip_suffix("]]")?;
+    let target = inner.split('|').next().unwrap_or(inner).trim();
+    if target.to_ascii_lowercase().ends_with(".diagram") {
+        Some(target.to_string())
+    } else {
+        None
     }
 }
 
@@ -135,6 +156,7 @@ impl EditorState {
             wrap_width: px(0.),
             needs_scroll_to_cursor: false,
             wikilink_titles: HashMap::new(),
+            diagram_dir: None,
             vim_edit_group_active: false,
             visual_line_anchor: None,
             _blink_sub,
@@ -144,6 +166,29 @@ impl EditorState {
     pub fn set_wikilink_titles(&mut self, titles: HashMap<String, String>, cx: &mut Context<Self>) {
         self.wikilink_titles = titles;
         cx.notify();
+    }
+
+    pub fn set_diagram_dir(&mut self, diagram_dir: Option<PathBuf>, cx: &mut Context<Self>) {
+        self.diagram_dir = diagram_dir;
+        cx.notify();
+    }
+
+    pub fn diagram_embed_for_line(&self, line_text: &str) -> Option<DiagramEmbed> {
+        let target = diagram_link_target(line_text)?;
+        let path = self.diagram_dir.as_ref()?.join(&target);
+        Some(DiagramEmbed { target, path })
+    }
+
+    pub fn offset_is_diagram_embed_line(&self, offset: usize) -> bool {
+        let content = self.content();
+        let line_idx = self.display_map.line_for_offset(offset);
+        let line_offset = self.display_map.line_offset(line_idx);
+        let line_end = content[line_offset..]
+            .find('\n')
+            .map(|i| line_offset + i)
+            .unwrap_or(content.len());
+        self.diagram_embed_for_line(&content[line_offset..line_end])
+            .is_some()
     }
 
     /// Snapshot the buffer as a String (allocates). Use for read-heavy operations

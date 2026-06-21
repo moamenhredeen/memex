@@ -60,12 +60,12 @@ pub(crate) fn is_pdf_path(path: &Path) -> bool {
 pub(crate) fn is_diagram_path(path: &Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("excalidraw"))
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("diagram"))
 }
 
-/// True if a wikilink target points at a diagram file (e.g. `sketch.excalidraw`).
+/// True if a wikilink target points at a native diagram file (e.g. `sketch.diagram`).
 pub(crate) fn is_diagram_link(target: &str) -> bool {
-    target.to_ascii_lowercase().ends_with(".excalidraw")
+    target.to_ascii_lowercase().ends_with(".diagram")
 }
 
 pub(crate) fn unique_attachment_path(dir: &Path, filename: &OsStr) -> PathBuf {

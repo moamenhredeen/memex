@@ -12,10 +12,11 @@
 //! 4. Done — no changes to app.rs needed
 
 use gpui::*;
+use std::path::PathBuf;
 
 use crate::backlinks::{BacklinksState, BacklinksView};
 use crate::command::Command;
-use crate::diagram::{DiagramState, DiagramView};
+use crate::diagram::{self, DiagramState, DiagramView};
 use crate::editor::{EditorState, EditorView};
 use crate::graph::{GraphState, GraphView};
 use crate::keymap::{TransientKind, VimMode};
@@ -93,6 +94,7 @@ pub enum ActiveItem {
         view: Entity<PdfView>,
     },
     Diagram {
+        path: PathBuf,
         state: Entity<DiagramState>,
         view: Entity<DiagramView>,
     },
@@ -111,7 +113,9 @@ impl ActiveItem {
         match self {
             Self::Editor { view, .. } => view.update(cx, |view, cx| view.set_theme(theme, cx)),
             Self::Pdf { view, .. } => view.update(cx, |view, cx| view.set_theme(theme, cx)),
-            Self::Diagram { view, .. } => view.update(cx, |view, cx| view.set_theme(theme, cx)),
+            Self::Diagram { view, .. } => view.update(cx, |view, cx| {
+                view.set_theme(diagram::theme_from_memex(theme), cx)
+            }),
             Self::Graph { view, .. } => view.update(cx, |view, cx| view.set_theme(theme, cx)),
             Self::Backlinks { view, .. } => view.update(cx, |view, cx| view.set_theme(theme, cx)),
         }
@@ -138,9 +142,9 @@ impl ActiveItem {
         }
     }
 
-    pub fn diagram_state(&self) -> Option<Entity<DiagramState>> {
+    pub fn diagram_path(&self) -> Option<&PathBuf> {
         match self {
-            Self::Diagram { state, .. } => Some(state.clone()),
+            Self::Diagram { path, .. } => Some(path),
             _ => None,
         }
     }
@@ -162,7 +166,7 @@ impl ActiveItem {
         match self {
             Self::Editor { .. } => EditorState::commands(),
             Self::Pdf { .. } => PdfState::commands(),
-            Self::Diagram { .. } => DiagramState::commands(),
+            Self::Diagram { .. } => diagram::commands(),
             Self::Graph { .. } => GraphState::commands(),
             Self::Backlinks { .. } => BacklinksState::commands(),
         }
@@ -189,10 +193,11 @@ impl ActiveItem {
                     s.execute_command(cmd_id, viewport, vim.vim_enabled, cx)
                 })
             }
-            Self::Diagram { state, .. } => {
-                let state = state.clone();
-                state.update(cx, |s, cx| {
-                    s.execute_command(cmd_id, viewport, vim.vim_enabled, cx)
+            Self::Diagram { view, .. } => {
+                let view = view.clone();
+                view.update(cx, |view, cx| match view.execute_command(cmd_id, cx) {
+                    diagram_view::CommandOutcome::Ignored => CommandOutcome::Unhandled,
+                    outcome => CommandOutcome::handled(diagram::command_actions(outcome)),
                 })
             }
             Self::Graph { state, .. } => {
@@ -215,7 +220,7 @@ impl ActiveItem {
         match self {
             Self::Editor { state, .. } => state.read(cx).item_get_candidates(delegate_id, input),
             Self::Pdf { state, .. } => state.read(cx).get_candidates(delegate_id, input),
-            Self::Diagram { state, .. } => state.read(cx).get_candidates(delegate_id, input),
+            Self::Diagram { .. } => Vec::new(),
             Self::Graph { state, .. } => state.read(cx).get_candidates(delegate_id, input),
             Self::Backlinks { state, .. } => state.read(cx).get_candidates(delegate_id, input),
         }
@@ -242,12 +247,7 @@ impl ActiveItem {
                     s.handle_confirm(delegate_id, input, candidate, cx)
                 })
             }
-            Self::Diagram { state, .. } => {
-                let state = state.clone();
-                state.update(cx, |s, cx| {
-                    s.handle_confirm(delegate_id, input, candidate, cx)
-                })
-            }
+            Self::Diagram { .. } => Vec::new(),
             Self::Graph { state, .. } => {
                 let state = state.clone();
                 state.update(cx, |s, cx| {
@@ -276,10 +276,7 @@ impl ActiveItem {
                 let state = state.clone();
                 state.update(cx, |s, cx| s.on_input_changed(delegate_id, input, cx));
             }
-            Self::Diagram { state, .. } => {
-                let state = state.clone();
-                state.update(cx, |s, cx| s.on_input_changed(delegate_id, input, cx));
-            }
+            Self::Diagram { .. } => {}
             Self::Graph { state, .. } => {
                 let state = state.clone();
                 state.update(cx, |s, cx| s.on_input_changed(delegate_id, input, cx));
@@ -341,7 +338,7 @@ impl ActiveItem {
         match self {
             Self::Editor { state, .. } => state.read(cx).focus(window),
             Self::Pdf { state, .. } => state.read(cx).focus(window),
-            Self::Diagram { state, .. } => state.read(cx).focus(window),
+            Self::Diagram { state, .. } => state.read(cx).focus_handle().focus(window),
             Self::Graph { state, .. } => state.read(cx).focus(window),
             Self::Backlinks { state, .. } => state.read(cx).focus(window),
         }
@@ -372,8 +369,14 @@ impl ActiveItem {
             }
             Self::Diagram { state, .. } => {
                 let ds = state.read(cx);
-                let zoom_pct = (ds.zoom * 100.0) as u32;
-                format!("Diagram {} elements {}%", ds.element_count(), zoom_pct)
+                let cells = ds
+                    .graph()
+                    .cells()
+                    .iter()
+                    .filter(|cell| cell.kind.is_vertex() || cell.kind.is_edge())
+                    .count();
+                let dirty = if ds.is_dirty() { " *" } else { "" };
+                format!("Diagram {} cells{}", cells, dirty)
             }
             Self::Graph { state, .. } => {
                 let gs = state.read(cx);

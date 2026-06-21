@@ -98,14 +98,14 @@ pub(crate) fn global_commands() -> Vec<Command> {
         Command {
             id: "diagram-new",
             name: "New Diagram",
-            description: "Create a new excalidraw diagram, link it, and open the editor",
+            description: "Create a new native diagram, link it, and open the viewer",
             aliases: &["new-diagram", "diagram"],
             binding: None,
         },
         Command {
             id: "diagram-import",
             name: "Import Diagram",
-            description: "Import a .drawio or .excalidraw file into diagrams/ and link it",
+            description: "Import a .diagram, .drawio, or .xml file into diagrams/ and link it",
             aliases: &["import-diagram"],
             binding: Some(":diagram-import <path>"),
         },

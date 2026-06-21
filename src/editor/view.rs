@@ -1,9 +1,12 @@
 use gpui::*;
+use std::collections::HashMap;
+use std::path::PathBuf;
 
 use super::code_edit;
 use super::element::EditorElement;
 use super::outline;
-use super::{EditorEvent, EditorState, ShiftTabAction, TabAction};
+use super::{DIAGRAM_EMBED_HEIGHT_PX, EditorEvent, EditorState, ShiftTabAction, TabAction};
+use crate::diagram::{self, ChromeConfig, DiagramView, Mode};
 use crate::keymap::{Action, KeyContext, KeymapSystem, ResolvedKey};
 use crate::pane::{ItemAction, VimSnapshot};
 use crate::theme::Theme;
@@ -23,6 +26,8 @@ pub enum EditorViewEvent {
     /// The editor's vim/insert/visual state changed. The app doesn't need
     /// to do anything except re-render the mode-line.
     VimStateChanged,
+    /// Open a diagram link target in the host's secondary/right pane.
+    OpenDiagram(String),
 }
 
 impl EventEmitter<EditorViewEvent> for EditorView {}
@@ -35,6 +40,7 @@ pub struct EditorView {
     is_selecting: bool,
     theme: Theme,
     editor_width: Pixels,
+    diagram_embeds: HashMap<PathBuf, Entity<DiagramView>>,
     _observe_state: Subscription,
 }
 
@@ -55,6 +61,7 @@ impl EditorView {
             is_selecting: false,
             theme,
             editor_width: px(editor_width as f32),
+            diagram_embeds: HashMap::new(),
             _observe_state,
         };
         this.sync_state_vim_flags(cx);
@@ -63,7 +70,132 @@ impl EditorView {
 
     pub fn set_theme(&mut self, theme: Theme, cx: &mut Context<Self>) {
         self.theme = theme;
+        for view in self.diagram_embeds.values() {
+            view.update(cx, |view, cx| {
+                view.set_theme(diagram::theme_from_memex(theme), cx)
+            });
+        }
         cx.notify();
+    }
+
+    pub fn reload_diagram_embed(&mut self, path: &PathBuf, cx: &mut Context<Self>) {
+        self.diagram_embeds.remove(path);
+        cx.notify();
+    }
+
+    fn diagram_embed_view(
+        &mut self,
+        path: &PathBuf,
+        cx: &mut Context<Self>,
+    ) -> Option<Entity<DiagramView>> {
+        if let Some(view) = self.diagram_embeds.get(path) {
+            return Some(view.clone());
+        }
+        let graph = diagram::load_graph(path).ok()?;
+        let base_dir = path.parent().map(|parent| parent.to_path_buf());
+        let theme = self.theme;
+        let view = cx.new(|cx| {
+            let mut view = if let Some(base_dir) = base_dir.as_ref() {
+                DiagramView::with_base_dir(graph, base_dir, cx)
+            } else {
+                DiagramView::new(graph, cx)
+            };
+            view.set_theme(diagram::theme_from_memex(theme), cx);
+            view.set_mode(Mode::View, cx);
+            view.set_chrome(ChromeConfig::bare(), cx);
+            view.fit_to_content(cx);
+            view
+        });
+        self.diagram_embeds.insert(path.clone(), view.clone());
+        Some(view)
+    }
+
+    fn render_diagram_embeds(&mut self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let (content, lines, wrap_width, cursor) = {
+            let state = self.state.read(cx);
+            (
+                state.content(),
+                state.last_line_layouts.clone(),
+                state.wrap_width,
+                state.cursor,
+            )
+        };
+        let mut embeds = Vec::new();
+        for line in lines {
+            let line_end = line.content_offset + line.source_len;
+            if cursor >= line.content_offset && cursor <= line_end {
+                continue;
+            }
+            let Some(line_text) = content.get(line.content_offset..line_end) else {
+                continue;
+            };
+            let Some(embed) = self.state.read(cx).diagram_embed_for_line(line_text) else {
+                continue;
+            };
+            let top = line.y;
+            let left = line.origin_x;
+            let height = px(DIAGRAM_EMBED_HEIGHT_PX - 16.0);
+            let view = self.diagram_embed_view(&embed.path, cx);
+            let target = embed.target.clone();
+            let body = if let Some(view) = view {
+                div()
+                    .size_full()
+                    .overflow_hidden()
+                    .child(view)
+                    .into_any_element()
+            } else {
+                div()
+                    .size_full()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .text_color(rgb(self.theme.text_muted))
+                    .child(format!("Diagram not found: {}", embed.target))
+                    .into_any_element()
+            };
+            embeds.push(
+                div()
+                    .id(ElementId::Name(
+                        format!("diagram-embed-{}", line.content_offset).into(),
+                    ))
+                    .absolute()
+                    .left(left)
+                    .top(top)
+                    .w(wrap_width)
+                    .h(height)
+                    .bg(rgb(self.theme.background))
+                    .border_1()
+                    .border_color(rgb(self.theme.border))
+                    .rounded_md()
+                    .overflow_hidden()
+                    .child(body)
+                    .child(
+                        div()
+                            .absolute()
+                            .top(px(8.0))
+                            .right(px(8.0))
+                            .px_2()
+                            .py_1()
+                            .rounded_md()
+                            .bg(rgb(self.theme.surface))
+                            .border_1()
+                            .border_color(rgb(self.theme.border))
+                            .text_color(rgb(self.theme.text))
+                            .text_size(px(12.0))
+                            .cursor_pointer()
+                            .child("Open")
+                            .on_mouse_down(
+                                MouseButton::Left,
+                                cx.listener(move |_this, _e: &MouseDownEvent, _window, cx| {
+                                    cx.emit(EditorViewEvent::OpenDiagram(target.clone()));
+                                    cx.stop_propagation();
+                                }),
+                            ),
+                    )
+                    .into_any_element(),
+            );
+        }
+        embeds
     }
 
     /// Snapshot of vim state for passing into `EditorState::process_vim_action`.
@@ -195,6 +327,7 @@ impl Render for EditorView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .id("editor-view")
+            .relative()
             .size_full()
             .track_focus(&self.focus_handle)
             .cursor(CursorStyle::IBeam)
@@ -230,6 +363,14 @@ impl Render for EditorView {
                 cx.listener(|this, e: &MouseDownEvent, window, cx| {
                     this.is_selecting = true;
                     let pos = this.state.read(cx).index_for_mouse_position(e.position);
+
+                    // Standalone diagram links render as embedded previews. Opening them is
+                    // reserved for the overlay button so canvas interaction doesn't open a pane.
+                    if this.state.read(cx).offset_is_diagram_embed_line(pos) {
+                        this.is_selecting = false;
+                        this.state.read(cx).focus_handle.focus(window);
+                        return;
+                    }
 
                     // Check for wikilink click (Ctrl+click or plain click)
                     if let Some(title) = this.state.read(cx).wikilink_at_offset(pos) {
@@ -299,6 +440,7 @@ impl Render for EditorView {
                 self.theme,
                 self.editor_width,
             ))
+            .children(self.render_diagram_embeds(cx))
             .child(crate::ui::Scrollbar::new(self.state.clone()).with_id("editor-scrollbar"))
     }
 }

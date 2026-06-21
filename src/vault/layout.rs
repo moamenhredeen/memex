@@ -5,7 +5,7 @@
 //! my-vault/
 //!   notes/          # flat, ID-based note filenames
 //!   attachments/    # PDFs, images, drawings
-//!   diagrams/       # excalidraw diagrams (.excalidraw)
+//!   diagrams/       # native diagrams (.diagram)
 //!   journal/        # daily notes (YYYY-MM-DD.md)
 //!   .memex/         # per-vault application data
 //! ```
@@ -61,7 +61,7 @@ impl VaultLayout {
         self.notes.join(format!("{}.md", id))
     }
 
-    /// Where a diagram with the given file name (including `.excalidraw`
+    /// Where a diagram with the given file name (including `.diagram`
     /// extension) lives.
     pub fn diagram_path(&self, file_name: &str) -> PathBuf {
         self.diagrams.join(file_name)

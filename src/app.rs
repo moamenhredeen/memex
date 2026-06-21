@@ -102,7 +102,11 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
         let editor_state = cx.new(|cx| EditorState::from_document(initial_document, cx));
         if let Some(vault) = state.vault.as_ref() {
             let titles = vault.index.wikilink_titles();
-            editor_state.update(cx, |editor, cx| editor.set_wikilink_titles(titles, cx));
+            let diagram_dir = vault.layout().diagrams.clone();
+            editor_state.update(cx, |editor, cx| {
+                editor.set_wikilink_titles(titles, cx);
+                editor.set_diagram_dir(Some(diagram_dir), cx);
+            });
         }
         let theme = theme::by_id(&state.config.theme).unwrap_or(theme::SOLARIZED_LIGHT);
         let editor_width = state.config.editor_width;
@@ -125,6 +129,9 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                 }
                 EditorViewEvent::VimStateChanged => {
                     cx.notify();
+                }
+                EditorViewEvent::OpenDiagram(title) => {
+                    this.follow_wikilink(title.clone(), window, cx);
                 }
             },
         );
@@ -878,7 +885,7 @@ Supports *italic*, **bold**, ~~strikethrough~~, `code`, and more.
                     .trim();
                 if arg.is_empty() {
                     self.minibuffer
-                        .set_message("usage: :diagram-import <path to .drawio or .excalidraw>");
+                        .set_message("usage: :diagram-import <path to .diagram, .drawio, or .xml>");
                 } else {
                     let source = std::path::PathBuf::from(arg);
                     self.import_diagram(&source, window, cx);

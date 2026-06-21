@@ -1292,6 +1292,32 @@ dependencies = [
 ]
 
 [[package]]
+name = "diagram-core"
+version = "0.1.0"
+source = "git+https://github.com/moamenhredeen/diagram?branch=main#4c52ba868668dd6617f499d63b64e9e2870f4938"
+dependencies = [
+ "base64",
+ "indexmap",
+ "miniz_oxide",
+ "roxmltree",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "diagram-view"
+version = "0.1.0"
+source = "git+https://github.com/moamenhredeen/diagram?branch=main#4c52ba868668dd6617f499d63b64e9e2870f4938"
+dependencies = [
+ "base64",
+ "diagram-core",
+ "gpui",
+ "image",
+ "indexmap",
+ "smallvec",
+]
+
+[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3405,6 +3431,7 @@ checksum = "f8ca58f447f06ed17d5fc4043ce1b10dd205e060fb3ce5b979b8ed8e59ff3f79"
 name = "memex"
 version = "0.1.0"
 dependencies = [
+ "diagram-view",
  "dirs 6.0.0",
  "fastrand 2.4.1",
  "fuzzy-matcher",

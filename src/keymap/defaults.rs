@@ -11,6 +11,7 @@ pub fn register_defaults(registry: &mut BindingRegistry) {
     register_markdown_bindings(registry);
     register_minibuffer_bindings(registry);
     register_pdf_bindings(registry);
+    register_diagram_bindings(registry);
     register_graph_bindings(registry);
 }
 
@@ -1017,5 +1018,20 @@ fn register_graph_bindings(registry: &mut BindingRegistry) {
         ("q", "quit"),
     ] {
         bind(registry, graph.clone(), key, Action::Command(command));
+    }
+}
+
+fn register_diagram_bindings(registry: &mut BindingRegistry) {
+    let diagram = when().require("Diagram");
+    for (key, command) in [
+        ("+", "diagram.zoom-in"),
+        ("=", "diagram.zoom-in"),
+        ("-", "diagram.zoom-out"),
+        ("0", "diagram.reset-zoom"),
+        ("shift-1", "diagram.fit"),
+        ("ctrl-a", "diagram.select-all"),
+        ("q", "quit"),
+    ] {
+        bind(registry, diagram.clone(), key, Action::Command(command));
     }
 }
