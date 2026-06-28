@@ -178,30 +178,7 @@ impl Element for EditorElement {
 
         // Update display map if content changed (needs mutable access)
         self.state.update(cx, |state, _cx| {
-            let content = state.content();
-            state.display_map.update(&content);
-            if state.wrap_width != wrap_width {
-                state.wrap_width = wrap_width;
-                state.display_map.reset_line_heights();
-            }
-            // Reapply outline fold visibility after display map refresh
-            let kinds = state.display_map.line_kinds();
-            let headings = crate::editor::outline::extract_headings(&kinds);
-            let line_count = state.display_map.line_count();
-            let hidden = state.outline.compute_hidden_lines(&headings, line_count);
-            state.display_map.update_visibility(&hidden);
-
-            // Cache viewport height so follow-cursor scrolling + scroll-wheel
-            // clamping have the true available height to work with.
-            state.viewport_height = bounds.size.height;
-
-            // Follow cursor: if a cursor-moving action has set the flag, nudge
-            // scroll so the cursor is on-screen. Do nothing if the user just
-            // scroll-wheeled — that doesn't set the flag.
-            if state.needs_scroll_to_cursor {
-                state.scroll_cursor_into_view();
-                state.needs_scroll_to_cursor = false;
-            }
+            state.prepare_display_layout(wrap_width, bounds.size.height, _cx);
         });
 
         let state = self.state.read(cx);

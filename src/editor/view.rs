@@ -11,6 +11,19 @@ use crate::keymap::{Action, KeyContext, KeymapSystem, ResolvedKey};
 use crate::pane::{ItemAction, VimSnapshot};
 use crate::theme::Theme;
 
+const MIN_HORIZONTAL_PADDING: f32 = 24.0;
+const VERTICAL_PADDING: f32 = 24.0;
+
+fn content_inset(viewport_width: Pixels, editor_width: Pixels) -> Pixels {
+    let viewport_width: f32 = viewport_width.into();
+    let editor_width: f32 = editor_width.into();
+    px(((viewport_width - editor_width) / 2.0).max(MIN_HORIZONTAL_PADDING))
+}
+
+fn content_width(viewport_width: Pixels, editor_width: Pixels) -> Pixels {
+    viewport_width - content_inset(viewport_width, editor_width) * 2.0
+}
+
 /// Events from [`EditorView`] that the app shell processes.
 ///
 /// `Command` and `ItemActions` cross the view → app boundary because they
@@ -111,29 +124,61 @@ impl EditorView {
     }
 
     fn render_diagram_embeds(&mut self, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let (content, lines, wrap_width, cursor) = {
+        let bounds = self.state.read(cx).last_bounds;
+        let Some(bounds) = bounds else {
+            return Vec::new();
+        };
+        let wrap_width = content_width(bounds.size.width, self.editor_width);
+
+        self.state.update(cx, |state, cx| {
+            state.prepare_display_layout(wrap_width, bounds.size.height, cx);
+        });
+
+        let (content, scroll, cursor, line_count) = {
             let state = self.state.read(cx);
             (
                 state.content(),
-                state.last_line_layouts.clone(),
-                state.wrap_width,
+                state.scroll_offset,
                 state.cursor,
+                state.display_map.line_count(),
             )
         };
+        if line_count == 0 {
+            return Vec::new();
+        }
+
+        let horizontal_inset = content_inset(bounds.size.width, self.editor_width);
+        let (first, last) = {
+            let state = self.state.read(cx);
+            state
+                .display_map
+                .visible_range(scroll, bounds.size.height, 4)
+        };
         let mut embeds = Vec::new();
-        for line in lines {
-            let line_end = line.content_offset + line.source_len;
-            if cursor >= line.content_offset && cursor <= line_end {
+        for line_idx in first..last {
+            let (line_start, line_end, line_y, hidden) = {
+                let state = self.state.read(cx);
+                let Some(range) = state.line_text_range(line_idx, &content) else {
+                    continue;
+                };
+                (
+                    range.start,
+                    range.end,
+                    state.display_map.line_y(line_idx),
+                    state.display_map.is_line_hidden(line_idx),
+                )
+            };
+            if hidden || (cursor >= line_start && cursor <= line_end) {
                 continue;
             }
-            let Some(line_text) = content.get(line.content_offset..line_end) else {
+            let Some(line_text) = content.get(line_start..line_end) else {
                 continue;
             };
             let Some(embed) = self.state.read(cx).diagram_embed_for_line(line_text) else {
                 continue;
             };
-            let top = line.y;
-            let left = line.origin_x;
+            let top = px(VERTICAL_PADDING) - scroll + line_y;
+            let left = horizontal_inset;
             let height = px(DIAGRAM_EMBED_HEIGHT_PX - 16.0);
             let view = self.diagram_embed_view(&embed.path, cx);
             let target = embed.target.clone();
@@ -156,7 +201,7 @@ impl EditorView {
             embeds.push(
                 div()
                     .id(ElementId::Name(
-                        format!("diagram-embed-{}", line.content_offset).into(),
+                        format!("diagram-embed-{}", line_start).into(),
                     ))
                     .absolute()
                     .left(left)

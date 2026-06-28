@@ -182,13 +182,87 @@ impl EditorState {
     pub fn offset_is_diagram_embed_line(&self, offset: usize) -> bool {
         let content = self.content();
         let line_idx = self.display_map.line_for_offset(offset);
+        self.line_is_diagram_embed(line_idx, &content)
+    }
+
+    pub(crate) fn line_is_diagram_embed(&self, line_idx: usize, content: &str) -> bool {
+        self.line_text_range(line_idx, content)
+            .and_then(|range| content.get(range))
+            .and_then(|line| self.diagram_embed_for_line(line))
+            .is_some()
+    }
+
+    pub(crate) fn line_text_range(
+        &self,
+        line_idx: usize,
+        content: &str,
+    ) -> Option<std::ops::Range<usize>> {
         let line_offset = self.display_map.line_offset(line_idx);
+        if line_offset > content.len() || !content.is_char_boundary(line_offset) {
+            return None;
+        }
         let line_end = content[line_offset..]
             .find('\n')
             .map(|i| line_offset + i)
             .unwrap_or(content.len());
-        self.diagram_embed_for_line(&content[line_offset..line_end])
-            .is_some()
+        Some(line_offset..line_end)
+    }
+
+    pub(crate) fn prepare_display_layout(
+        &mut self,
+        wrap_width: Pixels,
+        viewport_height: Pixels,
+        cx: &mut Context<Self>,
+    ) {
+        let content = self.content();
+        self.display_map.update(&content);
+        if self.wrap_width != wrap_width {
+            self.wrap_width = wrap_width;
+            self.display_map.reset_line_heights();
+        }
+
+        let kinds = self.display_map.line_kinds();
+        let headings = outline::extract_headings(&kinds);
+        let line_count = self.display_map.line_count();
+        let hidden = self.outline.compute_hidden_lines(&headings, line_count);
+        self.display_map.update_visibility(&hidden);
+
+        self.viewport_height = viewport_height;
+        self.sync_diagram_embed_line_heights(&content, cx);
+
+        if self.needs_scroll_to_cursor {
+            self.scroll_cursor_into_view();
+            self.needs_scroll_to_cursor = false;
+        }
+    }
+
+    fn sync_diagram_embed_line_heights(&mut self, content: &str, cx: &mut Context<Self>) {
+        let embed_height = px(DIAGRAM_EMBED_HEIGHT_PX);
+        let mut height_updates = Vec::new();
+        for line_idx in 0..self.display_map.line_count() {
+            let Some(range) = self.line_text_range(line_idx, content) else {
+                continue;
+            };
+            let is_embed = content
+                .get(range.clone())
+                .and_then(|line| self.diagram_embed_for_line(line))
+                .is_some();
+            let cursor_on_line = self.cursor >= range.start && self.cursor <= range.end;
+            let current = self.display_map.line_height(line_idx);
+            if is_embed && !cursor_on_line {
+                if current != embed_height {
+                    height_updates.push((line_idx, embed_height));
+                }
+            } else if current == embed_height {
+                height_updates.push((
+                    line_idx,
+                    self.display_map.line_info(line_idx).kind.line_height(),
+                ));
+            }
+        }
+        if self.display_map.update_line_heights(&height_updates) {
+            cx.notify();
+        }
     }
 
     /// Snapshot the buffer as a String (allocates). Use for read-heavy operations
@@ -601,7 +675,14 @@ impl EditorState {
                 let before = &content[..pos];
                 let line_start = before.rfind('\n').map(|i| i + 1).unwrap_or(0);
                 let col = pos - line_start;
-                if let Some(tl) = self.display_map.next_visible_line(current_line, false) {
+                let mut target_line = self.display_map.next_visible_line(current_line, false);
+                while let Some(line) = target_line {
+                    if !self.line_is_diagram_embed(line, &content) {
+                        break;
+                    }
+                    target_line = self.display_map.next_visible_line(line, false);
+                }
+                if let Some(tl) = target_line {
                     let tl_start = self.display_map.line_offset(tl);
                     let tl_end = content[tl_start..]
                         .find('\n')
@@ -619,7 +700,14 @@ impl EditorState {
                 let line_start = before.rfind('\n').map(|i| i + 1).unwrap_or(0);
                 let col = pos - line_start;
                 let current_line = self.display_map.line_for_offset(pos);
-                if let Some(tl) = self.display_map.next_visible_line(current_line, true) {
+                let mut target_line = self.display_map.next_visible_line(current_line, true);
+                while let Some(line) = target_line {
+                    if !self.line_is_diagram_embed(line, &content) {
+                        break;
+                    }
+                    target_line = self.display_map.next_visible_line(line, true);
+                }
+                if let Some(tl) = target_line {
                     let tl_start = self.display_map.line_offset(tl);
                     let rest = &content[tl_start..];
                     let tl_len = rest.find('\n').unwrap_or(rest.len());
